@@ -16,13 +16,6 @@ const defaultConfig = {
       label: "https://shokz.com/\uff08\u9996\u9875\uff09"
     },
     {
-      id: "shokz-home-banners",
-      url: "https://shokz.com/",
-      label: "https://shokz.com/\uff08\u9996\u9875 Banner\uff09",
-      captureMode: "shokz-home-banners",
-      fullPage: false
-    },
-    {
       id: "shokz-products-nav",
       url: "https://shokz.com/",
       label: "https://shokz.com/\uff08\u5bfc\u822a\u680f\uff09",

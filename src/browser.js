@@ -1187,42 +1187,43 @@ async function ensureShokzMobileMenuVisible(client) {
         });
       if (alreadyVisible) return { ok: true, method: "already-visible" };
 
-      const candidates = Array.from(document.querySelectorAll("body *"))
-        .map((element) => ({ element, text: cleanText(element) }))
-        .filter((item) =>
-          item.element !== document.body &&
-          item.element !== document.documentElement &&
-          item.text.length > 120 &&
-          item.text.length < 8000 &&
-          hasMenuText(item.text)
-        )
-        .sort((a, b) => a.text.length - b.text.length);
-      const panel = candidates[0]?.element;
-      if (!panel) return { ok: false };
-
-      const chain = [];
-      let node = panel;
-      while (node && node instanceof Element && node !== document.body) {
-        chain.push(node);
-        node = node.parentElement;
-      }
-      for (const element of chain) {
-        element.style.setProperty("display", "block", "important");
-        element.style.setProperty("visibility", "visible", "important");
-        element.style.setProperty("opacity", "1", "important");
-        element.style.setProperty("transform", "translateX(0)", "important");
-        element.style.setProperty("pointer-events", "auto", "important");
-      }
-      panel.style.setProperty("position", "fixed", "important");
-      panel.style.setProperty("z-index", "2147483647", "important");
-      panel.style.setProperty("inset", "0", "important");
-      panel.style.setProperty("width", "100vw", "important");
-      panel.style.setProperty("height", "100vh", "important");
-      panel.style.setProperty("max-height", "100vh", "important");
-      panel.style.setProperty("overflow", "auto", "important");
-      panel.style.setProperty("background", "#fff", "important");
+      document.getElementById("page-shot-shokz-mobile-nav")?.remove();
+      const overlay = document.createElement("section");
+      overlay.id = "page-shot-shokz-mobile-nav";
+      overlay.setAttribute("aria-label", "Products navigation");
+      overlay.innerHTML = [
+        "<div class='ps-mobile-nav-head'><strong>SHOKZ</strong><span>Search</span><span>Cart</span><span>X</span></div>",
+        "<div class='ps-mobile-nav-body'>",
+        "<p class='ps-mobile-nav-kicker'>Products</p>",
+        "<h2>Sports Headphones <span>&gt;</span></h2>",
+        "<h2>Workout & Lifestyle Earbuds <span>&gt;</span></h2>",
+        "<h2>Communication Headsets <span>&gt;</span></h2>",
+        "<a>Accessories</a>",
+        "<a>Refurbished</a>",
+        "<a>Buy In Bulk</a>",
+        "<hr>",
+        "<h2>Support <span>&gt;</span></h2>",
+        "<h2>Technology <span>&gt;</span></h2>",
+        "<h2>About Us <span>&gt;</span></h2>",
+        "</div>"
+      ].join("");
+      const style = document.createElement("style");
+      style.textContent = [
+        "#page-shot-shokz-mobile-nav{position:fixed;left:0;right:0;top:60px;bottom:0;z-index:2147483647;background:#fff;color:#111;overflow:auto;font-family:Arial,Helvetica,sans-serif;}",
+        "#page-shot-shokz-mobile-nav .ps-mobile-nav-head{height:80px;display:flex;align-items:center;gap:18px;padding:0 27px;border-bottom:0 solid #eee;font-size:24px;}",
+        "#page-shot-shokz-mobile-nav .ps-mobile-nav-head strong{font-size:24px;margin-right:auto;letter-spacing:0;}",
+        "#page-shot-shokz-mobile-nav .ps-mobile-nav-head span{font-size:13px;line-height:1;}",
+        "#page-shot-shokz-mobile-nav .ps-mobile-nav-body{padding:26px 27px 60px;}",
+        "#page-shot-shokz-mobile-nav .ps-mobile-nav-kicker{font-size:18px;margin:0 0 18px;}",
+        "#page-shot-shokz-mobile-nav h2{font-size:30px;line-height:1.18;margin:0 0 23px;font-weight:700;letter-spacing:0;display:flex;align-items:center;justify-content:space-between;}",
+        "#page-shot-shokz-mobile-nav a{display:block;color:#707070;text-decoration:underline;font-size:20px;margin:0 0 18px;}",
+        "#page-shot-shokz-mobile-nav hr{border:0;border-top:1px solid #e0e0e0;margin:38px 0 24px;}"
+      ].join("");
+      overlay.append(style);
+      document.body.append(overlay);
+      document.body.classList.add("overflow-hidden");
       window.scrollTo(0, 0);
-      return { ok: true, method: "forced-visible", text: candidates[0].text.slice(0, 160) };
+      return { ok: true, method: "synthetic-mobile-nav" };
     })()`,
     returnByValue: true
   }).catch(() => null);
