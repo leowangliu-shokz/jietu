@@ -17,7 +17,6 @@ const elements = {
 
 let state = null;
 const selectedDeviceFilters = {
-  categories: new Set(),
   devices: new Set()
 };
 
@@ -73,10 +72,6 @@ function renderDeviceFilterOptions() {
   );
 
   const groups = deviceFilterGroups(devices);
-  const availableCategories = new Set(groups.map((group) => group.id));
-  selectedDeviceFilters.categories = new Set(
-    [...selectedDeviceFilters.categories].filter((id) => availableCategories.has(id))
-  );
   elements.deviceFilterMenu.innerHTML = "";
 
   for (const group of groups) {
@@ -91,7 +86,7 @@ function renderDeviceFilterOptions() {
     `;
 
     const categoryInput = section.querySelector("input");
-    categoryInput.checked = selectedDeviceFilters.categories.has(group.id);
+    categoryInput.checked = group.devices.every((device) => selectedDeviceFilters.devices.has(device.id));
 
     const options = section.querySelector(".device-filter-options");
     for (const device of group.devices) {
@@ -142,7 +137,6 @@ function handleDeviceFilterClick(event) {
   if (action !== "clear") {
     return;
   }
-  selectedDeviceFilters.categories.clear();
   selectedDeviceFilters.devices.clear();
   renderDeviceFilterOptions();
   renderGallery();
@@ -154,25 +148,40 @@ function handleDeviceFilterChange(event) {
     return;
   }
 
-  const selected = input.dataset.filterType === "category"
-    ? selectedDeviceFilters.categories
-    : selectedDeviceFilters.devices;
-  if (input.checked) {
-    selected.add(input.value);
+  if (input.dataset.filterType === "category") {
+    const group = deviceFilterGroups(uniqueDevicesFromSnapshots()).find((item) => item.id === input.value);
+    const deviceIds = group?.devices.map((device) => device.id) || [];
+    for (const deviceId of deviceIds) {
+      if (input.checked) {
+        selectedDeviceFilters.devices.add(deviceId);
+      } else {
+        selectedDeviceFilters.devices.delete(deviceId);
+      }
+    }
   } else {
-    selected.delete(input.value);
+    if (input.checked) {
+      selectedDeviceFilters.devices.add(input.value);
+    } else {
+      selectedDeviceFilters.devices.delete(input.value);
+    }
   }
 
-  renderDeviceFilterLabel(uniqueDevicesFromSnapshots());
+  renderDeviceFilterOptions();
   renderGallery();
 }
 
 function renderDeviceFilterLabel(devices) {
-  const groupLabels = new Map(deviceFilterGroups(devices).map((group) => [group.id, group.name]));
-  const deviceLabels = new Map(devices.map((device) => [device.id, device.name]));
+  const fullySelectedGroups = deviceFilterGroups(devices).filter((group) =>
+    group.devices.every((device) => selectedDeviceFilters.devices.has(device.id))
+  );
+  const groupedDeviceIds = new Set(fullySelectedGroups.flatMap((group) =>
+    group.devices.map((device) => device.id)
+  ));
   const labels = [
-    ...[...selectedDeviceFilters.categories].map((id) => groupLabels.get(id)).filter(Boolean),
-    ...[...selectedDeviceFilters.devices].map((id) => deviceLabels.get(id)).filter(Boolean)
+    ...fullySelectedGroups.map((group) => group.name),
+    ...devices
+      .filter((device) => selectedDeviceFilters.devices.has(device.id) && !groupedDeviceIds.has(device.id))
+      .map((device) => device.name)
   ];
 
   const label = labels.length === 0
@@ -197,12 +206,12 @@ function deviceFilterGroups(devices) {
 }
 
 function matchesDeviceFilters(snapshot) {
-  if (selectedDeviceFilters.categories.size === 0 && selectedDeviceFilters.devices.size === 0) {
+  if (selectedDeviceFilters.devices.size === 0) {
     return true;
   }
 
   const device = deviceInfoForSnapshot(snapshot);
-  return selectedDeviceFilters.devices.has(device.id) || selectedDeviceFilters.categories.has(device.group);
+  return selectedDeviceFilters.devices.has(device.id);
 }
 
 function renderGallery() {
