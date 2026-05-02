@@ -1,0 +1,14 @@
+{
+  "name": "page-shot-archive",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local website screenshot archive for tracking pages over time.",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "capture": "node src/capture-once.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Page Shot Archive</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="toolbar" aria-label="截图工具栏">
+        <div>
+          <p class="eyebrow">Page Shot Archive</p>
+          <h1>网页截图时间档案</h1>
+        </div>
+        <div class="actions">
+          <button id="captureNow" class="primary" type="button">立即截图</button>
+          <button id="refresh" type="button">刷新</button>
+        </div>
+      </section>
+
+      <section class="status-grid" aria-label="当前状态">
+        <div class="stat">
+          <span>归档数量</span>
+          <strong id="shotCount">0</strong>
+        </div>
+        <div class="stat">
+          <span>自动截图</span>
+          <strong id="scheduleState">整点（所有设备）</strong>
+        </div>
+        <div class="stat">
+          <span>浏览器</span>
+          <strong id="browserState">检查中</strong>
+        </div>
+        <div class="stat">
+          <span>运行状态</span>
+          <strong id="captureState">空闲</strong>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <form id="settings" class="settings" aria-label="截图设置">
+          <div class="field">
+            <label for="urls">URL 列表</label>
+            <textarea id="urls" rows="4" spellcheck="false"></textarea>
+          </div>
+
+          <div class="field">
+            <label for="wait">加载后等待（毫秒）</label>
+            <input id="wait" type="number" min="0" max="30000" step="100">
+          </div>
+
+          <div class="field">
+            <label for="devicePreset">截图设备</label>
+            <select id="devicePreset"></select>
+          </div>
+
+          <label class="check">
+            <input id="fullPage" type="checkbox">
+            <span>截取全页面</span>
+          </label>
+
+          <button type="submit">保存设置</button>
+          <p id="message" class="message" role="status"></p>
+        </form>
+
+        <section class="timeline" aria-label="截图历史">
+          <div class="timeline-head">
+            <div>
+              <h2>历史截图</h2>
+              <p id="nextRun">下次整点自动截图：计算中</p>
+            </div>
+            <div class="timeline-filters">
+              <select id="deviceFilter" aria-label="按截图设备过滤">
+                <option value="">全部截图设备</option>
+              </select>
+              <select id="runSourceFilter" aria-label="按运行方式过滤">
+                <option value="">全部运行方式</option>
+                <option value="auto">自动跑（整点）</option>
+                <option value="manual">手动跑</option>
+              </select>
+              <select id="urlFilter" aria-label="按 URL 过滤">
+                <option value="">全部 URL</option>
+              </select>
+            </div>
+          </div>
+          <div id="gallery" class="gallery"></div>
+          <p id="empty" class="empty">还没有截图，点“立即截图”开始第一份归档。</p>
+        </section>
+      </section>
+    </main>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

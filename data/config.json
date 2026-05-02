@@ -1,0 +1,21 @@
+{
+  "urls": [
+    "https://shokz.com/"
+  ],
+  "intervalMinutes": 0,
+  "devicePresetId": "pc-hd",
+  "viewport": {
+    "width": 1920,
+    "height": 1080,
+    "mobile": false,
+    "touch": false,
+    "deviceScaleFactor": 1
+  },
+  "fullPage": true,
+  "waitAfterLoadMs": 2500,
+  "dismissPopups": true,
+  "lazyLoadScroll": true,
+  "scrollStepMs": 350,
+  "hideFixedElementsAfterFirstSegment": true,
+  "maxFullPageHeight": 16000
+}

@@ -1,0 +1,6 @@
+node_modules/
+logs/
+archive/
+data/snapshots.json
+npm-debug.log*
+*.tmp
