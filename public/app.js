@@ -171,26 +171,12 @@ function handleDeviceFilterChange(event) {
 }
 
 function renderDeviceFilterLabel(devices) {
-  const fullySelectedGroups = deviceFilterGroups(devices).filter((group) =>
-    group.devices.every((device) => selectedDeviceFilters.devices.has(device.id))
-  );
-  const groupedDeviceIds = new Set(fullySelectedGroups.flatMap((group) =>
-    group.devices.map((device) => device.id)
-  ));
-  const labels = [
-    ...fullySelectedGroups.map((group) => group.name),
-    ...devices
-      .filter((device) => selectedDeviceFilters.devices.has(device.id) && !groupedDeviceIds.has(device.id))
-      .map((device) => device.name)
-  ];
-
-  const label = labels.length === 0
+  const selectedDevices = devices.filter((device) => selectedDeviceFilters.devices.has(device.id));
+  const label = selectedDevices.length === 0
     ? "全部截图设备"
-    : labels.length === 1
-      ? labels[0]
-      : `已选 ${labels.length} 项`;
+    : `已选 ${selectedDevices.length} 项`;
   elements.deviceFilterLabel.textContent = label;
-  elements.deviceFilterButton.title = labels.join("、");
+  elements.deviceFilterButton.title = selectedDevices.map((device) => device.name).join("、");
 }
 
 function deviceFilterGroups(devices) {
