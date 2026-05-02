@@ -177,9 +177,10 @@ async function captureStitchedScreenshot(client, outputPath, options) {
     if (index > 0 && options.hideFixedElementsAfterFirstSegment) {
       await hideFixedElements(client);
     }
-    await dismissObstructions(client);
     await scrollTo(client, y);
     await sleep(Math.max(120, Math.min(700, options.stepDelay)));
+    await dismissObstructions(client, { rounds: index === 0 ? 4 : 2 });
+    await sleep(160);
     const segmentHeight = Math.min(viewportHeight, height - y);
     const screenshot = await client.send("Page.captureScreenshot", {
       format: "png",
@@ -200,59 +201,151 @@ async function captureStitchedScreenshot(client, outputPath, options) {
   await fs.writeFile(outputPath, encodePng(width, height, rgba));
 }
 
-async function dismissObstructions(client) {
-  await client.send("Runtime.evaluate", {
-    expression: `(() => {
-      const clicked = [];
-      const visible = (element) => {
-        const rect = element.getBoundingClientRect();
-        const style = getComputedStyle(element);
-        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
-      };
-      const textOf = (element) => [
-        element.innerText,
-        element.textContent,
-        element.getAttribute("aria-label"),
-        element.getAttribute("title"),
-        element.value,
-        element.id,
-        element.className
-      ].filter(Boolean).join(" ").trim();
-      const clickMatches = [
-        /accept all/i,
-        /agree/i,
-        /allow all/i,
-        /got it/i,
-        /use necessary cookies only/i,
-        /no thanks/i,
-        /not now/i
-      ];
-      const closeMatches = [
-        /close/i,
-        /dismiss/i,
-        /关闭/,
-        /×/,
-        /^x$/i
-      ];
-      const candidates = Array.from(document.querySelectorAll("button, [role='button'], input[type='button'], input[type='submit'], a, [aria-label], [title], [class], [id]"));
-      for (const matcherSet of [clickMatches, closeMatches]) {
-        for (const element of candidates) {
-          if (!visible(element)) continue;
-          const text = textOf(element);
-          if (matcherSet.some((matcher) => matcher.test(text))) {
-            const target = element.closest("button, [role='button'], a") || element;
+async function dismissObstructions(client, options = {}) {
+  const rounds = Math.max(1, Math.min(6, options.rounds ?? 3));
+  for (let round = 0; round < rounds; round += 1) {
+    const result = await client.send("Runtime.evaluate", {
+      expression: `(() => {
+        const clicked = [];
+        const hidden = [];
+        const viewportArea = Math.max(1, window.innerWidth * window.innerHeight);
+        const visible = (element) => {
+          if (!element || !(element instanceof Element)) return false;
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 0 &&
+            rect.height > 0 &&
+            style.visibility !== "hidden" &&
+            style.display !== "none" &&
+            Number(style.opacity || 1) > 0.01;
+        };
+        const textOf = (element) => [
+          element.innerText,
+          element.textContent,
+          element.getAttribute?.("aria-label"),
+          element.getAttribute?.("title"),
+          element.getAttribute?.("name"),
+          element.value,
+          element.id,
+          String(element.className || "")
+        ].filter(Boolean).join(" ").replace(/\\s+/g, " ").trim();
+        const clickMatches = [
+          /accept all/i,
+          /agree/i,
+          /allow all/i,
+          /got it/i,
+          /use necessary cookies only/i,
+          /no thanks/i,
+          /not now/i
+        ];
+        const closeMatches = [
+          /close/i,
+          /dismiss/i,
+          /关闭/,
+          /×/,
+          /^x$/i
+        ];
+        const popupMatches = [
+          /newsletter/i,
+          /subscribe/i,
+          /sign up/i,
+          /email/i,
+          /don't miss/i,
+          /dont miss/i,
+          /great deals/i,
+          /discount/i,
+          /offer/i,
+          /coupon/i,
+          /popup/i,
+          /modal/i,
+          /dialog/i,
+          /sms/i,
+          /phone number/i
+        ];
+        const clickableSelector = "button, [role='button'], input[type='button'], input[type='submit'], a, [aria-label], [title], [tabindex]";
+        const clickElement = (element, reason) => {
+          if (!visible(element)) return false;
+          const target = element.closest?.("button, [role='button'], a, input") || element;
+          if (!visible(target)) return false;
+          if (typeof target.click === "function") {
             target.click();
-            clicked.push(text || element.tagName);
+          } else {
+            target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+          }
+          clicked.push(reason || textOf(target) || target.tagName);
+          return true;
+        };
+        const hideElement = (element, reason) => {
+          if (!visible(element) || element === document.body || element === document.documentElement) return false;
+          element.dataset.pageShotHidden = "true";
+          element.style.setProperty("visibility", "hidden", "important");
+          element.style.setProperty("pointer-events", "none", "important");
+          hidden.push(reason || textOf(element).slice(0, 80) || element.tagName);
+          return true;
+        };
+        const candidates = Array.from(document.querySelectorAll(clickableSelector + ", [class], [id]"));
+        for (const matcherSet of [clickMatches, closeMatches]) {
+          for (const element of candidates) {
+            if (!visible(element)) continue;
+            const text = textOf(element);
+            if (matcherSet.some((matcher) => matcher.test(text))) {
+              clickElement(element, text || "matched close control");
+            }
           }
         }
-      }
-      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-      return clicked;
-    })()`,
-    returnByValue: true
-  }).catch(() => null);
-  await sleep(700);
+
+        const layers = Array.from(document.querySelectorAll("body *"))
+          .filter((element) => {
+            if (!visible(element) || element.dataset.pageShotHidden === "true") return false;
+            const style = getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            const zIndex = Number.parseInt(style.zIndex, 10);
+            const area = rect.width * rect.height;
+            const positioned = ["fixed", "sticky"].includes(style.position) || (Number.isFinite(zIndex) && zIndex >= 1000);
+            return positioned && area >= Math.min(viewportArea * 0.08, 120000);
+          })
+          .sort((a, b) => {
+            const az = Number.parseInt(getComputedStyle(a).zIndex, 10) || 0;
+            const bz = Number.parseInt(getComputedStyle(b).zIndex, 10) || 0;
+            return bz - az;
+          });
+
+        for (const layer of layers) {
+          const layerRect = layer.getBoundingClientRect();
+          const layerText = textOf(layer);
+          const popupLike = popupMatches.some((matcher) => matcher.test(layerText));
+          const closeControls = Array.from(layer.querySelectorAll(clickableSelector + ", svg, [class], [id]"));
+          let closed = false;
+          for (const control of closeControls) {
+            if (!visible(control)) continue;
+            const rect = control.getBoundingClientRect();
+            const text = textOf(control);
+            const nearTopRight = rect.width <= 96 &&
+              rect.height <= 96 &&
+              rect.left >= layerRect.right - Math.max(140, layerRect.width * 0.3) &&
+              rect.top <= layerRect.top + Math.max(140, layerRect.height * 0.3);
+            const iconLike = nearTopRight && (control.matches(clickableSelector) || control.querySelector?.("svg,path") || control.tagName.toLowerCase() === "svg");
+            const explicitClose = closeMatches.some((matcher) => matcher.test(text));
+            if (explicitClose || (popupLike && iconLike)) {
+              closed = clickElement(control, text || "top-right popup control");
+              if (closed) break;
+            }
+          }
+          if (!closed && popupLike) {
+            hideElement(layer, "popup layer fallback");
+          }
+        }
+
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        return { clicked, hidden };
+      })()`,
+      returnByValue: true
+    }).catch(() => null);
+    const value = result?.result?.value || {};
+    const changed = (value.clicked?.length || 0) + (value.hidden?.length || 0);
+    await sleep(changed ? 450 : 250);
+  }
 }
 
 async function hideFixedElements(client) {
