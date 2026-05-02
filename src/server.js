@@ -147,7 +147,7 @@ async function servePublic(request, response) {
   if (!filePath) {
     return sendStatus(response, 403);
   }
-  return sendFile(response, filePath);
+  return sendFile(response, filePath, { cacheControl: "no-store" });
 }
 
 async function serveArchive(request, response) {
@@ -167,10 +167,14 @@ function safeJoin(root, requestedPath) {
   return resolved.startsWith(rootResolved) ? resolved : null;
 }
 
-async function sendFile(response, filePath) {
+async function sendFile(response, filePath, options = {}) {
   try {
     const content = await fs.readFile(filePath);
-    response.writeHead(200, { "Content-Type": contentType(filePath) });
+    const headers = { "Content-Type": contentType(filePath) };
+    if (options.cacheControl) {
+      headers["Cache-Control"] = options.cacheControl;
+    }
+    response.writeHead(200, headers);
     response.end(content);
   } catch {
     sendStatus(response, 404);
