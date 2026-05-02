@@ -50,6 +50,9 @@ export async function captureOne(inputUrl, config = null, options = {}) {
     const snapshot = await appendSnapshot({
       id: `${stamp}-${fileInfo.siteSlug}-${publicDevice?.id || "device"}-${runSource}`,
       url: normalizedUrl,
+      requestedUrl: capture.requestedUrl || normalizedUrl,
+      finalUrl: capture.finalUrl || normalizedUrl,
+      urlCheck: capture.urlCheck || null,
       title: capture.title,
       capturedAt: capturedAt.toISOString(),
       file: fileInfo.relativePath,
@@ -73,6 +76,9 @@ export async function captureOne(inputUrl, config = null, options = {}) {
     return {
       ok: false,
       url: normalizedUrl,
+      requestedUrl: error.requestedUrl || normalizedUrl,
+      finalUrl: error.finalUrl || null,
+      urlCheck: error.urlCheck || null,
       capturedAt: capturedAt.toISOString(),
       error: error.message
     };

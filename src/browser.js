@@ -80,6 +80,12 @@ export async function findBrowser() {
 
 async function driveCapture(client, url, outputPath, options) {
   const viewport = options.viewport || { width: 1440, height: 1000 };
+  const urlCheck = {
+    requestedUrl: url,
+    finalUrl: "",
+    ok: false,
+    checks: []
+  };
   let stage = "initializing";
   try {
   await client.send("Page.enable");
@@ -106,16 +112,20 @@ async function driveCapture(client, url, outputPath, options) {
   await client.send("Page.navigate", { url });
   await loadEvent;
   await sleep(options.waitAfterLoadMs ?? 2500);
+  await verifyCurrentUrl(client, url, "after navigation", urlCheck);
   if (options.dismissPopups !== false) {
     await dismissObstructions(client);
+    await verifyCurrentUrl(client, url, "after dismissing popups", urlCheck);
   }
 
   let scrollInfo = null;
   if (options.fullPage && options.lazyLoadScroll !== false) {
     stage = "scrolling to trigger lazy content";
     scrollInfo = await prepareFullPage(client, options);
+    await verifyCurrentUrl(client, url, "after lazy-load scrolling", urlCheck);
     if (options.dismissPopups !== false) {
       await dismissObstructions(client);
+      await verifyCurrentUrl(client, url, "after post-scroll popup cleanup", urlCheck);
     }
   }
 
@@ -150,8 +160,13 @@ async function driveCapture(client, url, outputPath, options) {
     });
     await fs.writeFile(outputPath, screenshot.data, "base64");
   }
+  const finalUrl = await verifyCurrentUrl(client, url, "after screenshot capture", urlCheck);
+  urlCheck.ok = true;
 
   return {
+    requestedUrl: url,
+    finalUrl,
+    urlCheck,
     title: titleResult.result?.value || "",
     width: clipWidth,
     height: clipHeight,
@@ -163,6 +178,58 @@ async function driveCapture(client, url, outputPath, options) {
     error.message = `${error.message} (stage: ${stage})`;
     throw error;
   }
+}
+
+async function verifyCurrentUrl(client, requestedUrl, stage, urlCheck) {
+  const finalUrl = await readCurrentUrl(client);
+  const ok = urlsEquivalent(requestedUrl, finalUrl);
+  urlCheck.finalUrl = finalUrl;
+  urlCheck.checks.push({ stage, url: finalUrl, ok });
+  if (!ok) {
+    const error = new Error(
+      `URL check failed ${stage}: requested ${requestedUrl} but browser is at ${finalUrl || "an empty URL"}.`
+    );
+    error.requestedUrl = requestedUrl;
+    error.finalUrl = finalUrl;
+    error.urlCheck = urlCheck;
+    throw error;
+  }
+  return finalUrl;
+}
+
+async function readCurrentUrl(client) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: "window.location.href",
+    returnByValue: true
+  }).catch(() => ({ result: { value: "" } }));
+  return result.result?.value || "";
+}
+
+function urlsEquivalent(requestedUrl, finalUrl) {
+  const requested = comparableUrl(requestedUrl);
+  const final = comparableUrl(finalUrl);
+  return Boolean(requested && final && requested === final);
+}
+
+function comparableUrl(value) {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return null;
+    }
+    url.protocol = "https:";
+    url.hash = "";
+    url.hostname = url.hostname.toLowerCase();
+    url.pathname = normalizePathname(url.pathname);
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function normalizePathname(pathname) {
+  const clean = pathname.replace(/\/+$/g, "");
+  return clean || "/";
 }
 
 async function captureStitchedScreenshot(client, outputPath, options) {
@@ -263,10 +330,34 @@ async function dismissObstructions(client, options = {}) {
           /phone number/i
         ];
         const clickableSelector = "button, [role='button'], input[type='button'], input[type='submit'], a, [aria-label], [title], [tabindex]";
+        const clickCandidateSelector = "button, [role='button'], input[type='button'], input[type='submit'], [aria-label], [title], [tabindex]";
+        const interactiveSelector = "button, [role='button'], input, a, [aria-label], [title], [tabindex]";
+        const navigatesAway = (target) => {
+          const link = target.closest?.("a[href]");
+          if (!link) return false;
+          const rawHref = String(link.getAttribute("href") || "").trim();
+          if (!rawHref || rawHref === "#" || rawHref.startsWith("#") || /^javascript:/i.test(rawHref)) {
+            return false;
+          }
+          try {
+            const current = new URL(window.location.href);
+            const destination = new URL(rawHref, current);
+            if (!["http:", "https:"].includes(destination.protocol)) {
+              return true;
+            }
+            return destination.origin !== current.origin ||
+              destination.pathname !== current.pathname ||
+              destination.search !== current.search;
+          } catch {
+            return true;
+          }
+        };
         const clickElement = (element, reason) => {
           if (!visible(element)) return false;
-          const target = element.closest?.("button, [role='button'], a, input") || element;
+          const target = element.closest?.(interactiveSelector) || element;
           if (!visible(target)) return false;
+          if (!target.matches?.(interactiveSelector)) return false;
+          if (navigatesAway(target)) return false;
           if (typeof target.click === "function") {
             target.click();
           } else {
@@ -283,11 +374,12 @@ async function dismissObstructions(client, options = {}) {
           hidden.push(reason || textOf(element).slice(0, 80) || element.tagName);
           return true;
         };
-        const candidates = Array.from(document.querySelectorAll(clickableSelector + ", [class], [id]"));
+        const candidates = Array.from(document.querySelectorAll(clickCandidateSelector));
         for (const matcherSet of [clickMatches, closeMatches]) {
           for (const element of candidates) {
             if (!visible(element)) continue;
             const text = textOf(element);
+            if (!text || text.length > 240) continue;
             if (matcherSet.some((matcher) => matcher.test(text))) {
               clickElement(element, text || "matched close control");
             }
