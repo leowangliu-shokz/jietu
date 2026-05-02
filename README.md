@@ -1,6 +1,6 @@
 # Page Shot Archive
 
-一个本地网页截图归档工具。默认监控 `https://shokz.com`，可以手动截图，也可以在工具运行期间按固定间隔自动截图。所有截图都会保存在 `archive/` 目录，并在网页界面里按时间查看。
+一个本地网页截图归档查看工具。默认监控 `https://shokz.com`，服务运行期间会在每个整点自动截图所有设备预设。所有截图都会保存在 `archive/` 目录，并在网页界面里按时间、URL、设备和运行方式查看。
 
 ## 启动
 
@@ -14,9 +14,9 @@ npm start
 http://127.0.0.1:4173
 ```
 
-## 立即截一次图
+## 开发者手动截图
 
-网页里点“立即截图”，或在命令行运行：
+普通网页界面是只读查看模式，不提供手动截图或配置修改入口。开发者可以在命令行运行：
 
 ```powershell
 npm run capture
@@ -27,6 +27,8 @@ npm run capture
 ```powershell
 npm run capture -- https://shokz.com
 ```
+
+如果确实需要临时打开 HTTP 管理接口，可以用 `PAGE_SHOT_ADMIN=1` 启动服务；默认情况下 `/api/capture` 和 `/api/config` 会拒绝写操作。
 
 ## 数据位置
 

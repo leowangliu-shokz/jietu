@@ -154,26 +154,14 @@ h2 {
 }
 
 .workspace {
-  display: grid;
-  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
-  gap: 16px;
-  align-items: start;
+  display: block;
 }
 
-.settings,
 .timeline {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
   box-shadow: var(--shadow);
-}
-
-.settings {
-  position: sticky;
-  top: 18px;
-  display: grid;
-  gap: 16px;
-  padding: 18px;
 }
 
 .field {
@@ -234,17 +222,6 @@ select:focus {
   width: 18px;
   min-height: 18px;
   accent-color: var(--accent);
-}
-
-.message {
-  min-height: 20px;
-  margin-bottom: 0;
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.message.error {
-  color: var(--danger);
 }
 
 .timeline {
@@ -371,18 +348,8 @@ select:focus {
 }
 
 @media (max-width: 960px) {
-  .status-grid,
-  .workspace {
+  .status-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .settings,
-  .timeline {
-    grid-column: 1 / -1;
-  }
-
-  .settings {
-    position: static;
   }
 }
 

@@ -1,12 +1,5 @@
 const elements = {
-  captureNow: document.querySelector("#captureNow"),
   refresh: document.querySelector("#refresh"),
-  settings: document.querySelector("#settings"),
-  urls: document.querySelector("#urls"),
-  wait: document.querySelector("#wait"),
-  devicePreset: document.querySelector("#devicePreset"),
-  fullPage: document.querySelector("#fullPage"),
-  message: document.querySelector("#message"),
   shotCount: document.querySelector("#shotCount"),
   scheduleState: document.querySelector("#scheduleState"),
   browserState: document.querySelector("#browserState"),
@@ -28,105 +21,11 @@ elements.refresh.addEventListener("click", refreshState);
 elements.urlFilter.addEventListener("change", renderGallery);
 elements.runSourceFilter.addEventListener("change", renderGallery);
 elements.deviceFilter.addEventListener("change", renderGallery);
-elements.captureNow.addEventListener("click", async () => {
-  setBusy(true, "正在截图，页面较大时需要几十秒。");
-  try {
-    const response = await fetch("/api/capture", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}"
-    });
-    const payload = await response.json();
-    if (!response.ok || !payload.ok) {
-      throw new Error(payload.error || "截图失败");
-    }
-    const failed = payload.results.filter((result) => !result.ok);
-    showMessage(failed.length ? `完成，但 ${failed.length} 个 URL 失败。` : "截图已存档。");
-    await refreshState();
-  } catch (error) {
-    showMessage(error.message, true);
-  } finally {
-    setBusy(false);
-  }
-});
-
-elements.settings.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  setBusy(true, "正在保存设置。");
-  try {
-    const response = await fetch("/api/config", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(readSettings())
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.error || "保存失败");
-    }
-    state = payload;
-    applyStateToForm();
-    render();
-    showMessage("设置已保存。");
-  } catch (error) {
-    showMessage(error.message, true);
-  } finally {
-    setBusy(false);
-  }
-});
 
 async function refreshState() {
   const response = await fetch("/api/state");
   state = await response.json();
-  applyStateToForm();
   render();
-}
-
-function applyStateToForm() {
-  if (!state?.config) {
-    return;
-  }
-  renderDeviceOptions();
-  if (!elements.urls.matches(":focus")) {
-    elements.urls.value = state.config.urls.join("\n");
-  }
-  elements.wait.value = state.config.waitAfterLoadMs;
-  elements.devicePreset.value = state.config.devicePresetId;
-  elements.fullPage.checked = state.config.fullPage;
-}
-
-function renderDeviceOptions() {
-  const presets = state.devicePresets || [];
-  const currentValue = elements.devicePreset.value || state.config.devicePresetId;
-  elements.devicePreset.innerHTML = "";
-  const groups = new Map();
-
-  for (const preset of presets) {
-    if (!groups.has(preset.group)) {
-      const optgroup = document.createElement("optgroup");
-      optgroup.label = preset.group;
-      groups.set(preset.group, optgroup);
-      elements.devicePreset.append(optgroup);
-    }
-
-    const option = document.createElement("option");
-    option.value = preset.id;
-    option.textContent = preset.label;
-    groups.get(preset.group).append(option);
-  }
-
-  elements.devicePreset.value = presets.some((preset) => preset.id === currentValue)
-    ? currentValue
-    : state.config.devicePresetId;
-}
-
-function readSettings() {
-  return {
-    urls: elements.urls.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
-    intervalMinutes: state.config.intervalMinutes || 0,
-    waitAfterLoadMs: Number(elements.wait.value || 2500),
-    devicePresetId: elements.devicePreset.value,
-    fullPage: elements.fullPage.checked
-  };
 }
 
 function render() {
@@ -256,20 +155,6 @@ function uniqueDevicesFromSnapshots() {
     devices.set(device.id, device);
   }
   return [...devices.values()].sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
-}
-
-function setBusy(isBusy, message = "") {
-  elements.captureNow.disabled = isBusy;
-  elements.refresh.disabled = isBusy;
-  elements.settings.querySelector("button[type='submit']").disabled = isBusy;
-  if (message) {
-    showMessage(message);
-  }
-}
-
-function showMessage(message, isError = false) {
-  elements.message.textContent = message;
-  elements.message.classList.toggle("error", isError);
 }
 
 function formatDate(value) {

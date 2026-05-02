@@ -8,6 +8,7 @@ import { ensureStorage, loadConfig, loadSnapshots, saveConfig } from "./store.js
 
 const host = "127.0.0.1";
 const port = Number(process.env.PORT || 4173);
+const adminApiEnabled = process.env.PAGE_SHOT_ADMIN === "1";
 
 let config = await loadConfig();
 let captureState = {
@@ -29,6 +30,9 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && request.url === "/api/capture") {
+      if (!adminApiEnabled) {
+        return rejectViewerMode(response);
+      }
       const body = await readJsonBody(request);
       const result = await runCapture({
         url: body.url || null,
@@ -39,6 +43,9 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && request.url === "/api/config") {
+      if (!adminApiEnabled) {
+        return rejectViewerMode(response);
+      }
       const body = await readJsonBody(request);
       config = await saveConfig({
         ...config,
@@ -178,6 +185,12 @@ function sendJson(response, payload, status = 200) {
 function sendStatus(response, status) {
   response.writeHead(status);
   response.end();
+}
+
+function rejectViewerMode(response) {
+  return sendJson(response, {
+    error: "Viewer mode is read-only. Set PAGE_SHOT_ADMIN=1 to enable admin actions."
+  }, 403);
 }
 
 async function readJsonBody(request) {

@@ -14,7 +14,6 @@
           <h1>网页截图时间档案</h1>
         </div>
         <div class="actions">
-          <button id="captureNow" class="primary" type="button">立即截图</button>
           <button id="refresh" type="button">刷新</button>
         </div>
       </section>
@@ -39,31 +38,6 @@
       </section>
 
       <section class="workspace">
-        <form id="settings" class="settings" aria-label="截图设置">
-          <div class="field">
-            <label for="urls">URL 列表</label>
-            <textarea id="urls" rows="4" spellcheck="false"></textarea>
-          </div>
-
-          <div class="field">
-            <label for="wait">加载后等待（毫秒）</label>
-            <input id="wait" type="number" min="0" max="30000" step="100">
-          </div>
-
-          <div class="field">
-            <label for="devicePreset">截图设备</label>
-            <select id="devicePreset"></select>
-          </div>
-
-          <label class="check">
-            <input id="fullPage" type="checkbox">
-            <span>截取全页面</span>
-          </label>
-
-          <button type="submit">保存设置</button>
-          <p id="message" class="message" role="status"></p>
-        </form>
-
         <section class="timeline" aria-label="截图历史">
           <div class="timeline-head">
             <div>
@@ -85,7 +59,7 @@
             </div>
           </div>
           <div id="gallery" class="gallery"></div>
-          <p id="empty" class="empty">还没有截图，点“立即截图”开始第一份归档。</p>
+          <p id="empty" class="empty">还没有归档截图。</p>
         </section>
       </section>
     </main>
