@@ -45,9 +45,18 @@
               <p id="nextRun">下次整点自动截图：计算中</p>
             </div>
             <div class="timeline-filters">
-              <select id="deviceFilter" aria-label="按截图设备过滤">
-                <option value="">全部截图设备</option>
-              </select>
+              <div class="multi-filter" id="deviceFilter" data-open="false">
+                <button
+                  id="deviceFilterButton"
+                  class="multi-filter-button"
+                  type="button"
+                  aria-haspopup="true"
+                  aria-expanded="false"
+                >
+                  <span id="deviceFilterLabel">全部截图设备</span>
+                </button>
+                <div id="deviceFilterMenu" class="multi-filter-menu" role="group" aria-label="按截图设备过滤"></div>
+              </div>
               <select id="runSourceFilter" aria-label="按运行方式过滤">
                 <option value="">全部运行方式</option>
                 <option value="auto">自动跑（整点）</option>
