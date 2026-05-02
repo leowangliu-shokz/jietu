@@ -9,7 +9,27 @@ import {
 import { archiveDir, configPath, dataDir, snapshotsPath } from "./paths.js";
 
 const defaultConfig = {
-  urls: ["https://shokz.com"],
+  urls: [
+    {
+      id: "shokz-home",
+      url: "https://shokz.com/",
+      label: "https://shokz.com/\uff08\u9996\u9875\uff09"
+    },
+    {
+      id: "shokz-home-banners",
+      url: "https://shokz.com/",
+      label: "https://shokz.com/\uff08\u9996\u9875 Banner\uff09",
+      captureMode: "shokz-home-banners",
+      fullPage: false
+    },
+    {
+      id: "shokz-products-nav",
+      url: "https://shokz.com/",
+      label: "https://shokz.com/\uff08\u5bfc\u822a\u680f\uff09",
+      captureMode: "shokz-products-nav",
+      fullPage: false
+    }
+  ],
   intervalMinutes: 0,
   devicePresetId: defaultDevicePresetId,
   viewport: { width: 1920, height: 1080 },
@@ -86,14 +106,7 @@ export function normalizeUrl(input) {
 }
 
 export function normalizeConfig(input = {}) {
-  const urls = Array.isArray(input.urls) ? input.urls : defaultConfig.urls;
-  const cleanUrls = [...new Set(urls.map((url) => {
-    try {
-      return normalizeUrl(url);
-    } catch {
-      return null;
-    }
-  }).filter(Boolean))];
+  const cleanUrls = normalizeCaptureTargets(input.urls);
 
   const requestedPreset = findDevicePreset(input.devicePresetId);
   const migratedPreset = requestedPreset || findDevicePresetByViewport(input.viewport);
@@ -120,6 +133,36 @@ export function normalizeConfig(input = {}) {
     ),
     maxFullPageHeight: clampNumber(input.maxFullPageHeight, 1000, 60000, defaultConfig.maxFullPageHeight)
   };
+}
+
+export function normalizeCaptureTarget(input, index = 0) {
+  if (typeof input === "string") {
+    const url = normalizeUrl(input);
+    return {
+      id: `url-${index + 1}`,
+      url,
+      label: url
+    };
+  }
+
+  if (!input || typeof input !== "object") {
+    throw new Error("Capture target is empty.");
+  }
+
+  const url = normalizeUrl(input.url);
+  const label = stringOrDefault(input.label, url);
+  const id = stringOrDefault(input.id, `target-${index + 1}`);
+  const captureMode = stringOrDefault(input.captureMode, "");
+  const target = { id, url, label };
+
+  if (captureMode) {
+    target.captureMode = captureMode;
+  }
+  if (Object.hasOwn(input, "fullPage")) {
+    target.fullPage = Boolean(input.fullPage);
+  }
+
+  return target;
 }
 
 export function publicSnapshotUrl(relativePath) {
@@ -153,6 +196,32 @@ function clampNumber(value, min, max, fallback) {
     return fallback;
   }
   return Math.min(max, Math.max(min, Math.round(number)));
+}
+
+function normalizeCaptureTargets(inputUrls) {
+  const urls = Array.isArray(inputUrls) ? inputUrls : defaultConfig.urls;
+  const seen = new Set();
+  const targets = [];
+
+  for (const [index, input] of urls.entries()) {
+    try {
+      const target = normalizeCaptureTarget(input, index);
+      const key = target.id || `${target.url}-${target.label}-${target.captureMode || ""}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        targets.push(target);
+      }
+    } catch {
+      // Skip invalid targets and keep the rest of the user's configuration.
+    }
+  }
+
+  return targets;
+}
+
+function stringOrDefault(value, fallback) {
+  const string = String(value || "").trim();
+  return string || fallback;
 }
 
 function slugify(value) {

@@ -53,7 +53,10 @@ function render() {
 
 function renderFilterOptions() {
   const current = elements.urlFilter.value;
-  const urls = [...new Set(state.snapshots.map((snapshot) => snapshot.url))];
+  const urls = [...new Set([
+    ...(state.config?.urls || []).map(displayUrlForTarget),
+    ...state.snapshots.map(displayUrlForSnapshot)
+  ])];
   elements.urlFilter.innerHTML = "<option value=\"\">全部 URL</option>";
   for (const url of urls) {
     const option = document.createElement("option");
@@ -204,7 +207,7 @@ function renderGallery() {
   const selectedUrl = elements.urlFilter.value;
   const selectedRunSource = elements.runSourceFilter.value;
   const snapshots = state.snapshots.filter((snapshot) => {
-    const matchesUrl = selectedUrl ? snapshot.url === selectedUrl : true;
+    const matchesUrl = selectedUrl ? displayUrlForSnapshot(snapshot) === selectedUrl : true;
     const matchesRunSource = selectedRunSource
       ? runSourceForSnapshot(snapshot) === selectedRunSource
       : true;
@@ -216,6 +219,7 @@ function renderGallery() {
   elements.empty.classList.toggle("visible", snapshots.length === 0);
 
   for (const snapshot of snapshots) {
+    const displayUrl = displayUrlForSnapshot(snapshot);
     const item = document.createElement("article");
     item.className = "shot";
     item.innerHTML = `
@@ -233,8 +237,25 @@ function renderGallery() {
         </p>
       </div>
     `;
+    const image = item.querySelector("img");
+    if (image) {
+      image.alt = `${displayUrl} ${formatDate(snapshot.capturedAt)}`;
+    }
+    const title = item.querySelector(".shot-title");
+    if (title) {
+      title.textContent = displayUrl;
+      title.title = snapshot.title || displayUrl;
+    }
     elements.gallery.append(item);
   }
+}
+
+function displayUrlForSnapshot(snapshot) {
+  return snapshot.displayUrl || snapshot.targetLabel || snapshot.url;
+}
+
+function displayUrlForTarget(target) {
+  return typeof target === "string" ? target : target.label || target.url;
 }
 
 function runSourceForSnapshot(snapshot) {
