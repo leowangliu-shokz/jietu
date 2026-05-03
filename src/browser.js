@@ -87,6 +87,7 @@ async function driveCapture(client, url, outputPath, options) {
     ok: false,
     checks: []
   };
+  const deferShokzMobileNavDismiss = options.captureMode === "shokz-products-nav" && Boolean(viewport.mobile);
   let stage = "initializing";
   try {
   await client.send("Page.enable");
@@ -114,7 +115,7 @@ async function driveCapture(client, url, outputPath, options) {
   await loadEvent;
   await sleep(options.waitAfterLoadMs ?? 2500);
   await verifyCurrentUrl(client, url, "after navigation", urlCheck);
-  if (options.dismissPopups !== false) {
+  if (options.dismissPopups !== false && !deferShokzMobileNavDismiss) {
     await dismissObstructions(client);
     await verifyCurrentUrl(client, url, "after dismissing popups", urlCheck);
   }
@@ -122,6 +123,9 @@ async function driveCapture(client, url, outputPath, options) {
   if (options.captureMode === "shokz-products-nav") {
     stage = "opening Shokz products navigation";
     await openShokzProductsNavigation(client, viewport);
+    if (deferShokzMobileNavDismiss) {
+      await hideShokzMarketingOverlays(client);
+    }
     await verifyCurrentUrl(client, url, "after opening Shokz products navigation", urlCheck);
   }
 
@@ -797,20 +801,27 @@ function hashBuffer(buffer) {
 
 async function openShokzProductsNavigation(client, viewport) {
   await scrollTo(client, 0);
-  await closeShokzSearchOverlay(client);
+  if (!viewport.mobile) {
+    await closeShokzSearchOverlay(client);
+  }
   await sleep(700);
 
+  let state = null;
+  let mobileClick = null;
   if (viewport.mobile) {
-    await clickShokzMobileMenu(client);
-    await ensureShokzMobileMenuVisible(client);
+    mobileClick = await clickShokzMobileMenu(client);
+    await returnShokzMobileMenuToTopLevel(client);
+    state = await ensureShokzMobileMenuVisible(client);
   } else {
     await hoverShokzProductsMenu(client);
+    state = await waitForShokzProductsNavigation(client, false);
   }
 
-  const state = await waitForShokzProductsNavigation(client, Boolean(viewport.mobile));
   if (!state.ok) {
     const visibleText = state.visibleText ? ` Visible text: ${state.visibleText}` : "";
-    const details = ` hits=${state.categoryHits || 0}/${state.taxonomyHits || 0} search=${Boolean(state.searchOpen)} cart=${Boolean(state.cartOpen)} scrollY=${Math.round(state.scrollY || 0)}`;
+    const clickText = mobileClick ? ` click=${mobileClick.clickMethod || "unknown"} "${String(mobileClick.text || mobileClick.meta || "").slice(0, 120)}"` : "";
+    const drawerText = state.drawerText ? ` drawer="${state.drawerText}"` : "";
+    const details = ` hits=${state.categoryHits || 0}/${state.taxonomyHits || 0} search=${Boolean(state.searchOpen)} cart=${Boolean(state.cartOpen)} drawer=${Boolean(state.drawerVisible)} scrollY=${Math.round(state.scrollY || 0)}${clickText}${drawerText}`;
     throw new Error(`Shokz products navigation did not open.${details}${visibleText}`);
   }
 }
@@ -894,6 +905,111 @@ async function hoverShokzProductsMenu(client) {
     button: "none"
   });
   await sleep(900);
+}
+
+async function hideShokzMarketingOverlays(client) {
+  for (let round = 0; round < 3; round += 1) {
+    const result = await client.send("Runtime.evaluate", {
+      expression: `(() => {
+        const hidden = [];
+        const clicked = [];
+        const viewportArea = Math.max(1, window.innerWidth * window.innerHeight);
+        const visible = (element) => {
+          if (!element || !(element instanceof Element)) return false;
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 0 &&
+            rect.height > 0 &&
+            rect.bottom > 0 &&
+            rect.right > 0 &&
+            rect.left < window.innerWidth &&
+            rect.top < window.innerHeight &&
+            style.visibility !== "hidden" &&
+            style.display !== "none" &&
+            Number(style.opacity || 1) > 0.01;
+        };
+        const textOf = (element) => element ? [
+          element.innerText || element.textContent,
+          element.getAttribute?.("aria-label"),
+          element.getAttribute?.("title"),
+          element.id,
+          String(element.className || "")
+        ].filter(Boolean).join(" ").replace(/\\s+/g, " ").trim() : "";
+        const marketing = /privacy|cookie|newsletter|subscribe|don't miss|dont miss|great deals|email|phone number|sms|offer|discount|coupon/i;
+        const closeText = /close|dismiss|no thanks|not now|icon-close|\\u00d7|^x$/i;
+        const hideElement = (element, reason) => {
+          if (!visible(element) || element.closest?.("#menu-drawer, .menu-drawer")) return false;
+          element.dataset.pageShotHidden = "true";
+          element.style.setProperty("display", "none", "important");
+          element.style.setProperty("visibility", "hidden", "important");
+          element.style.setProperty("pointer-events", "none", "important");
+          hidden.push(reason || textOf(element).slice(0, 80) || element.tagName);
+          return true;
+        };
+        const clickElement = (element, reason) => {
+          const target = element?.closest?.("button, [role='button'], a, [tabindex]") || element;
+          if (!visible(target) || target.closest?.("#menu-drawer, .menu-drawer")) return false;
+          const link = target.closest?.("a[href]");
+          const href = link?.getAttribute("href") || "";
+          if (href && href !== "#" && !href.startsWith("#") && !/^javascript:/i.test(href)) return false;
+          if (typeof target.click === "function") {
+            target.click();
+          } else {
+            target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+          }
+          clicked.push(reason || textOf(target).slice(0, 80) || target.tagName);
+          return true;
+        };
+        const layers = Array.from(document.querySelectorAll("body *"))
+          .filter((element) => {
+            if (!visible(element) || element.closest?.("#menu-drawer, .menu-drawer")) return false;
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            const area = rect.width * rect.height;
+            const zIndex = Number.parseInt(style.zIndex, 10);
+            const positioned = ["fixed", "sticky", "absolute"].includes(style.position) || (Number.isFinite(zIndex) && zIndex >= 20);
+            return positioned &&
+              area >= Math.min(viewportArea * 0.03, 60000) &&
+              marketing.test(textOf(element));
+          })
+          .sort((a, b) => {
+            const ar = a.getBoundingClientRect();
+            const br = b.getBoundingClientRect();
+            return (br.width * br.height) - (ar.width * ar.height);
+          });
+        for (const layer of layers) {
+          const layerRect = layer.getBoundingClientRect();
+          const controls = Array.from(layer.querySelectorAll("button, [role='button'], a, [aria-label], [title], svg, [class], [id]"));
+          let closed = false;
+          for (const control of controls) {
+            if (!visible(control)) continue;
+            const rect = control.getBoundingClientRect();
+            const text = textOf(control);
+            const nearTopRight = rect.width <= 80 &&
+              rect.height <= 80 &&
+              rect.left >= layerRect.right - Math.max(120, layerRect.width * 0.35) &&
+              rect.top <= layerRect.top + Math.max(120, layerRect.height * 0.35);
+            if (closeText.test(text) || nearTopRight) {
+              closed = clickElement(control, text || "marketing close");
+              if (closed) break;
+            }
+          }
+          if (!closed) {
+            hideElement(layer, "marketing overlay");
+          }
+        }
+        document.body.classList.remove("overflow-hidden");
+        return { hidden, clicked };
+      })()`,
+      returnByValue: true
+    }).catch(() => null);
+    const value = result?.result?.value || {};
+    const changed = (value.hidden?.length || 0) + (value.clicked?.length || 0);
+    await sleep(changed ? 450 : 150);
+    if (!changed) {
+      return;
+    }
+  }
 }
 
 async function closeShokzSearchOverlay(client) {
@@ -1002,6 +1118,9 @@ async function closeShokzSearchOverlay(client) {
 async function clickShokzMobileMenu(client) {
   const result = await client.send("Runtime.evaluate", {
     expression: `(() => {
+      document.querySelectorAll("[data-page-shot-mobile-menu-target]").forEach((element) => {
+        element.removeAttribute("data-page-shot-mobile-menu-target");
+      });
       const visible = (element) => {
         if (!element || !(element instanceof Element)) return false;
         const rect = element.getBoundingClientRect();
@@ -1009,225 +1128,271 @@ async function clickShokzMobileMenu(client) {
         return rect.width > 0 &&
           rect.height > 0 &&
           rect.bottom > 0 &&
+          rect.right > 0 &&
+          rect.left < window.innerWidth &&
           rect.top < Math.max(180, window.innerHeight * 0.3) &&
-          rect.left > window.innerWidth - 140 &&
           style.visibility !== "hidden" &&
           style.display !== "none" &&
           Number(style.opacity || 1) > 0.01;
       };
-      const textOf = (element) => [
+      const textOf = (element) => element ? [
         element.innerText,
         element.textContent,
         element.getAttribute?.("aria-label"),
         element.getAttribute?.("title"),
         element.id,
         String(element.className || "")
-      ].filter(Boolean).join(" ").replace(/\\s+/g, " ").trim();
-      const interactiveSelector = "button, summary, [role='button'], a, [aria-label], [title], [tabindex], svg, [class*='menu']";
-      const candidates = Array.from(document.querySelectorAll(interactiveSelector))
-        .filter(visible)
-        .map((element) => {
-          const target = element.closest("button, summary, [role='button'], a, [tabindex]") || element;
-          const rect = target.getBoundingClientRect();
-          const text = textOf(target);
-          const iconText = text + " " + target.outerHTML.slice(0, 500);
-          const menuLike = /menu|hamburger|drawer|icon-menu|menu-drawer/i.test(iconText) &&
-            !/cart|bag|search|account|user|login/i.test(iconText);
-          return { target, rect, text, menuLike };
-        })
-        .filter((item) => item.rect.width >= 16 && item.rect.height >= 16 && item.rect.width <= 96 && item.rect.height <= 96)
-        .sort((a, b) => Number(b.menuLike) - Number(a.menuLike) || b.rect.right - a.rect.right || a.rect.top - b.rect.top);
-      const menuCandidates = candidates.filter((item) => item.menuLike);
-      let target = menuCandidates[0]?.target;
-      let clickMethod = "candidate";
+      ].filter(Boolean).join(" ").replace(/\\s+/g, " ").trim() : "";
+      const targetOf = (element) => element?.closest?.("summary, button, [role='button'], a, label, [tabindex]") || element;
+      const htmlOf = (element) => String(element?.outerHTML || "").slice(0, 900);
+      const usableRect = (element) => {
+        if (!element || !(element instanceof Element)) return null;
+        const direct = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        const onscreen = direct.bottom > 0 &&
+          direct.right > 0 &&
+          direct.left < window.innerWidth &&
+          direct.top < Math.max(180, window.innerHeight * 0.3) &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+        if (onscreen && direct.width >= 8 && direct.height >= 8) {
+          return direct;
+        }
+        for (const child of element.querySelectorAll?.("span, svg, path, use, .svg-wrapper, [class*='icon']") || []) {
+          const childRect = child.getBoundingClientRect();
+          const childStyle = getComputedStyle(child);
+          const childOnscreen = childRect.width >= 8 &&
+            childRect.height >= 8 &&
+            childRect.bottom > 0 &&
+            childRect.right > 0 &&
+            childRect.left < window.innerWidth &&
+            childRect.top < Math.max(180, window.innerHeight * 0.3) &&
+            childStyle.visibility !== "hidden" &&
+            childStyle.display !== "none" &&
+            Number(childStyle.opacity || 1) > 0.01;
+          if (childOnscreen) {
+            return childRect;
+          }
+        }
+        return null;
+      };
+      const contextOf = (element) => {
+        const context = element?.closest?.("details, nav, [class*='menu'], [class*='drawer'], [id*='menu'], [id*='drawer']");
+        return [
+          context?.tagName,
+          context?.id,
+          String(context?.className || "")
+        ].filter(Boolean).join(" ");
+      };
+      const metaOf = (element) => [
+        textOf(element),
+        htmlOf(element),
+        contextOf(element)
+      ].filter(Boolean).join(" ");
+      const badTarget = (text) => /cart|bag|search|account|user|login|learn|feedback|chat|wishlist/i.test(text);
+      const menuTarget = (text) => /menu|hamburger|drawer|header__icon--menu|icon-menu|menu-drawer/i.test(text) && !badTarget(text);
+      const makeCandidate = (element, source) => {
+        const target = targetOf(element);
+        if (!target) return null;
+        const rect = usableRect(target) || usableRect(element);
+        if (!rect) return null;
+        const text = textOf(target);
+        const ownMeta = [text, htmlOf(target)].filter(Boolean).join(" ");
+        const meta = metaOf(target);
+        if (badTarget(ownMeta)) return null;
+        const rightZone = rect.left >= window.innerWidth * 0.56 || rect.right >= window.innerWidth - 72;
+        const topZone = rect.top >= 42 && rect.top <= Math.max(150, window.innerHeight * 0.22);
+        const compact = rect.width >= 8 && rect.height >= 8 && rect.width <= 112 && rect.height <= 112;
+        if (!rightZone || !topZone || !compact) return null;
+        const menuLike = menuTarget(meta);
+        const score =
+          Number(menuLike) * 100 +
+          Number(target.tagName.toLowerCase() === "summary") * 24 +
+          Number(/header__icon--menu|menu-drawer|hamburger/i.test(meta)) * 40 +
+          Number(source === "direct") * 12 +
+          Math.max(0, rect.right - window.innerWidth * 0.65) / 10 -
+          Math.abs((rect.top + rect.height / 2) - 104) / 25;
+        return { target, rect, text, meta: meta.slice(0, 220), source, menuLike, score };
+      };
+      const directSelectors = [
+        "summary.header__icon--menu",
+        "header summary[class*='menu']",
+        "header button[class*='menu']",
+        "header [aria-label*='menu' i]",
+        "summary[aria-label*='menu' i]",
+        "button[aria-label*='menu' i]",
+        "[role='button'][aria-label*='menu' i]",
+        "[class*='hamburger']",
+        "[class*='menu-drawer'] summary",
+        "details > summary"
+      ];
+      const seen = new Set();
+      const candidates = [];
+      for (const selector of directSelectors) {
+        for (const element of document.querySelectorAll(selector)) {
+          const candidate = makeCandidate(element, "direct");
+          if (!candidate || seen.has(candidate.target)) continue;
+          seen.add(candidate.target);
+          candidates.push(candidate);
+        }
+      }
+      const interactiveSelector = "summary, button, [role='button'], a, label, [aria-label], [title], [tabindex], svg, [class*='menu'], [class*='drawer']";
+      for (const element of document.querySelectorAll(interactiveSelector)) {
+        const candidate = makeCandidate(element, "scan");
+        if (!candidate || seen.has(candidate.target)) continue;
+        seen.add(candidate.target);
+        candidates.push(candidate);
+      }
+      let target = candidates
+        .filter((item) => item.menuLike)
+        .sort((a, b) => b.score - a.score || b.rect.right - a.rect.right || a.rect.top - b.rect.top)[0]?.target;
+      let clickMethod = "menu-candidate";
       let forcedPoint = null;
       if (!target) {
-        const pointX = Math.round(window.innerWidth - 32);
-        const pointY = Math.round(Math.min(104, Math.max(72, window.innerHeight * 0.1)));
-        const pointElement = document.elementFromPoint(pointX, pointY);
-        const pointText = pointElement ? textOf(pointElement) + " " + pointElement.outerHTML.slice(0, 400) : "";
-        const pointTarget = pointElement?.closest("button, summary, [role='button'], a, [tabindex], [onclick], details") || pointElement;
-        if (pointTarget && !/cart|bag|search|account|user|login|learn/i.test(pointText)) {
-          target = pointTarget;
-          clickMethod = "geometry";
-          forcedPoint = { x: pointX, y: pointY };
+        const fallback = candidates
+          .filter((item) => item.rect.right >= window.innerWidth - 82)
+          .sort((a, b) => b.score - a.score || b.rect.right - a.rect.right || a.rect.top - b.rect.top)[0];
+        if (fallback) {
+          target = fallback.target;
+          clickMethod = "rightmost-header-control";
         }
       }
       if (!target) {
-        const geometricCandidates = Array.from(document.querySelectorAll("body *"))
-          .filter(visible)
-          .map((element) => {
-            const rect = element.getBoundingClientRect();
-            const text = textOf(element);
-            const html = element.outerHTML.slice(0, 400);
-            return { target: element, rect, text, html };
-          })
-          .filter((item) =>
-            item.rect.top >= 56 &&
-            item.rect.top < 130 &&
-            item.rect.left > window.innerWidth - 52 &&
-            item.rect.width >= 14 &&
-            item.rect.width <= 64 &&
-            item.rect.height >= 14 &&
-            item.rect.height <= 64 &&
-            !/cart|bag|search|account|user|login|learn/i.test(item.text + " " + item.html)
-          )
-          .sort((a, b) => b.rect.right - a.rect.right || a.rect.top - b.rect.top);
-        target = geometricCandidates[0]?.target;
-        if (target) {
-          clickMethod = "geometry";
+        const yValues = [96, 104, 112, 88, 120, 80, 128];
+        const xValues = [28, 34, 40, 46, 52, 60].map((offset) => Math.round(window.innerWidth - offset));
+        for (const y of yValues) {
+          for (const x of xValues) {
+            const pointElement = document.elementFromPoint(x, y);
+            const candidate = makeCandidate(targetOf(pointElement), "point");
+            if (candidate && !badTarget(candidate.meta)) {
+              target = candidate.target;
+              clickMethod = "geometry";
+              forcedPoint = { x, y };
+              break;
+            }
+          }
+          if (target) break;
         }
       }
       if (!target) {
-        const drawer = Array.from(document.querySelectorAll("details, [class*='menu-drawer'], [id*='menu-drawer'], [class*='drawer']"))
-          .find((element) => {
-            const html = element.outerHTML.slice(0, 1200);
-            return /menu-drawer|header__icon--menu|hamburger|drawer/i.test(html) &&
-              !/cart|search|account|login/i.test(html);
-          });
-        if (drawer) {
-          const details = drawer.matches("details") ? drawer : drawer.closest("details") || drawer.querySelector("details");
-          if (details) {
-            details.setAttribute("open", "");
-            details.open = true;
-          }
-          const panels = [
-            drawer,
-            ...drawer.querySelectorAll("[class*='menu-drawer'], [class*='drawer'], nav, .menu-drawer")
-          ];
-          for (const panel of panels) {
-            panel.style.setProperty("display", "block", "important");
-            panel.style.setProperty("visibility", "visible", "important");
-            panel.style.setProperty("opacity", "1", "important");
-            panel.style.setProperty("transform", "translateX(0)", "important");
-            panel.style.setProperty("pointer-events", "auto", "important");
-          }
-          document.body.classList.add("overflow-hidden");
-          return { ok: true, x: 0, y: 0, text: "menu drawer fallback", clickMethod: "drawer" };
-        }
         const debug = candidates
           .slice(0, 10)
-          .map((item) => item.text.slice(0, 100) + " @ " + Math.round(item.rect.left) + "," + Math.round(item.rect.top) + " " + Math.round(item.rect.width) + "x" + Math.round(item.rect.height));
+          .map((item) => item.text.slice(0, 100) + " @ " + Math.round(item.rect.left) + "," + Math.round(item.rect.top) + " " + Math.round(item.rect.width) + "x" + Math.round(item.rect.height) + " " + item.meta.slice(0, 80));
         return { ok: false, reason: "Mobile menu trigger not found: " + debug.join(" | ") };
       }
+      target.setAttribute("data-page-shot-mobile-menu-target", "true");
       const rect = target.getBoundingClientRect();
       const x = forcedPoint?.x ?? Math.round(rect.left + rect.width / 2);
       const y = forcedPoint?.y ?? Math.round(rect.top + rect.height / 2);
-      for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
-        target.dispatchEvent(new MouseEvent(type, {
-          bubbles: true,
-          cancelable: true,
-          clientX: x,
-          clientY: y,
-          view: window
-        }));
+      if (typeof target.click === "function") {
+        target.click();
+      } else {
+        target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window }));
       }
-      return { ok: true, x, y, text: textOf(target), clickMethod };
+      return { ok: true, x, y, text: textOf(target), clickMethod, meta: metaOf(target).slice(0, 220) };
     })()`,
     returnByValue: true
   });
+  if (result.exceptionDetails) {
+    const details = result.exceptionDetails.exception?.description ||
+      result.exceptionDetails.text ||
+      "unknown evaluation error";
+    throw new Error(`Mobile menu trigger evaluation failed: ${details}`);
+  }
   const value = result.result?.value || {};
   if (!value.ok) {
     throw new Error(value.reason || "Mobile menu trigger not found.");
   }
-  if (value.clickMethod === "geometry") {
-    await client.send("Input.dispatchTouchEvent", {
-      type: "touchStart",
-      touchPoints: [{ x: value.x, y: value.y, radiusX: 1, radiusY: 1, force: 1, id: 1 }]
-    }).catch(() => null);
-    await client.send("Input.dispatchTouchEvent", {
-      type: "touchEnd",
-      touchPoints: []
-    }).catch(() => null);
-    await client.send("Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      x: value.x,
-      y: value.y,
-      button: "left",
-      clickCount: 1
-    }).catch(() => null);
-    await client.send("Input.dispatchMouseEvent", {
-      type: "mouseReleased",
-      x: value.x,
-      y: value.y,
-      button: "left",
-      clickCount: 1
-    }).catch(() => null);
-  }
   await sleep(900);
+  return value;
 }
 
 async function ensureShokzMobileMenuVisible(client) {
-  await client.send("Runtime.evaluate", {
-    expression: `(() => {
-      const cleanText = (element) => String(element?.innerText || element?.textContent || "")
-        .replace(/\\s+/g, " ")
-        .trim();
-      const visible = (element) => {
-        if (!element || !(element instanceof Element)) return false;
-        const rect = element.getBoundingClientRect();
-        const style = getComputedStyle(element);
-        return rect.width > 0 &&
-          rect.height > 0 &&
-          rect.bottom > 0 &&
-          rect.top < window.innerHeight &&
-          style.visibility !== "hidden" &&
-          style.display !== "none" &&
-          Number(style.opacity || 1) > 0.01;
-      };
-      const hasMenuText = (text) => /Products/i.test(text) &&
-        /Sports Headphones/i.test(text) &&
-        /Support/i.test(text) &&
-        /Technology/i.test(text);
-      const alreadyVisible = Array.from(document.querySelectorAll("body *"))
-        .some((element) => {
-          if (!visible(element)) return false;
-          const rect = element.getBoundingClientRect();
-          return rect.top < 120 && rect.height > 260 && hasMenuText(cleanText(element));
-        });
-      if (alreadyVisible) return { ok: true, method: "already-visible" };
+  return waitForShokzProductsNavigation(client, true);
+}
 
-      document.getElementById("page-shot-shokz-mobile-nav")?.remove();
-      const overlay = document.createElement("section");
-      overlay.id = "page-shot-shokz-mobile-nav";
-      overlay.setAttribute("aria-label", "Products navigation");
-      overlay.innerHTML = [
-        "<div class='ps-mobile-nav-head'><strong>SHOKZ</strong><span>Search</span><span>Cart</span><span>X</span></div>",
-        "<div class='ps-mobile-nav-body'>",
-        "<p class='ps-mobile-nav-kicker'>Products</p>",
-        "<h2>Sports Headphones <span>&gt;</span></h2>",
-        "<h2>Workout & Lifestyle Earbuds <span>&gt;</span></h2>",
-        "<h2>Communication Headsets <span>&gt;</span></h2>",
-        "<a>Accessories</a>",
-        "<a>Refurbished</a>",
-        "<a>Buy In Bulk</a>",
-        "<hr>",
-        "<h2>Support <span>&gt;</span></h2>",
-        "<h2>Technology <span>&gt;</span></h2>",
-        "<h2>About Us <span>&gt;</span></h2>",
-        "</div>"
-      ].join("");
-      const style = document.createElement("style");
-      style.textContent = [
-        "#page-shot-shokz-mobile-nav{position:fixed;left:0;right:0;top:60px;bottom:0;z-index:2147483647;background:#fff;color:#111;overflow:auto;font-family:Arial,Helvetica,sans-serif;}",
-        "#page-shot-shokz-mobile-nav .ps-mobile-nav-head{height:80px;display:flex;align-items:center;gap:18px;padding:0 27px;border-bottom:0 solid #eee;font-size:24px;}",
-        "#page-shot-shokz-mobile-nav .ps-mobile-nav-head strong{font-size:24px;margin-right:auto;letter-spacing:0;}",
-        "#page-shot-shokz-mobile-nav .ps-mobile-nav-head span{font-size:13px;line-height:1;}",
-        "#page-shot-shokz-mobile-nav .ps-mobile-nav-body{padding:26px 27px 60px;}",
-        "#page-shot-shokz-mobile-nav .ps-mobile-nav-kicker{font-size:18px;margin:0 0 18px;}",
-        "#page-shot-shokz-mobile-nav h2{font-size:30px;line-height:1.18;margin:0 0 23px;font-weight:700;letter-spacing:0;display:flex;align-items:center;justify-content:space-between;}",
-        "#page-shot-shokz-mobile-nav a{display:block;color:#707070;text-decoration:underline;font-size:20px;margin:0 0 18px;}",
-        "#page-shot-shokz-mobile-nav hr{border:0;border-top:1px solid #e0e0e0;margin:38px 0 24px;}"
-      ].join("");
-      overlay.append(style);
-      document.body.append(overlay);
-      document.body.classList.add("overflow-hidden");
-      window.scrollTo(0, 0);
-      return { ok: true, method: "synthetic-mobile-nav" };
-    })()`,
-    returnByValue: true
-  }).catch(() => null);
-  await sleep(500);
+async function returnShokzMobileMenuToTopLevel(client) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const result = await client.send("Runtime.evaluate", {
+      expression: `(() => {
+        const visible = (element) => {
+          if (!element || !(element instanceof Element)) return false;
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 0 &&
+            rect.height > 0 &&
+            rect.bottom > 0 &&
+            rect.right > 0 &&
+            rect.left < window.innerWidth &&
+            rect.top < window.innerHeight &&
+            style.visibility !== "hidden" &&
+            style.display !== "none" &&
+            Number(style.opacity || 1) > 0.01;
+        };
+        const textOf = (element) => element ? [
+          element.innerText || element.textContent,
+          element.getAttribute?.("aria-label"),
+          element.getAttribute?.("title"),
+          element.id,
+          String(element.className || "")
+        ].filter(Boolean).join(" ").replace(/\\s+/g, " ").trim() : "";
+        const usableRect = (element) => {
+          if (!element || !(element instanceof Element)) return null;
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          if (rect.width > 0 &&
+            rect.height > 0 &&
+            rect.bottom > 0 &&
+            rect.right > 0 &&
+            rect.left < window.innerWidth &&
+            rect.top < window.innerHeight &&
+            style.visibility !== "hidden" &&
+            style.display !== "none" &&
+            Number(style.opacity || 1) > 0.01) {
+            return rect;
+          }
+          return null;
+        };
+        const drawer = document.querySelector("#menu-drawer, .menu-drawer");
+        if (!visible(drawer)) return { ok: true, moved: false, reason: "drawer-not-visible" };
+        const controls = Array.from(document.querySelectorAll("button, [role='button'], a, summary, svg, [class*='close-button'], [class*='arrow']"))
+          .map((element) => {
+            const target = element.closest?.("button, [role='button'], a, summary") || element;
+            const rect = usableRect(target) || usableRect(element) || target.getBoundingClientRect();
+            const text = textOf(target) + " " + String(target.outerHTML || "").slice(0, 500);
+            return { target, rect, text };
+          })
+          .filter((item) =>
+            item.rect.width > 0 &&
+            item.rect.height > 0 &&
+            item.rect.left >= 0 &&
+            item.rect.left < Math.max(90, window.innerWidth * 0.25) &&
+            item.rect.top >= 40 &&
+            item.rect.top < 170 &&
+            item.rect.width <= 120 &&
+            item.rect.height <= 80 &&
+            /menu-drawer__close-button|back|arrow|icon-arrow|chevron/i.test(item.text) &&
+            !/icon-close|modal__close|search/i.test(item.text)
+          )
+          .sort((a, b) => a.rect.left - b.rect.left || a.rect.top - b.rect.top);
+        const target = controls[0]?.target;
+        if (!target) return { ok: true, moved: false, reason: "back-button-not-visible" };
+        if (typeof target.click === "function") {
+          target.click();
+        } else {
+          target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+        }
+        return { ok: true, moved: true, text: textOf(target).slice(0, 120) };
+      })()`,
+      returnByValue: true
+    }).catch(() => null);
+    const value = result?.result?.value || {};
+    if (!value.moved) {
+      return;
+    }
+    await sleep(650);
+  }
 }
 
 async function waitForShokzProductsNavigation(client, mobile) {
@@ -1253,21 +1418,28 @@ async function readShokzProductsNavigationState(client, mobile) {
         return rect.width > 0 &&
           rect.height > 0 &&
           rect.bottom > 0 &&
+          rect.right > 0 &&
+          rect.left < window.innerWidth &&
           rect.top < window.innerHeight &&
           rect.height <= window.innerHeight + 260 &&
           style.visibility !== "hidden" &&
           style.display !== "none" &&
           Number(style.opacity || 1) > 0.01;
       };
-      const textOf = (element) => [
-        element.innerText,
-        element.textContent,
+      const textOf = (element) => element ? [
+        element.innerText || element.textContent,
         element.getAttribute?.("aria-label"),
         element.getAttribute?.("title")
-      ].filter(Boolean).join(" ").replace(/\\s+/g, " ").trim();
+      ].filter(Boolean).join(" ").replace(/\\s+/g, " ").trim() : "";
+      const comparableText = (value) => String(value || "")
+        .toLowerCase()
+        .replace(/s/g, "")
+        .replace(/[^a-z0-9]+/g, "");
+      const includesLabel = (text, label) => comparableText(text).includes(comparableText(label));
       const categories = ["Sports Headphones", "Workout & Lifestyle Earbuds", "Communication Headsets"];
       const desktopTaxonomy = ["Open-Ear Headphones", "Bone Conduction Sports Headphones", "Workout & Lifestyle Open Earbuds"];
       const utilityLinks = ["Accessories", "Refurbished", "Buy In Bulk", "Compare Products", "All Products"];
+      const mobileTopLevel = ["Support", "Technology"];
       const searchOpen = Array.from(document.querySelectorAll("input"))
         .some((input) => {
           if (!visible(input)) return false;
@@ -1288,34 +1460,92 @@ async function readShokzProductsNavigationState(client, mobile) {
           const rect = element.getBoundingClientRect();
           const style = getComputedStyle(element);
           const text = textOf(element);
-          const categoryHits = categories.filter((value) => text.includes(value)).length;
-          const taxonomyHits = desktopTaxonomy.filter((value) => text.includes(value)).length;
-          const utilityHits = utilityLinks.filter((value) => text.includes(value)).length;
+          const meta = [
+            element.id,
+            String(element.className || ""),
+            textOf(element.closest?.("details, header, nav, [class*='menu'], [class*='drawer'], [id*='menu'], [id*='drawer']"))
+          ].filter(Boolean).join(" ");
+          const categoryHits = categories.filter((value) => includesLabel(text, value)).length;
+          const taxonomyHits = desktopTaxonomy.filter((value) => includesLabel(text, value)).length;
+          const utilityHits = utilityLinks.filter((value) => includesLabel(text, value)).length;
+          const topLevelHits = mobileTopLevel.filter((value) => includesLabel(text, value)).length;
           const positioned = ["fixed", "absolute", "sticky"].includes(style.position) ||
             (Number.parseInt(style.zIndex, 10) || 0) >= 10;
-          const panelLike = positioned || (rect.top < 180 && rect.height > window.innerHeight * 0.35);
-          return { text, categoryHits, taxonomyHits, utilityHits, panelLike };
+          const anchoredPanel = rect.top < 180 &&
+            rect.left <= Math.max(80, window.innerWidth * 0.18) &&
+            rect.right >= window.innerWidth * 0.65 &&
+            rect.height > window.innerHeight * 0.35;
+          const menuMeta = /menu|drawer|navigation|nav|header/i.test(meta);
+          const productListLike = /OPENRUN|OPENSWIM|OPENMOVE|OPENFIT|Flagship/i.test(text) &&
+            /Bone Conduction|Bluetooth|Premium Sound|Budget-Friendly/i.test(text);
+          const panelLike = positioned || anchoredPanel;
+          const mobilePanelLike = anchoredPanel &&
+            (menuMeta || categoryHits >= 3) &&
+            !/YOUR CART/i.test(text) &&
+            !/Search results|Search for/i.test(text) &&
+            !productListLike;
+          return {
+            text,
+            categoryHits,
+            taxonomyHits,
+            utilityHits,
+            topLevelHits,
+            panelLike,
+            mobilePanelLike,
+            rect: {
+              top: rect.top,
+              left: rect.left,
+              right: rect.right,
+              height: rect.height,
+              width: rect.width
+            }
+          };
         })
-        .filter((item) => item.text.length > 0 && item.text.length < 5000)
+        .filter((item) => item.text.length > 0 && item.text.length < 8000)
         .sort((a, b) => {
-          const scoreA = a.categoryHits * 4 + a.taxonomyHits * 3 + a.utilityHits * 2 + Number(a.panelLike);
-          const scoreB = b.categoryHits * 4 + b.taxonomyHits * 3 + b.utilityHits * 2 + Number(b.panelLike);
+          const scoreA = a.categoryHits * 5 + a.taxonomyHits * 3 + a.utilityHits * 2 + a.topLevelHits * 3 + Number(a.panelLike) + Number(a.mobilePanelLike) * 4;
+          const scoreB = b.categoryHits * 5 + b.taxonomyHits * 3 + b.utilityHits * 2 + b.topLevelHits * 3 + Number(b.panelLike) + Number(b.mobilePanelLike) * 4;
           return scoreB - scoreA;
         });
-      const best = layers[0] || { text: "", categoryHits: 0, taxonomyHits: 0, utilityHits: 0, panelLike: false };
+      const empty = { text: "", categoryHits: 0, taxonomyHits: 0, utilityHits: 0, topLevelHits: 0, panelLike: false, mobilePanelLike: false };
+      const desktopBest = layers[0] || empty;
+      const mobileBest = layers
+        .filter((item) =>
+          item.mobilePanelLike &&
+          includesLabel(item.text, "Products") &&
+          item.categoryHits >= 3 &&
+          item.topLevelHits >= 1
+        )[0] || empty;
+      const best = mobile ? mobileBest : desktopBest;
+      const mobileOk = !searchOpen &&
+        !cartOpen &&
+        window.scrollY < 20 &&
+        includesLabel(best.text, "Products") &&
+        best.categoryHits >= 3 &&
+        best.topLevelHits >= 1 &&
+        best.mobilePanelLike;
+      const desktopOk = !searchOpen &&
+        !cartOpen &&
+        window.scrollY < 20 &&
+        includesLabel(best.text, "Products") &&
+        best.categoryHits >= 2 &&
+        (best.taxonomyHits >= 1 || best.panelLike);
+      const drawer = document.querySelector("#menu-drawer, .menu-drawer");
+      const drawerVisible = Boolean(drawer && visible(drawer));
+      const drawerText = drawer ? textOf(drawer).slice(0, 220) : "";
       return {
-        ok: !searchOpen &&
-          window.scrollY < 20 &&
-          /Products/i.test(best.text) &&
-          best.categoryHits >= 2 &&
-          (mobile || best.taxonomyHits >= 1 || best.panelLike),
+        ok: mobile ? mobileOk : desktopOk,
         visibleText: best.text.slice(0, 260),
         categoryHits: best.categoryHits,
         taxonomyHits: best.taxonomyHits,
         utilityHits: best.utilityHits,
+        topLevelHits: best.topLevelHits,
         panelLike: best.panelLike,
+        mobilePanelLike: best.mobilePanelLike,
         searchOpen,
         cartOpen,
+        drawerVisible,
+        drawerText,
         scrollY: window.scrollY
       };
     })()`,
