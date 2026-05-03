@@ -49,6 +49,7 @@ export async function captureOne(inputTarget, config = null, options = {}) {
 
   try {
     const capture = await capturePage(normalizedUrl, fileInfo.absolutePath, captureConfig);
+    const relatedShots = await captureRelatedShotsForTarget(target, normalizedUrl, fileInfo.absolutePath, captureConfig);
     const stamp = capturedAt.toISOString().replace(/[:.]/g, "-");
     const targetLabel = target.label || normalizedUrl;
     const runLabel = runSource === "auto" ? "\u81ea\u52a8\u8dd1\uff08\u6574\u70b9\uff09" : "\u624b\u52a8\u8dd1";
@@ -98,7 +99,8 @@ export async function captureOne(inputTarget, config = null, options = {}) {
         visualSignature: item.visualSignature || null,
         bannerClip: item.bannerClip || null,
         bannerState: item.bannerState || null,
-        bannerValidation: item.bannerIndex ? capture.bannerInfo || null : null
+        bannerValidation: item.bannerIndex ? capture.bannerInfo || null : null,
+        relatedShots: !item.bannerIndex && relatedShots.length ? relatedShots : null
       });
       snapshots.push(snapshot);
     }
@@ -133,16 +135,62 @@ function captureConfigForTarget(config, target) {
   return targetConfig;
 }
 
+async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPath, captureConfig) {
+  if (target.id !== "shokz-home" || target.captureMode) {
+    return [];
+  }
+
+  const bannerCapture = await capturePage(normalizedUrl, baseOutputPath, {
+    ...captureConfig,
+    captureMode: "shokz-home-banners",
+    fullPage: false,
+    lazyLoadScroll: false
+  });
+  const relatedShots = [];
+
+  for (const item of bannerCapture.captures || []) {
+    if (item.bannerIndex <= 1) {
+      if (item.outputPath) {
+        await fs.rm(item.outputPath, { force: true });
+      }
+      continue;
+    }
+
+    const relativePath = archiveRelativePath(item.outputPath);
+    const stat = await fs.stat(item.outputPath);
+    relatedShots.push({
+      kind: "banner",
+      label: `\u8f6e\u64ad ${item.bannerIndex}`,
+      file: relativePath,
+      imageUrl: publicSnapshotUrl(relativePath),
+      bytes: stat.size,
+      width: item.width,
+      height: item.height,
+      bannerIndex: item.bannerIndex,
+      bannerCount: item.bannerCount,
+      bannerSignature: item.bannerSignature || null,
+      visualSignature: item.visualSignature || null,
+      bannerClip: item.bannerClip || null,
+      bannerState: item.bannerState || null,
+      urlCheck: bannerCapture.urlCheck || null,
+      requestedUrl: bannerCapture.requestedUrl || normalizedUrl,
+      finalUrl: bannerCapture.finalUrl || normalizedUrl
+    });
+  }
+
+  return relatedShots.sort((a, b) => Number(a.bannerIndex || 0) - Number(b.bannerIndex || 0));
+}
+
 function archiveRelativePath(absolutePath) {
   return path.relative(archiveDir, absolutePath).replaceAll(path.sep, "/");
 }
 
 function bannerDisplayLabel(label, bannerIndex) {
-  if (/Banner\s*[)）]\s*$/.test(label)) {
-    return label.replace(/Banner\s*([)）])\s*$/, `Banner ${bannerIndex}$1`);
+  if (/Banner\s*[)\uff09]\s*$/.test(label)) {
+    return label.replace(/Banner\s*([)\uff09])\s*$/, `Banner ${bannerIndex}$1`);
   }
-  if (/[)）]\s*$/.test(label)) {
-    return label.replace(/([)）])\s*$/, ` Banner ${bannerIndex}$1`);
+  if (/[)\uff09]\s*$/.test(label)) {
+    return label.replace(/([)\uff09])\s*$/, ` Banner ${bannerIndex}$1`);
   }
   return `${label} Banner ${bannerIndex}`;
 }

@@ -15,6 +15,8 @@ const elements = {
   empty: document.querySelector("#empty")
 };
 
+const homeBannerWindowMs = 5 * 60 * 1000;
+
 let state = null;
 const selectedDeviceFilters = {
   devices: new Set()
@@ -53,10 +55,7 @@ function render() {
 
 function renderFilterOptions() {
   const current = elements.urlFilter.value;
-  const urls = [...new Set([
-    ...(state.config?.urls || []).map(displayUrlForTarget),
-    ...state.snapshots.map(displayUrlForSnapshot)
-  ])];
+  const urls = urlFilterOptions();
   elements.urlFilter.innerHTML = "<option value=\"\">全部 URL</option>";
   for (const url of urls) {
     const option = document.createElement("option");
@@ -161,12 +160,10 @@ function handleDeviceFilterChange(event) {
         selectedDeviceFilters.devices.delete(deviceId);
       }
     }
+  } else if (input.checked) {
+    selectedDeviceFilters.devices.add(input.value);
   } else {
-    if (input.checked) {
-      selectedDeviceFilters.devices.add(input.value);
-    } else {
-      selectedDeviceFilters.devices.delete(input.value);
-    }
+    selectedDeviceFilters.devices.delete(input.value);
   }
 
   renderDeviceFilterOptions();
@@ -207,47 +204,277 @@ function renderGallery() {
   const selectedUrl = elements.urlFilter.value;
   const selectedRunSource = elements.runSourceFilter.value;
   const snapshots = state.snapshots.filter((snapshot) => {
-    const matchesUrl = selectedUrl ? displayUrlForSnapshot(snapshot) === selectedUrl : true;
+    const matchesUrl = selectedUrl ? canonicalDisplayUrlForSnapshot(snapshot) === selectedUrl : true;
     const matchesRunSource = selectedRunSource
       ? runSourceForSnapshot(snapshot) === selectedRunSource
       : true;
     const matchesDevice = matchesDeviceFilters(snapshot);
     return matchesUrl && matchesRunSource && matchesDevice;
   });
+  const cards = buildGalleryCards(snapshots);
 
   elements.gallery.innerHTML = "";
-  elements.empty.classList.toggle("visible", snapshots.length === 0);
+  elements.empty.classList.toggle("visible", cards.length === 0);
+
+  for (const card of cards) {
+    elements.gallery.append(renderShotCard(card));
+  }
+}
+
+function buildGalleryCards(snapshots) {
+  const cards = [];
+  const homeGroups = [];
+  const homeBanners = [];
 
   for (const snapshot of snapshots) {
-    const displayUrl = displayUrlForSnapshot(snapshot);
-    const item = document.createElement("article");
-    item.className = "shot";
-    item.innerHTML = `
-      <a href="${snapshot.imageUrl}" target="_blank" rel="noreferrer">
-        <img src="${snapshot.imageUrl}" alt="${escapeHtml(snapshot.url)} 在 ${formatDate(snapshot.capturedAt)} 的截图" loading="lazy">
-      </a>
-      <div class="shot-body">
-        <p class="shot-title" title="${escapeHtml(snapshot.title || snapshot.url)}">${escapeHtml(snapshot.title || snapshot.url)}</p>
-        <p class="shot-meta">
-          <span class="pill">${formatDate(snapshot.capturedAt)}</span>
-          <span class="pill run ${runSourceForSnapshot(snapshot)}">${escapeHtml(runLabelForSnapshot(snapshot))}</span>
-          <span class="pill device">${escapeHtml(deviceNameForSnapshot(snapshot))}</span>
-          <span class="pill">${snapshot.width}×${snapshot.height}</span>
-          ${snapshot.truncated ? "<span class=\"pill warn\">已截断</span>" : ""}
-        </p>
-      </div>
-    `;
-    const image = item.querySelector("img");
-    if (image) {
-      image.alt = `${displayUrl} ${formatDate(snapshot.capturedAt)}`;
+    if (isHomeBannerSnapshot(snapshot)) {
+      homeBanners.push(snapshot);
+      continue;
     }
-    const title = item.querySelector(".shot-title");
-    if (title) {
-      title.textContent = displayUrl;
-      title.title = snapshot.title || displayUrl;
+
+    if (isHomeSnapshot(snapshot)) {
+      const group = createHomeGroup(snapshot);
+      cards.push(group);
+      homeGroups.push(group);
+      continue;
     }
-    elements.gallery.append(item);
+
+    cards.push({
+      snapshot,
+      relatedShots: [],
+      sortTime: timestamp(snapshot.capturedAt),
+      homeGroup: false
+    });
   }
+
+  for (const banner of homeBanners) {
+    const group = findMatchingHomeGroup(banner, homeGroups) || createFallbackHomeGroup(banner, cards, homeGroups);
+    addRelatedShot(group, relatedShotFromSnapshot(banner));
+  }
+
+  for (const group of homeGroups) {
+    group.relatedShots = sortedRelatedShots(group.relatedShots);
+  }
+
+  return cards.sort((a, b) => b.sortTime - a.sortTime);
+}
+
+function createHomeGroup(snapshot) {
+  const group = {
+    snapshot,
+    relatedShots: [],
+    sortTime: timestamp(snapshot.capturedAt),
+    homeGroup: true,
+    groupKey: homeGroupKey(snapshot),
+    mainBannerIndex: null
+  };
+  for (const relatedShot of relatedShotsFromSnapshot(snapshot)) {
+    addRelatedShot(group, relatedShot);
+  }
+  return group;
+}
+
+function createFallbackHomeGroup(banner, cards, homeGroups) {
+  const group = {
+    snapshot: banner,
+    relatedShots: [],
+    sortTime: timestamp(banner.capturedAt),
+    homeGroup: true,
+    fallbackHome: true,
+    groupKey: homeGroupKey(banner),
+    mainBannerIndex: Number(banner.bannerIndex || 0) || null
+  };
+  cards.push(group);
+  homeGroups.push(group);
+  return group;
+}
+
+function findMatchingHomeGroup(banner, homeGroups) {
+  const key = homeGroupKey(banner);
+  const bannerTime = timestamp(banner.capturedAt);
+  return homeGroups
+    .filter((group) => group.groupKey === key)
+    .map((group) => ({ group, distance: Math.abs(group.sortTime - bannerTime) }))
+    .filter((item) => item.distance <= homeBannerWindowMs)
+    .sort((a, b) => a.distance - b.distance)[0]?.group || null;
+}
+
+function addRelatedShot(group, relatedShot) {
+  if (!relatedShot || Number(relatedShot.bannerIndex || 0) <= 1) {
+    return;
+  }
+  if (group.mainBannerIndex && Number(relatedShot.bannerIndex) === group.mainBannerIndex) {
+    return;
+  }
+  if (relatedShot.file && relatedShot.file === group.snapshot.file) {
+    return;
+  }
+
+  const key = relatedShot.visualSignature || relatedShot.file || relatedShot.imageUrl || relatedShot.label;
+  if (group.relatedShots.some((item) => (item.visualSignature || item.file || item.imageUrl || item.label) === key)) {
+    return;
+  }
+  group.relatedShots.push(relatedShot);
+}
+
+function sortedRelatedShots(relatedShots) {
+  return [...relatedShots].sort((a, b) =>
+    Number(a.bannerIndex || 0) - Number(b.bannerIndex || 0) ||
+    String(a.label || "").localeCompare(String(b.label || ""), "zh-CN")
+  );
+}
+
+function renderShotCard(card) {
+  const snapshot = card.snapshot;
+  const displayUrl = card.homeGroup ? homeDisplayUrl() : canonicalDisplayUrlForSnapshot(snapshot);
+  const item = document.createElement("article");
+  item.className = card.relatedShots.length ? "shot has-related-shots" : "shot";
+  item.innerHTML = `
+    <a class="shot-main-image" href="${snapshot.imageUrl}" target="_blank" rel="noreferrer">
+      <img src="${snapshot.imageUrl}" alt="${escapeHtml(displayUrl)} ${formatDate(snapshot.capturedAt)}" loading="lazy">
+    </a>
+    <div class="shot-body">
+      <p class="shot-title" title="${escapeHtml(snapshot.title || displayUrl)}">${escapeHtml(displayUrl)}</p>
+      <p class="shot-meta">
+        <span class="pill">${formatDate(snapshot.capturedAt)}</span>
+        <span class="pill run ${runSourceForSnapshot(snapshot)}">${escapeHtml(runLabelForSnapshot(snapshot))}</span>
+        <span class="pill device">${escapeHtml(deviceNameForSnapshot(snapshot))}</span>
+        <span class="pill">${snapshot.width}×${snapshot.height}</span>
+        ${snapshot.truncated ? "<span class=\"pill warn\">已截断</span>" : ""}
+      </p>
+      ${renderRelatedShots(card.relatedShots)}
+    </div>
+  `;
+  return item;
+}
+
+function renderRelatedShots(relatedShots) {
+  if (!relatedShots.length) {
+    return "";
+  }
+
+  return `
+    <div class="shot-related">
+      <p class="related-kicker">更多截图</p>
+      <p class="related-title">Banner 轮播图</p>
+      <div class="related-grid">
+        ${relatedShots.map((shot) => `
+          <a class="related-thumb" href="${shot.imageUrl}" target="_blank" rel="noreferrer" title="${escapeHtml(shot.label)}">
+            <img src="${shot.imageUrl}" alt="${escapeHtml(shot.label)}" loading="lazy">
+            <span>${escapeHtml(shot.label)}</span>
+          </a>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function relatedShotsFromSnapshot(snapshot) {
+  if (!Array.isArray(snapshot.relatedShots)) {
+    return [];
+  }
+  return snapshot.relatedShots
+    .map((shot) => normalizeRelatedShot(shot))
+    .filter(Boolean);
+}
+
+function relatedShotFromSnapshot(snapshot) {
+  return normalizeRelatedShot({
+    kind: "banner",
+    label: `轮播 ${snapshot.bannerIndex || ""}`.trim(),
+    file: snapshot.file,
+    imageUrl: snapshot.imageUrl,
+    bytes: snapshot.bytes,
+    width: snapshot.width,
+    height: snapshot.height,
+    bannerIndex: snapshot.bannerIndex,
+    bannerCount: snapshot.bannerCount,
+    bannerSignature: snapshot.bannerSignature,
+    visualSignature: snapshot.visualSignature,
+    bannerClip: snapshot.bannerClip,
+    bannerState: snapshot.bannerState,
+    urlCheck: snapshot.urlCheck,
+    requestedUrl: snapshot.requestedUrl,
+    finalUrl: snapshot.finalUrl
+  });
+}
+
+function normalizeRelatedShot(shot) {
+  if (!shot || !shot.imageUrl) {
+    return null;
+  }
+  const bannerIndex = Number(shot.bannerIndex || 0) || null;
+  return {
+    kind: shot.kind || "banner",
+    label: shot.label || (bannerIndex ? `轮播 ${bannerIndex}` : "轮播"),
+    file: shot.file || "",
+    imageUrl: shot.imageUrl,
+    bytes: shot.bytes || null,
+    width: shot.width || null,
+    height: shot.height || null,
+    bannerIndex,
+    bannerCount: shot.bannerCount || null,
+    bannerSignature: shot.bannerSignature || null,
+    visualSignature: shot.visualSignature || null,
+    bannerClip: shot.bannerClip || null,
+    bannerState: shot.bannerState || null,
+    urlCheck: shot.urlCheck || null,
+    requestedUrl: shot.requestedUrl || null,
+    finalUrl: shot.finalUrl || null
+  };
+}
+
+function urlFilterOptions() {
+  const configured = (state.config?.urls || []).map(displayUrlForTarget);
+  return [...new Set(configured)];
+}
+
+function canonicalDisplayUrlForSnapshot(snapshot) {
+  if (isProductsNavSnapshot(snapshot)) {
+    return navDisplayUrl();
+  }
+  if (isHomeBannerSnapshot(snapshot) || isHomeLikeSnapshot(snapshot)) {
+    return homeDisplayUrl();
+  }
+  return displayUrlForSnapshot(snapshot);
+}
+
+function isHomeSnapshot(snapshot) {
+  return !isHomeBannerSnapshot(snapshot) && !isProductsNavSnapshot(snapshot) && isHomeLikeSnapshot(snapshot);
+}
+
+function isHomeLikeSnapshot(snapshot) {
+  const displayUrl = displayUrlForSnapshot(snapshot);
+  return snapshot.targetId === "shokz-home" ||
+    snapshot.url === "https://shokz.com/" ||
+    /首页/.test(displayUrl);
+}
+
+function isHomeBannerSnapshot(snapshot) {
+  const displayUrl = displayUrlForSnapshot(snapshot);
+  return snapshot.captureMode === "shokz-home-banners" ||
+    String(snapshot.targetId || "").startsWith("shokz-home-banners") ||
+    /首页\s*Banner/i.test(displayUrl);
+}
+
+function isProductsNavSnapshot(snapshot) {
+  const displayUrl = displayUrlForSnapshot(snapshot);
+  return snapshot.captureMode === "shokz-products-nav" ||
+    snapshot.targetId === "shokz-products-nav" ||
+    /导航栏/.test(displayUrl);
+}
+
+function homeDisplayUrl() {
+  return displayUrlForTargetId("shokz-home") || "https://shokz.com/（首页）";
+}
+
+function navDisplayUrl() {
+  return displayUrlForTargetId("shokz-products-nav") || "https://shokz.com/（导航栏）";
+}
+
+function displayUrlForTargetId(id) {
+  const target = (state.config?.urls || []).find((item) => typeof item !== "string" && item.id === id);
+  return target ? displayUrlForTarget(target) : "";
 }
 
 function displayUrlForSnapshot(snapshot) {
@@ -256,6 +483,10 @@ function displayUrlForSnapshot(snapshot) {
 
 function displayUrlForTarget(target) {
   return typeof target === "string" ? target : target.label || target.url;
+}
+
+function homeGroupKey(snapshot) {
+  return `${deviceIdForSnapshot(snapshot)}|${runSourceForSnapshot(snapshot)}`;
 }
 
 function runSourceForSnapshot(snapshot) {
@@ -330,6 +561,11 @@ function inferSnapshotDeviceGroup(snapshot) {
   const viewportHeight = Number(snapshot.scrollInfo?.viewportHeight || 0);
   const width = Number(snapshot.width || 0);
   return width > 0 && width <= 820 && (!viewportHeight || viewportHeight <= 1180) ? "mobile" : "pc";
+}
+
+function timestamp(value) {
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? time : 0;
 }
 
 function formatDate(value) {
