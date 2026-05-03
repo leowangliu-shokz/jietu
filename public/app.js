@@ -4,6 +4,7 @@ const elements = {
   scheduleState: document.querySelector("#scheduleState"),
   browserState: document.querySelector("#browserState"),
   captureState: document.querySelector("#captureState"),
+  changeCount: document.querySelector("#changeCount"),
   nextRun: document.querySelector("#nextRun"),
   deviceFilter: document.querySelector("#deviceFilter"),
   deviceFilterButton: document.querySelector("#deviceFilterButton"),
@@ -12,7 +13,9 @@ const elements = {
   runSourceFilter: document.querySelector("#runSourceFilter"),
   urlFilter: document.querySelector("#urlFilter"),
   gallery: document.querySelector("#gallery"),
-  empty: document.querySelector("#empty")
+  empty: document.querySelector("#empty"),
+  changesList: document.querySelector("#changesList"),
+  changesEmpty: document.querySelector("#changesEmpty")
 };
 
 const homeBannerWindowMs = 5 * 60 * 1000;
@@ -51,6 +54,7 @@ async function refreshState() {
 
 function render() {
   elements.shotCount.textContent = state.snapshots.length;
+  elements.changeCount.textContent = state.changesSummary?.count || 0;
   elements.captureState.textContent = state.capture.running ? "截图中" : "空闲";
   elements.browserState.textContent = state.browser.ok ? browserName(state.browser.path) : "未找到";
   elements.scheduleState.textContent = "整点（所有设备）";
@@ -59,6 +63,7 @@ function render() {
     : "下次整点自动截图：计算中";
   renderFilterOptions();
   renderDeviceFilterOptions();
+  renderChangesSummary();
   renderGallery();
 }
 
@@ -209,6 +214,83 @@ function matchesDeviceFilters(snapshot) {
   return selectedDeviceFilters.devices.has(device.id);
 }
 
+function renderChangesSummary() {
+  const changes = state.changesSummary?.recent || [];
+  elements.changesList.innerHTML = "";
+  elements.changesEmpty.classList.toggle("visible", changes.length === 0);
+
+  for (const change of changes) {
+    const item = document.createElement("article");
+    item.className = "change-card";
+    item.innerHTML = `
+      <div class="change-card-main">
+        <div>
+          <p class="change-title">${escapeHtml(changeTitle(change))}</p>
+          <p class="change-meta">
+            <span class="pill">${escapeHtml(changeTypeLabel(change))}</span>
+            <span class="pill device">${escapeHtml(change.location?.deviceName || change.location?.devicePresetId || "未知设备")}</span>
+            <span>${formatDate(change.from?.capturedAt)} → ${formatDate(change.to?.capturedAt)}</span>
+          </p>
+        </div>
+        ${change.visualChange?.diffImageUrl ? `
+          <a class="change-diff-thumb" href="${change.visualChange.diffImageUrl}" target="_blank" rel="noreferrer">
+            <img src="${change.visualChange.diffImageUrl}" alt="${escapeHtml(changeTitle(change))}" loading="lazy">
+          </a>
+        ` : ""}
+      </div>
+      ${renderTextChange(change.textChange)}
+      ${renderVisualChange(change.visualChange)}
+    `;
+    elements.changesList.append(item);
+  }
+}
+
+function renderTextChange(textChange) {
+  if (!textChange) {
+    return "";
+  }
+  return `
+    <div class="change-text">
+      <p><span>从</span>${escapeHtml(textChange.beforeFragment || textChange.before || "（空）")}</p>
+      <p><span>到</span>${escapeHtml(textChange.afterFragment || textChange.after || "（空）")}</p>
+    </div>
+  `;
+}
+
+function renderVisualChange(visualChange) {
+  if (!visualChange) {
+    return "";
+  }
+  if (visualChange.skipped) {
+    return `<p class="change-note">视觉对比跳过：${escapeHtml(visualChange.reason || "无法读取图片")}</p>`;
+  }
+  const ratio = `${(Number(visualChange.ratio || 0) * 100).toFixed(2)}%`;
+  return `
+    <p class="change-note">
+      视觉变化：${visualChange.regionCount || 0} 个区域，变化像素占比 ${ratio}
+    </p>
+  `;
+}
+
+function changeTitle(change) {
+  return [
+    change.location?.displayUrl,
+    change.location?.sectionLabel,
+    change.location?.tabLabel,
+    change.location?.label
+  ].filter(Boolean).join(" / ") || "页面变化";
+}
+
+function changeTypeLabel(change) {
+  if (change.textChange && change.visualChange) {
+    return "文案 + 视觉";
+  }
+  if (change.textChange) {
+    return "文案";
+  }
+  return "视觉";
+}
+
 function renderGallery() {
   const selectedUrl = elements.urlFilter.value;
   const selectedRunSource = elements.runSourceFilter.value;
@@ -311,10 +393,13 @@ function findMatchingHomeGroup(banner, homeGroups) {
 }
 
 function addRelatedShot(group, relatedShot) {
-  if (!relatedShot || relatedShot.isDefaultState) {
+  if (!relatedShot) {
     return;
   }
-  if ((relatedShot.kind === "banner" || relatedShot.sectionKey === "banner") && Number(relatedShot.bannerIndex || 0) <= 1) {
+  if (
+    (relatedShot.kind === "banner" || relatedShot.sectionKey === "banner") &&
+    (relatedShot.isDefaultState || Number(relatedShot.bannerIndex || 0) <= 1)
+  ) {
     return;
   }
   if (group.mainBannerIndex && Number(relatedShot.bannerIndex) === group.mainBannerIndex) {
@@ -500,6 +585,7 @@ function normalizeRelatedShot(shot) {
     stateCount: shot.stateCount || shot.bannerCount || null,
     stateLabel: shot.stateLabel || shot.label || null,
     tabLabel: shot.tabLabel || null,
+    tabIndex: shot.tabIndex || null,
     pageIndex: shot.pageIndex || null,
     logicalSignature: shot.logicalSignature || shot.bannerSignature || null,
     visualHash: shot.visualHash || null,

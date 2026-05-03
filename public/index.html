@@ -35,9 +35,24 @@
           <span>运行状态</span>
           <strong id="captureState">空闲</strong>
         </div>
+        <div class="stat">
+          <span>变更记录</span>
+          <strong id="changeCount">0</strong>
+        </div>
       </section>
 
       <section class="workspace">
+        <section class="changes-panel" aria-label="变更汇总">
+          <div class="timeline-head">
+            <div>
+              <h2>变更汇总</h2>
+              <p>按同 URL、设备和页面位置，与上一张图对比</p>
+            </div>
+          </div>
+          <div id="changesList" class="changes-list"></div>
+          <p id="changesEmpty" class="empty">暂无变更记录。</p>
+        </section>
+
         <section class="timeline" aria-label="截图历史">
           <div class="timeline-head">
             <div>

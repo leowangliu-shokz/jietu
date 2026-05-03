@@ -6,7 +6,9 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "capture": "node src/capture-once.js"
+    "capture": "node src/capture-once.js",
+    "compare": "node src/compare-once.js",
+    "test": "node --test --test-isolation=none"
   },
   "engines": {
     "node": ">=20"

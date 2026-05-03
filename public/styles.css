@@ -121,7 +121,7 @@ h2 {
 
 .status-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
   margin-bottom: 16px;
 }
@@ -154,7 +154,8 @@ h2 {
 }
 
 .workspace {
-  display: block;
+  display: grid;
+  gap: 16px;
 }
 
 .timeline {
@@ -366,6 +367,93 @@ select:focus {
 .device-filter-actions button {
   min-height: 32px;
   padding: 0 12px;
+}
+
+.changes-panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.changes-list {
+  display: grid;
+  gap: 10px;
+  padding: 0 18px 18px;
+}
+
+.change-card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 12px;
+}
+
+.change-card-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  gap: 12px;
+  align-items: start;
+}
+
+.change-title {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 750;
+  line-height: 1.35;
+}
+
+.change-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.change-diff-thumb {
+  display: block;
+  overflow: hidden;
+  aspect-ratio: 16 / 10;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-alt);
+}
+
+.change-diff-thumb img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  object-position: top;
+}
+
+.change-text {
+  display: grid;
+  gap: 6px;
+  border-left: 3px solid var(--accent);
+  background: #f7fbf9;
+  padding: 8px 10px;
+}
+
+.change-text p,
+.change-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.change-text span {
+  display: inline-block;
+  min-width: 24px;
+  margin-right: 6px;
+  color: var(--accent-dark);
+  font-weight: 750;
 }
 
 .gallery {
@@ -585,5 +673,13 @@ select:focus {
   .status-grid,
   .form-row {
     grid-template-columns: 1fr;
+  }
+
+  .change-card-main {
+    grid-template-columns: 1fr;
+  }
+
+  .change-diff-thumb {
+    width: min(180px, 100%);
   }
 }

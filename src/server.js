@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { captureAllDevices, captureConfiguredUrls, captureOne, browserStatus } from "./capture-service.js";
+import { loadChanges } from "./changes.js";
 import { devicePresets, toPublicDevicePreset } from "./device-presets.js";
 import { archiveDir, publicDir } from "./paths.js";
 import { ensureStorage, loadConfig, loadSnapshots, saveConfig } from "./store.js";
@@ -27,6 +28,10 @@ const server = http.createServer(async (request, response) => {
   try {
     if (request.method === "GET" && request.url === "/api/state") {
       return sendJson(response, await buildState());
+    }
+
+    if (request.method === "GET" && request.url === "/api/changes") {
+      return sendJson(response, await loadChanges());
     }
 
     if (request.method === "POST" && request.url === "/api/capture") {
@@ -134,13 +139,18 @@ function scheduleNext() {
 }
 
 async function buildState() {
+  const changes = await loadChanges();
   return {
     config,
     capture: captureState,
     nextRunAt,
     browser: await browserStatus(),
     devicePresets: devicePresets.map(toPublicDevicePreset),
-    snapshots: await loadSnapshots()
+    snapshots: await loadSnapshots(),
+    changesSummary: {
+      count: changes.length,
+      recent: changes.slice(0, 6)
+    }
   };
 }
 

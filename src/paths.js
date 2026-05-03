@@ -7,3 +7,4 @@ export const archiveDir = path.join(rootDir, "archive");
 export const publicDir = path.join(rootDir, "public");
 export const configPath = path.join(dataDir, "config.json");
 export const snapshotsPath = path.join(dataDir, "snapshots.json");
+export const changesPath = path.join(dataDir, "changes.json");

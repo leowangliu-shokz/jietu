@@ -1,0 +1,709 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import crypto from "node:crypto";
+import { archiveDir, changesPath } from "./paths.js";
+import { decodePng, encodePng } from "./png.js";
+import { loadSnapshots, publicSnapshotUrl } from "./store.js";
+
+const defaultDiffOptions = {
+  pixelDeltaThreshold: 48,
+  minRegionPixels: 24,
+  minRegionArea: 16,
+  mergeGap: 8,
+  maxRegions: 40
+};
+
+export async function loadChanges() {
+  try {
+    const parsed = JSON.parse(await fs.readFile(changesPath, "utf8"));
+    return Array.isArray(parsed)
+      ? parsed.sort((a, b) => String(b.to?.capturedAt || "").localeCompare(String(a.to?.capturedAt || "")))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function saveChanges(changes) {
+  await fs.mkdir(path.dirname(changesPath), { recursive: true });
+  await fs.writeFile(changesPath, `${JSON.stringify(changes, null, 2)}\n`, "utf8");
+  return changes;
+}
+
+export async function rebuildChanges(options = {}) {
+  const snapshots = options.snapshots || await loadSnapshots();
+  const changes = await compareSnapshots(snapshots, options);
+  await saveChanges(changes);
+  return changes;
+}
+
+export async function compareSnapshots(snapshots, options = {}) {
+  const archiveRoot = options.archiveRoot || archiveDir;
+  const items = flattenComparableItems(snapshots)
+    .sort((a, b) =>
+      timestamp(a.capturedAt) - timestamp(b.capturedAt) ||
+      String(a.itemId).localeCompare(String(b.itemId))
+    );
+  const previousByKey = new Map();
+  const changes = [];
+
+  for (const item of items) {
+    const previous = previousByKey.get(item.comparisonKey);
+    if (previous) {
+      const change = await compareItems(previous, item, { ...options, archiveRoot });
+      if (change) {
+        changes.push(change);
+      }
+    }
+    previousByKey.set(item.comparisonKey, item);
+  }
+
+  return changes.sort((a, b) => String(b.to.capturedAt).localeCompare(String(a.to.capturedAt)));
+}
+
+export function flattenComparableItems(snapshots) {
+  const items = [];
+  for (const snapshot of Array.isArray(snapshots) ? snapshots : []) {
+    if (!snapshot || !snapshot.file || !snapshot.capturedAt) {
+      continue;
+    }
+
+    items.push(createComparableItem(snapshot, null));
+
+    for (const [index, shot] of (snapshot.relatedShots || []).entries()) {
+      if (!shot?.file || (shot.isDefaultState && (shot.sectionKey === "banner" || shot.kind === "banner"))) {
+        continue;
+      }
+      items.push(createComparableItem(snapshot, shot, index));
+    }
+  }
+  return items.filter(Boolean);
+}
+
+export function comparisonKeyForItem(item) {
+  return [
+    canonicalUrl(item.url),
+    item.deviceId,
+    item.targetId,
+    item.itemKind,
+    item.sectionKey,
+    item.positionKey
+  ].join("|");
+}
+
+export function buildTextChange(fromItem, toItem) {
+  const before = normalizeComparableText(extractText(fromItem));
+  const after = normalizeComparableText(extractText(toItem));
+  if (!before && !after) {
+    return null;
+  }
+  if (before === after) {
+    return null;
+  }
+
+  const blockChange = firstChangedTextBlock(extractTextBlocks(fromItem), extractTextBlocks(toItem));
+  const window = blockChange || textChangeWindow(before, after);
+
+  return {
+    before: truncateText(before, 4000),
+    after: truncateText(after, 4000),
+    beforeFragment: truncateText(window.beforeFragment, 800),
+    afterFragment: truncateText(window.afterFragment, 800),
+    contextBefore: truncateText(window.contextBefore || "", 220),
+    contextAfter: truncateText(window.contextAfter || "", 220),
+    beforeRect: window.beforeRect || null,
+    afterRect: window.afterRect || null
+  };
+}
+
+export async function diffPngImages(fromPath, toPath, options = {}) {
+  const settings = { ...defaultDiffOptions, ...options };
+  const [fromBuffer, toBuffer] = await Promise.all([
+    fs.readFile(fromPath),
+    fs.readFile(toPath)
+  ]);
+  const fromImage = decodePng(fromBuffer);
+  const toImage = decodePng(toBuffer);
+  const width = Math.min(fromImage.width, toImage.width);
+  const height = Math.min(fromImage.height, toImage.height);
+  const comparedPixels = width * height;
+  const dimensionChanged = fromImage.width !== toImage.width || fromImage.height !== toImage.height;
+
+  if (width <= 0 || height <= 0) {
+    return {
+      changed: dimensionChanged,
+      dimensionChanged,
+      regions: dimensionChanged ? [{ x: 0, y: 0, width: toImage.width, height: toImage.height, pixels: 0 }] : [],
+      changedPixels: 0,
+      comparedPixels: 0,
+      ratio: 0,
+      width: toImage.width,
+      height: toImage.height
+    };
+  }
+
+  const mask = new Uint8Array(comparedPixels);
+  let rawChangedPixels = 0;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const fromOffset = (y * fromImage.width + x) * 4;
+      const toOffset = (y * toImage.width + x) * 4;
+      const delta =
+        Math.abs(fromImage.rgba[fromOffset] - toImage.rgba[toOffset]) +
+        Math.abs(fromImage.rgba[fromOffset + 1] - toImage.rgba[toOffset + 1]) +
+        Math.abs(fromImage.rgba[fromOffset + 2] - toImage.rgba[toOffset + 2]) +
+        Math.abs(fromImage.rgba[fromOffset + 3] - toImage.rgba[toOffset + 3]);
+      if (delta >= settings.pixelDeltaThreshold) {
+        mask[y * width + x] = 1;
+        rawChangedPixels += 1;
+      }
+    }
+  }
+
+  let regions = mergeRegions(
+    findChangedRegions(mask, width, height)
+      .filter((region) =>
+        region.pixels >= settings.minRegionPixels &&
+        region.width * region.height >= settings.minRegionArea
+      ),
+    settings.mergeGap
+  );
+
+  if (dimensionChanged && regions.length === 0) {
+    regions = [{ x: 0, y: 0, width: toImage.width, height: toImage.height, pixels: rawChangedPixels }];
+  }
+
+  regions = regions
+    .sort((a, b) => b.pixels - a.pixels)
+    .slice(0, settings.maxRegions)
+    .sort((a, b) => a.y - b.y || a.x - b.x);
+
+  const meaningfulPixels = regions.reduce((sum, region) => sum + region.pixels, 0);
+  const changed = regions.length > 0 || dimensionChanged;
+
+  const result = {
+    changed,
+    dimensionChanged,
+    regions,
+    changedPixels: meaningfulPixels,
+    rawChangedPixels,
+    comparedPixels,
+    ratio: comparedPixels ? meaningfulPixels / comparedPixels : 0,
+    width: toImage.width,
+    height: toImage.height
+  };
+
+  if (changed && settings.outputPath) {
+    await fs.mkdir(path.dirname(settings.outputPath), { recursive: true });
+    await fs.writeFile(settings.outputPath, encodePng(toImage.width, toImage.height, markDiffImage(toImage, mask, width, regions)));
+    result.outputPath = settings.outputPath;
+  }
+
+  return result;
+}
+
+async function compareItems(fromItem, toItem, options) {
+  const textChange = buildTextChange(fromItem, toItem);
+  const visualChange = await buildVisualChange(fromItem, toItem, options);
+
+  if (!textChange && !visualChange) {
+    return null;
+  }
+
+  const id = changeId(fromItem, toItem);
+  return {
+    id,
+    comparisonKey: toItem.comparisonKey,
+    changeType: [textChange ? "text" : "", visualChange ? "visual" : ""].filter(Boolean).join("+"),
+    location: {
+      url: toItem.url,
+      displayUrl: toItem.displayUrl,
+      targetId: toItem.targetId,
+      targetLabel: toItem.targetLabel,
+      devicePresetId: toItem.deviceId,
+      deviceName: toItem.deviceName,
+      itemKind: toItem.itemKind,
+      sectionKey: toItem.sectionKey,
+      sectionLabel: toItem.sectionLabel,
+      sectionTitle: toItem.sectionTitle,
+      label: toItem.label,
+      bannerIndex: toItem.bannerIndex,
+      stateIndex: toItem.stateIndex,
+      stateCount: toItem.stateCount,
+      tabIndex: toItem.tabIndex,
+      tabLabel: toItem.tabLabel,
+      pageIndex: toItem.pageIndex
+    },
+    occurredBetween: {
+      from: fromItem.capturedAt,
+      to: toItem.capturedAt
+    },
+    from: publicItemRef(fromItem),
+    to: publicItemRef(toItem),
+    textChange,
+    visualChange,
+    createdAt: new Date().toISOString()
+  };
+}
+
+async function buildVisualChange(fromItem, toItem, options) {
+  if (!fromItem.file || !toItem.file || fromItem.file === toItem.file) {
+    return null;
+  }
+  if (fromItem.visualSignature && toItem.visualSignature && fromItem.visualSignature === toItem.visualSignature) {
+    return null;
+  }
+
+  const archiveRoot = options.archiveRoot || archiveDir;
+  const fromPath = path.join(archiveRoot, fromItem.file);
+  const toPath = path.join(archiveRoot, toItem.file);
+  const outputRelativePath = diffRelativePath(fromItem, toItem);
+  const outputPath = path.join(archiveRoot, outputRelativePath);
+
+  try {
+    const diff = await diffPngImages(fromPath, toPath, {
+      ...options,
+      outputPath: options.writeDiffImages === false ? null : outputPath
+    });
+    if (!diff.changed) {
+      return null;
+    }
+    return {
+      diffFile: diff.outputPath ? outputRelativePath : null,
+      diffImageUrl: diff.outputPath ? publicSnapshotUrl(outputRelativePath) : null,
+      regionCount: diff.regions.length,
+      regions: diff.regions,
+      changedPixels: diff.changedPixels,
+      rawChangedPixels: diff.rawChangedPixels,
+      comparedPixels: diff.comparedPixels,
+      ratio: Number(diff.ratio.toFixed(6)),
+      width: diff.width,
+      height: diff.height,
+      dimensionChanged: diff.dimensionChanged
+    };
+  } catch (error) {
+    if (options.recordVisualSkips) {
+      return {
+        diffFile: null,
+        diffImageUrl: null,
+        regionCount: 0,
+        regions: [],
+        changedPixels: 0,
+        rawChangedPixels: 0,
+        comparedPixels: 0,
+        ratio: 0,
+        width: null,
+        height: null,
+        dimensionChanged: false,
+        skipped: true,
+        reason: error.message
+      };
+    }
+    return null;
+  }
+}
+
+function createComparableItem(snapshot, shot, relatedIndex = null) {
+  const isRelated = Boolean(shot);
+  const isTopLevelBanner = !isRelated && Number(snapshot.bannerIndex || 0) > 0;
+  const source = shot || snapshot;
+  const itemKind = isRelated || isTopLevelBanner ? "section" : "page";
+  const sectionKey = itemKind === "page"
+    ? "page"
+    : source.sectionKey || (source.bannerIndex ? "banner" : "section");
+  const stateIndex = numberOrNull(source.stateIndex);
+  const bannerIndex = numberOrNull(source.bannerIndex);
+  const pageIndex = numberOrNull(source.pageIndex);
+  const tabIndex = numberOrNull(source.tabIndex);
+  const positionKey = positionKeyForSource({
+    itemKind,
+    sectionKey,
+    stateIndex,
+    bannerIndex,
+    pageIndex,
+    tabIndex,
+    relatedIndex
+  });
+  const item = {
+    itemId: isRelated
+      ? `${snapshot.id || snapshot.capturedAt}::related::${relatedIndex}`
+      : `${snapshot.id || snapshot.capturedAt}::snapshot`,
+    snapshotId: snapshot.id || "",
+    url: snapshot.url || snapshot.requestedUrl || snapshot.finalUrl || "",
+    displayUrl: snapshot.displayUrl || snapshot.targetLabel || snapshot.url || "",
+    targetId: snapshot.targetId || snapshot.captureMode || "target",
+    targetLabel: snapshot.targetLabel || "",
+    deviceId: snapshot.devicePresetId || deviceSizeId(snapshot),
+    deviceName: snapshot.deviceName || snapshot.deviceLabel || "",
+    capturedAt: snapshot.capturedAt,
+    file: source.file || "",
+    imageUrl: source.imageUrl || publicSnapshotUrl(source.file || ""),
+    width: source.width || snapshot.width || null,
+    height: source.height || snapshot.height || null,
+    itemKind,
+    sectionKey,
+    sectionLabel: itemKind === "page" ? "Page" : source.sectionLabel || (sectionKey === "banner" ? "Banner" : ""),
+    sectionTitle: itemKind === "page" ? "Full page" : source.sectionTitle || source.sectionLabel || "",
+    label: itemKind === "page" ? snapshot.displayUrl || snapshot.url || "Page" : source.label || source.stateLabel || "",
+    stateIndex,
+    stateCount: numberOrNull(source.stateCount || source.bannerCount),
+    bannerIndex,
+    tabIndex,
+    tabLabel: source.tabLabel || null,
+    pageIndex,
+    visualSignature: source.visualSignature || null,
+    visualHash: source.visualHash || null,
+    bannerState: source.bannerState || null,
+    sectionState: source.sectionState || null,
+    positionKey
+  };
+  item.comparisonKey = comparisonKeyForItem(item);
+  return item;
+}
+
+function positionKeyForSource({ itemKind, sectionKey, stateIndex, bannerIndex, pageIndex, tabIndex, relatedIndex }) {
+  if (itemKind === "page") {
+    return "page";
+  }
+  if (bannerIndex) {
+    return `banner:${bannerIndex}`;
+  }
+  if (stateIndex) {
+    return `state:${stateIndex}`;
+  }
+  if (pageIndex || tabIndex !== null) {
+    return `tab:${tabIndex ?? ""}:page:${pageIndex ?? ""}`;
+  }
+  return `related:${relatedIndex ?? 0}:${sectionKey}`;
+}
+
+function publicItemRef(item) {
+  return {
+    snapshotId: item.snapshotId,
+    itemId: item.itemId,
+    capturedAt: item.capturedAt,
+    file: item.file,
+    imageUrl: item.imageUrl,
+    width: item.width,
+    height: item.height,
+    text: truncateText(normalizeComparableText(extractText(item)), 2000)
+  };
+}
+
+function extractText(item) {
+  return item.sectionState?.text || item.bannerState?.text || item.text || "";
+}
+
+function extractTextBlocks(item) {
+  const blocks = item.sectionState?.textBlocks || item.bannerState?.textBlocks || [];
+  return Array.isArray(blocks)
+    ? blocks
+      .map((block) => ({
+        text: normalizeComparableText(block.text),
+        rect: normalizeRect(block)
+      }))
+      .filter((block) => block.text)
+    : [];
+}
+
+function firstChangedTextBlock(beforeBlocks, afterBlocks) {
+  if (!beforeBlocks.length || !afterBlocks.length) {
+    return null;
+  }
+  const length = Math.max(beforeBlocks.length, afterBlocks.length);
+  for (let index = 0; index < length; index += 1) {
+    const before = beforeBlocks[index]?.text || "";
+    const after = afterBlocks[index]?.text || "";
+    if (before !== after) {
+      return {
+        beforeFragment: before,
+        afterFragment: after,
+        contextBefore: before,
+        contextAfter: after,
+        beforeRect: beforeBlocks[index]?.rect || null,
+        afterRect: afterBlocks[index]?.rect || null
+      };
+    }
+  }
+  return null;
+}
+
+export function textChangeWindow(before, after) {
+  let prefix = 0;
+  const minLength = Math.min(before.length, after.length);
+  while (prefix < minLength && before[prefix] === after[prefix]) {
+    prefix += 1;
+  }
+
+  let suffix = 0;
+  while (
+    suffix < minLength - prefix &&
+    before[before.length - 1 - suffix] === after[after.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+
+  const beforeStart = wordStart(before, prefix);
+  const afterStart = wordStart(after, prefix);
+  const beforeEnd = wordEnd(before, Math.max(beforeStart, before.length - suffix));
+  const afterEnd = wordEnd(after, Math.max(afterStart, after.length - suffix));
+
+  return {
+    beforeFragment: before.slice(beforeStart, beforeEnd).trim(),
+    afterFragment: after.slice(afterStart, afterEnd).trim(),
+    contextBefore: before.slice(Math.max(0, beforeStart - 80), Math.min(before.length, beforeEnd + 80)).trim(),
+    contextAfter: after.slice(Math.max(0, afterStart - 80), Math.min(after.length, afterEnd + 80)).trim()
+  };
+}
+
+function normalizeComparableText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function normalizeRect(input) {
+  if (!input || typeof input !== "object") {
+    return null;
+  }
+  const rect = {
+    x: Math.round(Number(input.x) || 0),
+    y: Math.round(Number(input.y) || 0),
+    width: Math.round(Number(input.width) || 0),
+    height: Math.round(Number(input.height) || 0)
+  };
+  return rect.width > 0 && rect.height > 0 ? rect : null;
+}
+
+function findChangedRegions(mask, width, height) {
+  const regions = [];
+  const queue = new Int32Array(width * height);
+  const pushIfChanged = (index, state) => {
+    if (index < 0 || index >= mask.length || mask[index] !== 1) {
+      return state;
+    }
+    mask[index] = 2;
+    queue[state.tail] = index;
+    state.tail += 1;
+    return state;
+  };
+
+  for (let index = 0; index < mask.length; index += 1) {
+    if (mask[index] !== 1) {
+      continue;
+    }
+
+    let state = { head: 0, tail: 0 };
+    state = pushIfChanged(index, state);
+    let minX = width;
+    let minY = height;
+    let maxX = 0;
+    let maxY = 0;
+    let pixels = 0;
+
+    while (state.head < state.tail) {
+      const current = queue[state.head];
+      state.head += 1;
+      const x = current % width;
+      const y = Math.floor(current / width);
+      pixels += 1;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+
+      if (x > 0) state = pushIfChanged(current - 1, state);
+      if (x < width - 1) state = pushIfChanged(current + 1, state);
+      if (y > 0) state = pushIfChanged(current - width, state);
+      if (y < height - 1) state = pushIfChanged(current + width, state);
+    }
+
+    regions.push({
+      x: minX,
+      y: minY,
+      width: maxX - minX + 1,
+      height: maxY - minY + 1,
+      pixels
+    });
+  }
+
+  for (let index = 0; index < mask.length; index += 1) {
+    if (mask[index] === 2) {
+      mask[index] = 1;
+    }
+  }
+
+  return regions;
+}
+
+function mergeRegions(regions, gap) {
+  const merged = [];
+  for (const region of regions) {
+    let target = merged.find((candidate) => regionsTouch(candidate, region, gap));
+    if (!target) {
+      merged.push({ ...region });
+      continue;
+    }
+    mergeRegionInto(target, region);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (let index = merged.length - 1; index >= 0; index -= 1) {
+        const candidate = merged[index];
+        if (candidate === target || !regionsTouch(target, candidate, gap)) {
+          continue;
+        }
+        mergeRegionInto(target, candidate);
+        merged.splice(index, 1);
+        changed = true;
+      }
+    }
+  }
+  return merged;
+}
+
+function regionsTouch(a, b, gap) {
+  return a.x <= b.x + b.width + gap &&
+    b.x <= a.x + a.width + gap &&
+    a.y <= b.y + b.height + gap &&
+    b.y <= a.y + a.height + gap;
+}
+
+function mergeRegionInto(target, source) {
+  const minX = Math.min(target.x, source.x);
+  const minY = Math.min(target.y, source.y);
+  const maxX = Math.max(target.x + target.width, source.x + source.width);
+  const maxY = Math.max(target.y + target.height, source.y + source.height);
+  target.x = minX;
+  target.y = minY;
+  target.width = maxX - minX;
+  target.height = maxY - minY;
+  target.pixels += source.pixels;
+}
+
+function markDiffImage(toImage, mask, maskWidth, regions) {
+  const output = new Uint8Array(toImage.rgba);
+  const maskHeight = maskWidth ? Math.floor(mask.length / maskWidth) : 0;
+  for (const region of regions) {
+    const endY = Math.min(toImage.height, region.y + region.height);
+    const endX = Math.min(toImage.width, region.x + region.width);
+    for (let y = Math.max(0, region.y); y < endY; y += 1) {
+      for (let x = Math.max(0, region.x); x < endX; x += 1) {
+        if (x >= maskWidth || y >= maskHeight || y * maskWidth + x >= mask.length || mask[y * maskWidth + x] !== 1) {
+          continue;
+        }
+        const offset = (y * toImage.width + x) * 4;
+        output[offset] = Math.round(output[offset] * 0.45 + 225 * 0.55);
+        output[offset + 1] = Math.round(output[offset + 1] * 0.45 + 29 * 0.55);
+        output[offset + 2] = Math.round(output[offset + 2] * 0.45 + 72 * 0.55);
+        output[offset + 3] = 255;
+      }
+    }
+    drawBox(output, toImage.width, toImage.height, region, [225, 29, 72, 255]);
+  }
+  return output;
+}
+
+function drawBox(rgba, width, height, region, color) {
+  const x1 = Math.max(0, region.x - 2);
+  const y1 = Math.max(0, region.y - 2);
+  const x2 = Math.min(width - 1, region.x + region.width + 1);
+  const y2 = Math.min(height - 1, region.y + region.height + 1);
+  for (let thickness = 0; thickness < 3; thickness += 1) {
+    for (let x = x1; x <= x2; x += 1) {
+      setPixel(rgba, width, x, Math.min(height - 1, y1 + thickness), color);
+      setPixel(rgba, width, x, Math.max(0, y2 - thickness), color);
+    }
+    for (let y = y1; y <= y2; y += 1) {
+      setPixel(rgba, width, Math.min(width - 1, x1 + thickness), y, color);
+      setPixel(rgba, width, Math.max(0, x2 - thickness), y, color);
+    }
+  }
+}
+
+function setPixel(rgba, width, x, y, color) {
+  const offset = (y * width + x) * 4;
+  rgba[offset] = color[0];
+  rgba[offset + 1] = color[1];
+  rgba[offset + 2] = color[2];
+  rgba[offset + 3] = color[3];
+}
+
+function diffRelativePath(fromItem, toItem) {
+  const day = String(toItem.capturedAt || new Date().toISOString()).slice(0, 10);
+  const site = siteSlug(toItem.url || toItem.displayUrl || "site");
+  const digest = crypto.createHash("sha1")
+    .update(`${fromItem.itemId}|${toItem.itemId}|${fromItem.file}|${toItem.file}`)
+    .digest("hex")
+    .slice(0, 12);
+  return path.posix.join("diffs", day, site, `${timestampStamp(toItem.capturedAt)}-${safeFilePart(toItem.sectionKey)}-${digest}.png`);
+}
+
+function changeId(fromItem, toItem) {
+  return crypto.createHash("sha1")
+    .update(`${fromItem.comparisonKey}|${fromItem.capturedAt}|${toItem.capturedAt}|${fromItem.file}|${toItem.file}`)
+    .digest("hex");
+}
+
+function canonicalUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return String(value || "").trim();
+  }
+}
+
+function deviceSizeId(snapshot) {
+  return `custom-${snapshot.width || 0}x${snapshot.scrollInfo?.viewportHeight || snapshot.height || 0}`;
+}
+
+function siteSlug(value) {
+  try {
+    return safeFilePart(new URL(value).hostname.replace(/^www\./, ""));
+  } catch {
+    return safeFilePart(value);
+  }
+}
+
+function timestampStamp(value) {
+  return String(value || new Date().toISOString()).replace(/[:.]/g, "-");
+}
+
+function safeFilePart(value) {
+  return String(value || "item")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "item";
+}
+
+function numberOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function timestamp(value) {
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+function truncateText(value, max) {
+  const text = String(value || "");
+  return text.length > max ? `${text.slice(0, max - 3)}...` : text;
+}
+
+function wordStart(text, index) {
+  let current = Math.max(0, Math.min(text.length, index));
+  while (current > 0 && !/\s/.test(text[current - 1])) {
+    current -= 1;
+  }
+  return current;
+}
+
+function wordEnd(text, index) {
+  let current = Math.max(0, Math.min(text.length, index));
+  while (current < text.length && !/\s/.test(text[current])) {
+    current += 1;
+  }
+  return current;
+}

@@ -1,0 +1,147 @@
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { compareSnapshots, diffPngImages } from "../src/changes.js";
+import { encodePng } from "../src/png.js";
+
+test("matches the same section position when tab copy changes", async () => {
+  const snapshots = [
+    snapshot("snap-1", "2026-05-02T10:00:00.000Z", [{
+      file: "missing-before.png",
+      sectionKey: "product-showcase",
+      sectionLabel: "产品橱窗",
+      isDefaultState: true,
+      stateIndex: 1,
+      tabIndex: 1,
+      tabLabel: "Best Selling",
+      label: "Best Selling 1",
+      sectionState: {
+        text: "Best Selling",
+        textBlocks: [{ text: "Best Selling", x: 10, y: 8, width: 120, height: 24 }]
+      }
+    }]),
+    snapshot("snap-2", "2026-05-03T10:00:00.000Z", [{
+      file: "missing-after.png",
+      sectionKey: "product-showcase",
+      sectionLabel: "产品橱窗",
+      isDefaultState: true,
+      stateIndex: 1,
+      tabIndex: 1,
+      tabLabel: "Best Sell",
+      label: "Best Sell 1",
+      sectionState: {
+        text: "Best Sell",
+        textBlocks: [{ text: "Best Sell", x: 10, y: 8, width: 104, height: 24 }]
+      }
+    }])
+  ];
+
+  const changes = await compareSnapshots(snapshots, { writeDiffImages: false });
+
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].changeType, "text");
+  assert.equal(changes[0].location.tabLabel, "Best Sell");
+  assert.equal(changes[0].textChange.beforeFragment, "Best Selling");
+  assert.equal(changes[0].textChange.afterFragment, "Best Sell");
+});
+
+test("detects visual regions and filters tiny noise", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-diff-"));
+  const beforePath = path.join(tempDir, "before.png");
+  const afterPath = path.join(tempDir, "after.png");
+  const noisePath = path.join(tempDir, "noise.png");
+
+  const before = solidImage(20, 20, [255, 255, 255, 255]);
+  const after = solidImage(20, 20, [255, 255, 255, 255]);
+  fillRect(after, 20, 8, 6, 6, 5, [220, 0, 0, 255]);
+  const noise = solidImage(20, 20, [255, 255, 255, 255]);
+  fillRect(noise, 20, 1, 1, 1, 1, [0, 0, 0, 255]);
+
+  await fs.writeFile(beforePath, encodePng(20, 20, before));
+  await fs.writeFile(afterPath, encodePng(20, 20, after));
+  await fs.writeFile(noisePath, encodePng(20, 20, noise));
+
+  const diff = await diffPngImages(beforePath, afterPath, { writeDiffImages: false });
+  assert.equal(diff.changed, true);
+  assert.equal(diff.regions.length, 1);
+  assert.ok(diff.regions[0].x <= 8);
+  assert.ok(diff.regions[0].y <= 6);
+  assert.ok(diff.regions[0].x + diff.regions[0].width >= 14);
+  assert.ok(diff.regions[0].y + diff.regions[0].height >= 11);
+
+  const noiseDiff = await diffPngImages(beforePath, noisePath, {
+    writeDiffImages: false,
+    minRegionPixels: 2
+  });
+  assert.equal(noiseDiff.changed, false);
+});
+
+test("backfill writes diff artifacts without rewriting archived screenshots", async () => {
+  const archiveRoot = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-archive-"));
+  const folder = path.join(archiveRoot, "2026-05-03", "example-com");
+  await fs.mkdir(folder, { recursive: true });
+  const beforeFile = "2026-05-03/example-com/before.png";
+  const afterFile = "2026-05-03/example-com/after.png";
+  const beforePath = path.join(archiveRoot, beforeFile);
+  const afterPath = path.join(archiveRoot, afterFile);
+
+  const beforeBuffer = encodePng(12, 12, solidImage(12, 12, [255, 255, 255, 255]));
+  const afterImage = solidImage(12, 12, [255, 255, 255, 255]);
+  fillRect(afterImage, 12, 3, 3, 6, 6, [0, 0, 0, 255]);
+  const afterBuffer = encodePng(12, 12, afterImage);
+  await fs.writeFile(beforePath, beforeBuffer);
+  await fs.writeFile(afterPath, afterBuffer);
+
+  const changes = await compareSnapshots([
+    snapshot("snap-1", "2026-05-03T08:00:00.000Z", [], beforeFile),
+    snapshot("snap-2", "2026-05-03T09:00:00.000Z", [], afterFile)
+  ], { archiveRoot });
+
+  assert.equal(changes.length, 1);
+  assert.ok(changes[0].visualChange.diffFile.startsWith("diffs/"));
+  assert.deepEqual(await fs.readFile(beforePath), beforeBuffer);
+  assert.deepEqual(await fs.readFile(afterPath), afterBuffer);
+});
+
+function snapshot(id, capturedAt, relatedShots = [], file = `${id}.png`) {
+  return {
+    id,
+    url: "https://example.com/",
+    targetId: "home",
+    targetLabel: "Example",
+    displayUrl: "Example",
+    capturedAt,
+    file,
+    imageUrl: `/archive/${file}`,
+    width: 120,
+    height: 80,
+    devicePresetId: "pc",
+    deviceName: "PC",
+    relatedShots
+  };
+}
+
+function solidImage(width, height, color) {
+  const rgba = new Uint8Array(width * height * 4);
+  for (let index = 0; index < rgba.length; index += 4) {
+    rgba[index] = color[0];
+    rgba[index + 1] = color[1];
+    rgba[index + 2] = color[2];
+    rgba[index + 3] = color[3];
+  }
+  return rgba;
+}
+
+function fillRect(rgba, width, x, y, rectWidth, rectHeight, color) {
+  for (let row = y; row < y + rectHeight; row += 1) {
+    for (let col = x; col < x + rectWidth; col += 1) {
+      const offset = (row * width + col) * 4;
+      rgba[offset] = color[0];
+      rgba[offset + 1] = color[1];
+      rgba[offset + 2] = color[2];
+      rgba[offset + 3] = color[3];
+    }
+  }
+}

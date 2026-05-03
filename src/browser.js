@@ -481,6 +481,7 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
         activeIndex: state.activeIndex,
         realIndex: state.realIndex,
         text: state.text || "",
+        textBlocks: state.textBlocks || [],
         images: state.images || []
       }
     });
@@ -525,10 +526,6 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
   let maxHeight = 0;
 
   for (const state of plan.states) {
-    if (state.isDefaultState) {
-      continue;
-    }
-
     await activateShokzHomeRelatedState(client, definition, state);
     await sleep(650);
     await waitForRelatedSectionImages(client, definition.key);
@@ -619,6 +616,7 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
       stateLabel: state.stateLabel,
       label: state.stateLabel,
       tabLabel: state.tabLabel || null,
+      tabIndex: state.tabIndex || null,
       pageIndex: state.pageIndex || null,
       logicalSignature,
       visualSignature,
@@ -633,9 +631,11 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
       isDefaultState: false,
       sectionState: {
         text: current.text || "",
+        textBlocks: current.textBlocks || [],
         images: current.images || [],
         activeIndex: current.activeIndex ?? state.stateIndex,
         tabLabel: state.tabLabel || null,
+        tabIndex: state.tabIndex || null,
         pageIndex: state.pageIndex || null
       }
     });
@@ -912,6 +912,7 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
             sectionKey: definition.key,
             sectionLabel: definition.sectionLabel,
             tabLabel: tabLabel || "",
+            tabIndex: Number.isFinite(tabIndex) ? tabIndex + 1 : null,
             pageIndex,
             stateIndex: states.length + 1,
             stateLabel: label,
@@ -1179,13 +1180,26 @@ async function readShokzHomeRelatedState(client, definition, state) {
         .map((value) => String(value).split(",")[0].trim())
         .filter(Boolean);
       const rootRect = root.getBoundingClientRect();
-      const visibleText = Array.from(root.querySelectorAll("a, button, h1, h2, h3, h4, p, li, article, [class*='card'], [class*='slide']"))
+      const textNodes = Array.from(root.querySelectorAll("a, button, h1, h2, h3, h4, p, li, article, [class*='card'], [class*='slide']"))
         .filter(visible)
-        .filter((node) => intersects(node.getBoundingClientRect(), rootRect) > 80)
-        .map((node) => cleanText([node.innerText, node.textContent].filter(Boolean).join(" "), 140))
-        .filter(Boolean)
-        .filter((value, index, list) => list.indexOf(value) === index)
-        .slice(0, 24);
+        .filter((node) => intersects(node.getBoundingClientRect(), rootRect) > 80);
+      const seenText = new Set();
+      const textBlocks = [];
+      for (const node of textNodes) {
+        const text = cleanText([node.innerText, node.textContent].filter(Boolean).join(" "), 140);
+        if (!text || seenText.has(text)) continue;
+        seenText.add(text);
+        const rect = node.getBoundingClientRect();
+        textBlocks.push({
+          text,
+          x: Math.round(rect.left - rootRect.left),
+          y: Math.round(rect.top - rootRect.top),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height)
+        });
+        if (textBlocks.length >= 24) break;
+      }
+      const visibleText = textBlocks.map((block) => block.text);
       const images = imageSources(root).slice(0, 24);
       const top = Math.max(0, rootRect.top + window.scrollY);
       const left = Math.max(0, rootRect.left + window.scrollX);
@@ -1199,6 +1213,7 @@ async function readShokzHomeRelatedState(client, definition, state) {
         ok: true,
         clip,
         text: visibleText.join(" "),
+        textBlocks,
         images,
         logicalSignature: state.logicalSignature,
         activeIndex: state.stateIndex
@@ -1299,6 +1314,19 @@ async function readShokzHomeBannerPlan(client) {
         }
         return sources;
       };
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const intersects = (rect, clipRect) =>
+        Math.max(0, Math.min(rect.right, clipRect.right) - Math.max(rect.left, clipRect.left)) *
+        Math.max(0, Math.min(rect.bottom, clipRect.bottom) - Math.max(rect.top, clipRect.top));
       const textOf = (element) => cleanText([
         element.innerText,
         element.textContent,
@@ -1689,11 +1717,36 @@ async function readShokzHomeBannerState(client, ordinal) {
         width: Math.min(rootRect.width, document.documentElement.clientWidth || window.innerWidth),
         height
       };
+      const clipRect = {
+        left: rootRect.left,
+        top: visibleTop,
+        right: rootRect.left + clip.width,
+        bottom: visibleTop + clip.height
+      };
+      const seenText = new Set();
+      const textBlocks = [];
+      for (const node of [active, ...active.querySelectorAll("a, button, h1, h2, h3, h4, p, li, article, [class*='card'], [class*='slide']")]) {
+        if (!visible(node)) continue;
+        const rect = node.getBoundingClientRect();
+        if (intersects(rect, clipRect) <= 80) continue;
+        const text = cleanText([node.innerText, node.textContent].filter(Boolean).join(" "), 160);
+        if (!text || seenText.has(text)) continue;
+        seenText.add(text);
+        textBlocks.push({
+          text,
+          x: Math.round(rect.left - rootRect.left),
+          y: Math.round(rect.top - visibleTop),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height)
+        });
+        if (textBlocks.length >= 18) break;
+      }
       return {
         ok: true,
         clip,
         signature: signatureFor(active),
         text: cleanText([active.innerText, active.textContent].filter(Boolean).join(" "), 220),
+        textBlocks,
         images: imageSources(active).slice(0, 8),
         activeIndex: ordinal,
         realIndex: active.getAttribute?.("data-swiper-slide-index") || "",

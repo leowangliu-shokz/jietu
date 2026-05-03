@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { capturePage, findBrowser } from "./browser.js";
+import { rebuildChanges } from "./changes.js";
 import { devicePresets, findDevicePreset, toPublicDevicePreset } from "./device-presets.js";
 import { archiveDir } from "./paths.js";
 import {
@@ -107,7 +108,8 @@ export async function captureOne(inputTarget, config = null, options = {}) {
       snapshots.push(snapshot);
     }
 
-    return { ok: true, snapshot: snapshots[0], snapshots };
+    const changeRefresh = await refreshChangeRecords();
+    return { ok: true, snapshot: snapshots[0], snapshots, changeRefresh };
   } catch (error) {
     await removeCaptureOutputs(fileInfo.absolutePath);
     return {
@@ -123,6 +125,15 @@ export async function captureOne(inputTarget, config = null, options = {}) {
       capturedAt: capturedAt.toISOString(),
       error: error.message
     };
+  }
+}
+
+async function refreshChangeRecords() {
+  try {
+    const changes = await rebuildChanges();
+    return { ok: true, count: changes.length };
+  } catch (error) {
+    return { ok: false, error: error.message };
   }
 }
 
@@ -170,7 +181,7 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
 
   for (const item of relatedCapture.captures || []) {
     const bannerIndex = Number(item.bannerIndex || 0);
-    if (item.isDefaultState || bannerIndex === 1) {
+    if ((item.sectionKey === "banner" || item.kind === "banner") && (item.isDefaultState || bannerIndex === 1)) {
       if (item.outputPath) {
         await fs.rm(item.outputPath, { force: true });
       }
@@ -195,6 +206,7 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
       stateCount: item.stateCount || item.bannerCount || null,
       stateLabel: item.stateLabel || item.label || (bannerIndex ? `轮播 ${bannerIndex}` : "轮播"),
       tabLabel: item.tabLabel || null,
+      tabIndex: item.tabIndex || null,
       pageIndex: item.pageIndex || null,
       logicalSignature: item.logicalSignature || item.bannerSignature || null,
       visualHash: item.visualHash || null,
