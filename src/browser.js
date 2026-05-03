@@ -264,12 +264,13 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
     });
     const buffer = Buffer.from(screenshot.data, "base64");
     const visualSignature = hashBuffer(buffer);
-    const bannerSignature = state.signature || slide.signature || `banner-${index + 1}`;
+    const bannerIndex = bannerIndexForCapture(index, state, slide, plan.count);
+    const bannerSignature = state.signature || slide.signature || `banner-${bannerIndex}`;
     const duplicate = seenLogical.has(bannerSignature) || seenVisual.has(visualSignature);
 
     if (duplicate) {
       duplicates.push({
-        bannerIndex: index + 1,
+        bannerIndex,
         bannerSignature,
         visualSignature
       });
@@ -279,7 +280,7 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
     seenLogical.add(bannerSignature);
     seenVisual.add(visualSignature);
 
-    const bannerOutput = bannerOutputPath(outputPath, index + 1);
+    const bannerOutput = bannerOutputPath(outputPath, bannerIndex);
     await fs.writeFile(bannerOutput, buffer);
     maxWidth = Math.max(maxWidth, Math.round(clip.width));
     maxHeight = Math.max(maxHeight, Math.round(clip.height));
@@ -287,7 +288,7 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
       outputPath: bannerOutput,
       width: Math.round(clip.width),
       height: Math.round(clip.height),
-      bannerIndex: index + 1,
+      bannerIndex,
       bannerCount: plan.count,
       bannerSignature,
       visualSignature,
@@ -310,7 +311,9 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
     throw new Error("Shokz home banner capture found slides but every screenshot looked duplicated.");
   }
 
-  const validationStatus = captures.length === plan.count ? "ok" : "warning";
+  validateBannerCaptureCompleteness(captures, plan.count, duplicates);
+  captures.sort((a, b) => Number(a.bannerIndex || 0) - Number(b.bannerIndex || 0));
+
   return {
     width: maxWidth,
     height: maxHeight,
@@ -320,10 +323,45 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
       capturedCount: captures.length,
       duplicateCount: duplicates.length,
       duplicates,
-      status: validationStatus,
+      status: "ok",
       slides: plan.slides
     }
   };
+}
+
+function bannerIndexForCapture(loopIndex, state, slide, bannerCount) {
+  for (const value of [state.realIndex, slide.realIndex]) {
+    const realIndex = Number(value);
+    if (Number.isInteger(realIndex) && realIndex >= 0 && realIndex < bannerCount) {
+      return realIndex + 1;
+    }
+  }
+  return loopIndex + 1;
+}
+
+function validateBannerCaptureCompleteness(captures, bannerCount, duplicates) {
+  const expected = Array.from({ length: bannerCount }, (_, index) => index + 1);
+  const counts = new Map();
+  for (const capture of captures) {
+    const bannerIndex = Number(capture.bannerIndex);
+    counts.set(bannerIndex, (counts.get(bannerIndex) || 0) + 1);
+  }
+
+  const missing = expected.filter((bannerIndex) => !counts.has(bannerIndex));
+  const repeated = [...counts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([bannerIndex]) => bannerIndex);
+  const invalid = [...counts.keys()].filter((bannerIndex) =>
+    !Number.isInteger(bannerIndex) || bannerIndex < 1 || bannerIndex > bannerCount
+  );
+
+  if (missing.length || repeated.length || invalid.length) {
+    const duplicateText = duplicates.length ? ` Duplicates: ${JSON.stringify(duplicates)}` : "";
+    throw new Error(
+      `Shokz home banner capture is incomplete. Missing banner indexes: ${missing.join(", ") || "none"}. ` +
+      `Repeated: ${repeated.join(", ") || "none"}. Invalid: ${invalid.join(", ") || "none"}.${duplicateText}`
+    );
+  }
 }
 
 async function primeLazyImages(client) {
@@ -525,8 +563,12 @@ async function readShokzHomeBannerPlan(client) {
         return { ok: false, reason: "No visible carousel with two or more logical slides was found." };
       }
 
+      const logicalSlides = best.slides.slice(0, best.count).sort((a, b) =>
+        Number(a.realIndex ?? a.ordinal ?? 0) - Number(b.realIndex ?? b.ordinal ?? 0) ||
+        Number(a.ordinal ?? 0) - Number(b.ordinal ?? 0)
+      );
       window.__pageShotBannerRoot = best.root;
-      window.__pageShotBannerSlides = best.slides.slice(0, best.count);
+      window.__pageShotBannerSlides = logicalSlides;
       window.__pageShotBannerElements = best.slideElements.slice(0, best.count);
       return {
         ok: true,
@@ -555,6 +597,7 @@ async function activateShokzHomeBanner(client, slide, ordinal) {
       const swiper = swiperElement?.swiper;
       if (swiper) {
         if (swiper.autoplay?.stop) swiper.autoplay.stop();
+        window.__pageShotBannerActiveElement = null;
         const realIndex = Number.isFinite(Number(slide.realIndex)) ? Number(slide.realIndex) : ordinal;
         if (typeof swiper.slideToLoop === "function") {
           swiper.slideToLoop(realIndex, 0, false);
@@ -621,18 +664,22 @@ async function activateShokzHomeBanner(client, slide, ordinal) {
         const rect = nextControl.getBoundingClientRect();
         const x = Math.round(rect.left + rect.width / 2);
         const y = Math.round(rect.top + rect.height / 2);
-        nextControl.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window }));
-        nextControl.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window }));
-        nextControl.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window }));
-        nextControl.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window }));
-        nextControl.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window }));
+        const clicks = Math.max(1, ordinal);
+        for (let index = 0; index < clicks; index += 1) {
+          nextControl.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window }));
+          nextControl.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window }));
+          nextControl.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window }));
+          nextControl.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window }));
+          nextControl.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window }));
+        }
         window.__pageShotBannerActiveElement = null;
         return { ok: true, method: "next-control", ordinal };
       }
       const domSlides = Array.isArray(window.__pageShotBannerElements)
         ? window.__pageShotBannerElements.filter((element) => element instanceof Element)
         : [];
-      const forced = domSlides[ordinal];
+      const forcedIndex = Number.isInteger(Number(slide.elementIndex)) ? Number(slide.elementIndex) : ordinal;
+      const forced = domSlides[forcedIndex];
       if (forced) {
         const track = forced.parentElement;
         if (track) {

@@ -149,7 +149,8 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
   const relatedShots = [];
 
   for (const item of bannerCapture.captures || []) {
-    if (item.bannerIndex <= 1) {
+    const bannerIndex = Number(item.bannerIndex || 0);
+    if (bannerIndex === 1) {
       if (item.outputPath) {
         await fs.rm(item.outputPath, { force: true });
       }
