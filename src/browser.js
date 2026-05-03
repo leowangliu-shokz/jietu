@@ -331,6 +331,9 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
 
 function bannerIndexForCapture(loopIndex, state, slide, bannerCount) {
   for (const value of [state.realIndex, slide.realIndex]) {
+    if (value === null || value === undefined || value === "") {
+      continue;
+    }
     const realIndex = Number(value);
     if (Number.isInteger(realIndex) && realIndex >= 0 && realIndex < bannerCount) {
       return realIndex + 1;
@@ -537,11 +540,15 @@ async function readShokzHomeBannerPlan(client) {
           const fractionCount = fractionCountFor(root);
           const count = Math.max(collected.slides.length, bullets.length, fractionCount);
           const slides = fillSlides(collected.slides, count);
+          const rootText = cleanText(root.innerText || root.textContent || "", 1200);
           const keywordScore = /hero|banner|swiper|slideshow|slider|carousel/i.test(className) ? 35 : 0;
+          const hasHeroAction = /shop now|learn more/i.test(rootText);
+          const firstScreenHero = rect.top <= Math.max(260, window.innerHeight * 0.32) && hasHeroAction;
           const topScore = Math.max(0, 900 - Math.abs(rect.top)) / 18;
           const sizeScore = Math.min(55, (rect.width * rect.height) / 22000);
           const swiperScore = swiper ? 35 : 0;
-          const score = count * 28 + bullets.length * 4 + keywordScore + topScore + sizeScore + swiperScore;
+          const score = count * 28 + bullets.length * 4 + keywordScore + topScore + sizeScore + swiperScore +
+            Number(firstScreenHero) * 140;
           return {
             root,
             slides,
@@ -552,10 +559,11 @@ async function readShokzHomeBannerPlan(client) {
             className,
             bulletCount: bullets.length,
             fractionCount,
-            hasSwiper: Boolean(swiper)
+            hasSwiper: Boolean(swiper),
+            firstScreenHero
           };
         })
-        .filter((candidate) => candidate.count >= 2)
+        .filter((candidate) => candidate.count >= 2 && candidate.firstScreenHero)
         .sort((a, b) => b.score - a.score);
 
       const best = candidates[0];
