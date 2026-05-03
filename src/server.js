@@ -114,9 +114,13 @@ function scheduleNext() {
   scheduleTimer = null;
   nextRunAt = null;
 
-  const next = new Date();
-  next.setHours(next.getHours() + 1, 0, 0, 0);
-  const delay = Math.max(1000, next.getTime() - Date.now());
+  const intervalMinutes = Number(config.intervalMinutes);
+  if (!Number.isFinite(intervalMinutes) || intervalMinutes <= 0) {
+    return;
+  }
+
+  const delay = Math.max(1000, intervalMinutes * 60 * 1000);
+  const next = new Date(Date.now() + delay);
   nextRunAt = next.toISOString();
   scheduleTimer = setTimeout(async () => {
     const result = await runCapture({ allDevices: true, runSource: "auto" }).catch((error) => {
