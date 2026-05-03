@@ -117,6 +117,9 @@ async function driveCapture(client, url, outputPath, options) {
   await verifyCurrentUrl(client, url, "after navigation", urlCheck);
   if (options.dismissPopups !== false && !deferShokzMobileNavDismiss) {
     await dismissObstructions(client);
+    if (shouldGuardShokzSearchOverlay(url, viewport, options)) {
+      await ensureShokzSearchOverlayClosed(client, "after dismissing popups");
+    }
     await verifyCurrentUrl(client, url, "after dismissing popups", urlCheck);
   }
 
@@ -155,8 +158,14 @@ async function driveCapture(client, url, outputPath, options) {
     stage = "scrolling to trigger lazy content";
     scrollInfo = await prepareFullPage(client, options);
     await verifyCurrentUrl(client, url, "after lazy-load scrolling", urlCheck);
+    if (shouldGuardShokzSearchOverlay(url, viewport, options)) {
+      await ensureShokzSearchOverlayClosed(client, "after lazy-load scrolling");
+    }
     if (options.dismissPopups !== false) {
       await dismissObstructions(client);
+      if (shouldGuardShokzSearchOverlay(url, viewport, options)) {
+        await ensureShokzSearchOverlayClosed(client, "after post-scroll popup cleanup");
+      }
       await verifyCurrentUrl(client, url, "after post-scroll popup cleanup", urlCheck);
     }
   }
@@ -175,12 +184,19 @@ async function driveCapture(client, url, outputPath, options) {
 
   stage = "capturing screenshot";
   if (options.fullPage) {
+    const guardShokzSearchOverlay = shouldGuardShokzSearchOverlay(url, viewport, options);
+    if (guardShokzSearchOverlay) {
+      await ensureShokzSearchOverlayClosed(client, "before screenshot capture");
+    }
     await captureStitchedScreenshot(client, outputPath, {
       width: clipWidth,
       height: clipHeight,
       viewportHeight: viewport.height,
       stepDelay: options.scrollStepMs ?? 350,
-      hideFixedElementsAfterFirstSegment: options.hideFixedElementsAfterFirstSegment !== false
+      hideFixedElementsAfterFirstSegment: options.hideFixedElementsAfterFirstSegment !== false,
+      beforeFirstSegmentCapture: guardShokzSearchOverlay
+        ? () => ensureShokzSearchOverlayClosed(client, "before first segment screenshot capture")
+        : null
     });
   } else {
     const screenshot = await client.send("Page.captureScreenshot", {
@@ -215,6 +231,17 @@ async function readPageTitle(client) {
     returnByValue: true
   }).catch(() => ({ result: { value: "" } }));
   return titleResult.result?.value || "";
+}
+
+function shouldGuardShokzSearchOverlay(url, viewport, options = {}) {
+  if (viewport.mobile || options.captureMode) {
+    return false;
+  }
+  try {
+    return new URL(url).hostname.replace(/^www\./, "") === "shokz.com";
+  } catch {
+    return false;
+  }
 }
 
 async function captureShokzHomeBanners(client, outputPath, viewport) {
@@ -1082,18 +1109,33 @@ async function closeShokzSearchOverlay(client) {
           style.display !== "none" &&
           Number(style.opacity || 1) > 0.01;
       };
+      const textOf = (element) => element ? [
+        element.innerText,
+        element.textContent,
+        element.getAttribute?.("aria-label"),
+        element.getAttribute?.("title"),
+        element.id,
+        String(element.className || "")
+      ].filter(Boolean).join(" ").replace(/\\s+/g, " ").trim() : "";
+      const searchLike = (element) => /search/i.test([
+        element?.type,
+        element?.placeholder,
+        element?.getAttribute?.("aria-label"),
+        element?.getAttribute?.("title"),
+        element?.id,
+        String(element?.className || "")
+      ].filter(Boolean).join(" "));
+      const modalLike = (element) => /search-modal|search__|predictive-search|modal-search/i.test([
+        element?.id,
+        String(element?.className || ""),
+        element?.getAttribute?.("aria-label"),
+        element?.getAttribute?.("role")
+      ].filter(Boolean).join(" "));
       const searchInput = Array.from(document.querySelectorAll("input"))
         .find((input) => {
           if (!visible(input)) return false;
           const rect = input.getBoundingClientRect();
-          const hint = [
-            input.type,
-            input.placeholder,
-            input.getAttribute("aria-label"),
-            input.id,
-            String(input.className || "")
-          ].filter(Boolean).join(" ");
-          return rect.width > 120 && /search/i.test(hint);
+          return rect.width > 120 && (searchLike(input) || input.closest(".search-modal, [class*='search-modal'], details[open]"));
         });
       const controls = Array.from(document.querySelectorAll("button, [role='button'], a, [aria-label], [title], svg, [class]"))
         .filter(visible)
@@ -1119,6 +1161,8 @@ async function closeShokzSearchOverlay(client) {
         )
         .sort((a, b) => a.rect.top - b.rect.top || b.rect.left - a.rect.left);
       const target = controls[0]?.target;
+      const hidden = [];
+      const clicked = [];
       if (target) {
         const rect = target.getBoundingClientRect();
         const x = Math.round(rect.left + rect.width / 2);
@@ -1135,20 +1179,26 @@ async function closeShokzSearchOverlay(client) {
         if (typeof target.click === "function") {
           target.click();
         }
-        const details = target.closest("details[open]");
-        if (details) {
-          details.removeAttribute("open");
-        }
-        for (const modal of document.querySelectorAll(".search-modal, .modal__content, [class*='search-modal']")) {
-          if (visible(modal)) {
-            modal.dataset.pageShotHidden = "true";
-            modal.style.setProperty("display", "none", "important");
-          }
-        }
-        document.body.classList.remove("overflow-hidden");
-        return { ok: true, x, y };
+        clicked.push(textOf(target) || "search close control");
       }
-      return { ok: false };
+      for (const details of document.querySelectorAll("details[open]")) {
+        if (modalLike(details) || details.contains(searchInput)) {
+          details.removeAttribute("open");
+          hidden.push("open search details");
+        }
+      }
+      for (const modal of document.querySelectorAll(".search-modal, [class*='search-modal']")) {
+        if (visible(modal) || modalLike(modal)) {
+          modal.dataset.pageShotHidden = "true";
+          modal.style.setProperty("display", "none", "important");
+          modal.style.setProperty("visibility", "hidden", "important");
+          modal.style.setProperty("pointer-events", "none", "important");
+          hidden.push(textOf(modal).slice(0, 80) || "search modal");
+        }
+      }
+      document.body.classList.remove("overflow-hidden", "overflow-hidden-tablet", "overflow-hidden-desktop");
+      document.documentElement.classList.remove("overflow-hidden", "overflow-hidden-tablet", "overflow-hidden-desktop");
+      return { ok: Boolean(clicked.length || hidden.length), clicked, hidden };
     })()`,
     returnByValue: true
   }).catch(() => null);
@@ -1168,6 +1218,96 @@ async function closeShokzSearchOverlay(client) {
     code: "Escape",
     windowsVirtualKeyCode: 27
   }).catch(() => null);
+}
+
+async function ensureShokzSearchOverlayClosed(client, stage) {
+  await closeShokzSearchOverlay(client);
+  await sleep(250);
+  let state = await readShokzSearchOverlayState(client);
+  if (state.open) {
+    await closeShokzSearchOverlay(client);
+    await sleep(500);
+    state = await readShokzSearchOverlayState(client);
+  }
+  if (state.open) {
+    const details = state.reason ? ` ${state.reason}` : "";
+    throw new Error(`Shokz search overlay is still open before screenshot capture.${details}`);
+  }
+  return { ok: true, stage };
+}
+
+async function readShokzSearchOverlayState(client) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          rect.bottom > 0 &&
+          rect.right > 0 &&
+          rect.left < window.innerWidth &&
+          rect.top < Math.max(260, window.innerHeight * 0.35) &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const searchLike = (element) => /search/i.test([
+        element?.type,
+        element?.placeholder,
+        element?.getAttribute?.("aria-label"),
+        element?.getAttribute?.("title"),
+        element?.id,
+        String(element?.className || "")
+      ].filter(Boolean).join(" "));
+      const modalLike = (element) => /search-modal|search__|predictive-search|modal-search/i.test([
+        element?.id,
+        String(element?.className || ""),
+        element?.getAttribute?.("aria-label"),
+        element?.getAttribute?.("role")
+      ].filter(Boolean).join(" "));
+      const topSearchInput = Array.from(document.querySelectorAll("input"))
+        .find((input) => {
+          const rect = input.getBoundingClientRect();
+          return visible(input) &&
+            rect.width > 120 &&
+            (searchLike(input) || input.closest(".search-modal, [class*='search-modal'], details[open]"));
+        });
+      const searchModal = Array.from(document.querySelectorAll(".search-modal, [class*='search-modal']"))
+        .find((element) => visible(element));
+      const searchDetails = Array.from(document.querySelectorAll("details[open]"))
+        .find((element) => modalLike(element) || element.contains(topSearchInput));
+      const rightClose = Array.from(document.querySelectorAll("button, [role='button'], a, [aria-label], [title], svg, [class]"))
+        .find((element) => {
+          if (!visible(element)) return false;
+          const target = element.closest("button, [role='button'], a, [tabindex]") || element;
+          const rect = target.getBoundingClientRect();
+          const text = [
+            target.innerText,
+            target.textContent,
+            target.getAttribute?.("aria-label"),
+            target.getAttribute?.("title"),
+            target.id,
+            String(target.className || "")
+          ].filter(Boolean).join(" ");
+          return /search-modal__close-button|modal__close-button|close|dismiss|icon-close/i.test(text) &&
+            rect.width <= 96 &&
+            rect.height <= 96 &&
+            rect.left > window.innerWidth - 180;
+        });
+      const open = Boolean(topSearchInput || searchModal || searchDetails || rightClose);
+      const reason = [
+        topSearchInput ? "top search input visible" : "",
+        searchModal ? "search modal visible" : "",
+        searchDetails ? "search details open" : "",
+        rightClose ? "right close control visible" : ""
+      ].filter(Boolean).join(", ");
+      return { open, reason };
+    })()`,
+    returnByValue: true
+  }).catch(() => ({ result: { value: { open: false, reason: "" } } }));
+  return result.result?.value || { open: false, reason: "" };
 }
 
 async function clickShokzMobileMenu(client) {
@@ -1677,6 +1817,9 @@ async function captureStitchedScreenshot(client, outputPath, options) {
     await sleep(Math.max(120, Math.min(700, options.stepDelay)));
     await dismissObstructions(client, { rounds: index === 0 ? 4 : 2 });
     await sleep(160);
+    if (index === 0 && typeof options.beforeFirstSegmentCapture === "function") {
+      await options.beforeFirstSegmentCapture();
+    }
     const segmentHeight = Math.min(viewportHeight, height - y);
     const screenshot = await client.send("Page.captureScreenshot", {
       format: "png",
