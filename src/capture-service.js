@@ -49,7 +49,8 @@ export async function captureOne(inputTarget, config = null, options = {}) {
 
   try {
     const capture = await capturePage(normalizedUrl, fileInfo.absolutePath, captureConfig);
-    const relatedShots = await captureRelatedShotsForTarget(target, normalizedUrl, fileInfo.absolutePath, captureConfig);
+    const relatedCapture = await captureRelatedShotsForTarget(target, normalizedUrl, fileInfo.absolutePath, captureConfig);
+    const relatedShots = relatedCapture.shots;
     const stamp = capturedAt.toISOString().replace(/[:.]/g, "-");
     const targetLabel = target.label || normalizedUrl;
     const runLabel = runSource === "auto" ? "\u81ea\u52a8\u8dd1\uff08\u6574\u70b9\uff09" : "\u624b\u52a8\u8dd1";
@@ -100,6 +101,7 @@ export async function captureOne(inputTarget, config = null, options = {}) {
         bannerClip: item.bannerClip || null,
         bannerState: item.bannerState || null,
         bannerValidation: item.bannerIndex ? capture.bannerInfo || null : null,
+        relatedValidation: !item.bannerIndex ? relatedCapture.validation : null,
         relatedShots: !item.bannerIndex && relatedShots.length ? relatedShots : null
       });
       snapshots.push(snapshot);
@@ -137,20 +139,38 @@ function captureConfigForTarget(config, target) {
 
 async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPath, captureConfig) {
   if (target.id !== "shokz-home" || target.captureMode) {
-    return [];
+    return { shots: [], validation: null };
   }
 
-  const bannerCapture = await capturePage(normalizedUrl, baseOutputPath, {
-    ...captureConfig,
-    captureMode: "shokz-home-banners",
-    fullPage: false,
-    lazyLoadScroll: false
-  });
+  let relatedCapture;
+  try {
+    relatedCapture = await capturePage(normalizedUrl, baseOutputPath, {
+      ...captureConfig,
+      captureMode: "shokz-home-related",
+      fullPage: false,
+      lazyLoadScroll: false
+    });
+  } catch (error) {
+    await removeSidecarOutputs(baseOutputPath);
+    return {
+      shots: [],
+      validation: {
+        status: "warning",
+        warnings: [{
+          sectionKey: "home-related",
+          sectionLabel: "更多截图",
+          message: error.message
+        }],
+        sections: []
+      }
+    };
+  }
+
   const relatedShots = [];
 
-  for (const item of bannerCapture.captures || []) {
+  for (const item of relatedCapture.captures || []) {
     const bannerIndex = Number(item.bannerIndex || 0);
-    if (bannerIndex === 1) {
+    if (item.isDefaultState || bannerIndex === 1) {
       if (item.outputPath) {
         await fs.rm(item.outputPath, { force: true });
       }
@@ -167,19 +187,37 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
       bytes: stat.size,
       width: item.width,
       height: item.height,
+      kind: item.kind || "banner",
+      sectionKey: item.sectionKey || "banner",
+      sectionLabel: item.sectionLabel || "Banner",
+      sectionTitle: item.sectionTitle || "Banner 轮播图",
+      stateIndex: item.stateIndex || bannerIndex || null,
+      stateCount: item.stateCount || item.bannerCount || null,
+      stateLabel: item.stateLabel || item.label || (bannerIndex ? `轮播 ${bannerIndex}` : "轮播"),
+      tabLabel: item.tabLabel || null,
+      pageIndex: item.pageIndex || null,
+      logicalSignature: item.logicalSignature || item.bannerSignature || null,
+      visualHash: item.visualHash || null,
+      visualAudit: item.visualAudit || null,
+      clip: item.clip || item.bannerClip || null,
+      isDefaultState: Boolean(item.isDefaultState),
       bannerIndex: item.bannerIndex,
       bannerCount: item.bannerCount,
       bannerSignature: item.bannerSignature || null,
       visualSignature: item.visualSignature || null,
       bannerClip: item.bannerClip || null,
       bannerState: item.bannerState || null,
-      urlCheck: bannerCapture.urlCheck || null,
-      requestedUrl: bannerCapture.requestedUrl || normalizedUrl,
-      finalUrl: bannerCapture.finalUrl || normalizedUrl
+      sectionState: item.sectionState || null,
+      urlCheck: relatedCapture.urlCheck || null,
+      requestedUrl: relatedCapture.requestedUrl || normalizedUrl,
+      finalUrl: relatedCapture.finalUrl || normalizedUrl
     });
   }
 
-  return relatedShots.sort((a, b) => Number(a.bannerIndex || 0) - Number(b.bannerIndex || 0));
+  return {
+    shots: relatedShots.sort(compareRelatedShots),
+    validation: relatedCapture.relatedValidation || null
+  };
 }
 
 function archiveRelativePath(absolutePath) {
@@ -196,12 +234,38 @@ function bannerDisplayLabel(label, bannerIndex) {
   return `${label} Banner ${bannerIndex}`;
 }
 
+function compareRelatedShots(a, b) {
+  const sectionOrder = ["banner", "product-showcase", "scene-explore", "athletes", "media", "voices"];
+  const sectionA = sectionOrder.indexOf(a.sectionKey);
+  const sectionB = sectionOrder.indexOf(b.sectionKey);
+  const orderA = sectionA === -1 ? 1000 : sectionA;
+  const orderB = sectionB === -1 ? 1000 : sectionB;
+  return orderA - orderB ||
+    Number(a.stateIndex || a.bannerIndex || 0) - Number(b.stateIndex || b.bannerIndex || 0) ||
+    String(a.label || "").localeCompare(String(b.label || ""), "zh-CN");
+}
+
 async function removeCaptureOutputs(basePath) {
   await fs.rm(basePath, { force: true });
+  await removeSidecarOutputs(basePath);
+}
+
+async function removeSidecarOutputs(basePath) {
+  const dir = path.dirname(basePath);
+  const stem = path.basename(basePath, ".png");
+  let entries = [];
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    return;
+  }
   await Promise.all(Array.from({ length: 20 }, (_, index) => {
     const bannerPath = basePath.replace(/\.png$/i, `-banner-${index + 1}.png`);
     return fs.rm(bannerPath, { force: true });
   }));
+  await Promise.all(entries
+    .filter((name) => name.startsWith(`${stem}-`) && name.endsWith(".png"))
+    .map((name) => fs.rm(path.join(dir, name), { force: true })));
 }
 
 export async function browserStatus() {

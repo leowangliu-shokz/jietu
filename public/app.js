@@ -16,6 +16,15 @@ const elements = {
 };
 
 const homeBannerWindowMs = 5 * 60 * 1000;
+const relatedSectionOrder = ["banner", "product-showcase", "scene-explore", "athletes", "media", "voices"];
+const relatedSectionTitles = {
+  banner: "Banner 轮播图",
+  "product-showcase": "产品橱窗轮播图",
+  "scene-explore": "场景探索轮播图",
+  athletes: "运动员区轮播图",
+  media: "媒体区轮播图",
+  voices: "用户心声轮播图"
+};
 
 let state = null;
 const selectedDeviceFilters = {
@@ -266,7 +275,8 @@ function createHomeGroup(snapshot) {
     sortTime: timestamp(snapshot.capturedAt),
     homeGroup: true,
     groupKey: homeGroupKey(snapshot),
-    mainBannerIndex: null
+    mainBannerIndex: null,
+    relatedValidation: snapshot.relatedValidation || null
   };
   for (const relatedShot of relatedShotsFromSnapshot(snapshot)) {
     addRelatedShot(group, relatedShot);
@@ -282,7 +292,8 @@ function createFallbackHomeGroup(banner, cards, homeGroups) {
     homeGroup: true,
     fallbackHome: true,
     groupKey: homeGroupKey(banner),
-    mainBannerIndex: Number(banner.bannerIndex || 0) || null
+    mainBannerIndex: Number(banner.bannerIndex || 0) || null,
+    relatedValidation: banner.relatedValidation || null
   };
   cards.push(group);
   homeGroups.push(group);
@@ -300,7 +311,10 @@ function findMatchingHomeGroup(banner, homeGroups) {
 }
 
 function addRelatedShot(group, relatedShot) {
-  if (!relatedShot || Number(relatedShot.bannerIndex || 0) <= 1) {
+  if (!relatedShot || relatedShot.isDefaultState) {
+    return;
+  }
+  if ((relatedShot.kind === "banner" || relatedShot.sectionKey === "banner") && Number(relatedShot.bannerIndex || 0) <= 1) {
     return;
   }
   if (group.mainBannerIndex && Number(relatedShot.bannerIndex) === group.mainBannerIndex) {
@@ -310,8 +324,14 @@ function addRelatedShot(group, relatedShot) {
     return;
   }
 
-  const key = relatedShot.visualSignature || relatedShot.file || relatedShot.imageUrl || relatedShot.label;
-  if (group.relatedShots.some((item) => (item.visualSignature || item.file || item.imageUrl || item.label) === key)) {
+  const key = [
+    relatedShot.sectionKey || "banner",
+    relatedShot.visualSignature || relatedShot.file || relatedShot.imageUrl || relatedShot.label
+  ].join("|");
+  if (group.relatedShots.some((item) => [
+    item.sectionKey || "banner",
+    item.visualSignature || item.file || item.imageUrl || item.label
+  ].join("|") === key)) {
     return;
   }
   group.relatedShots.push(relatedShot);
@@ -319,16 +339,30 @@ function addRelatedShot(group, relatedShot) {
 
 function sortedRelatedShots(relatedShots) {
   return [...relatedShots].sort((a, b) =>
+    relatedSectionSort(a.sectionKey) - relatedSectionSort(b.sectionKey) ||
+    String(a.tabLabel || "").localeCompare(String(b.tabLabel || ""), "zh-CN") ||
+    Number(a.pageIndex || 0) - Number(b.pageIndex || 0) ||
+    Number(a.stateIndex || 0) - Number(b.stateIndex || 0) ||
     Number(a.bannerIndex || 0) - Number(b.bannerIndex || 0) ||
     String(a.label || "").localeCompare(String(b.label || ""), "zh-CN")
   );
+}
+
+function relatedSectionSort(sectionKey) {
+  const index = relatedSectionOrder.indexOf(sectionKey || "banner");
+  return index === -1 ? 1000 : index;
 }
 
 function renderShotCard(card) {
   const snapshot = card.snapshot;
   const displayUrl = card.homeGroup ? homeDisplayUrl() : canonicalDisplayUrlForSnapshot(snapshot);
   const item = document.createElement("article");
-  item.className = card.relatedShots.length ? "shot has-related-shots" : "shot";
+  const hasRelatedWarning = relatedWarnings(card.relatedValidation).length > 0;
+  item.className = [
+    "shot",
+    card.relatedShots.length ? "has-related-shots" : "",
+    hasRelatedWarning ? "has-related-warning" : ""
+  ].filter(Boolean).join(" ");
   item.innerHTML = `
     <a class="shot-main-image" href="${snapshot.imageUrl}" target="_blank" rel="noreferrer">
       <img src="${snapshot.imageUrl}" alt="${escapeHtml(displayUrl)} ${formatDate(snapshot.capturedAt)}" loading="lazy">
@@ -342,31 +376,72 @@ function renderShotCard(card) {
         <span class="pill">${snapshot.width}×${snapshot.height}</span>
         ${snapshot.truncated ? "<span class=\"pill warn\">已截断</span>" : ""}
       </p>
-      ${renderRelatedShots(card.relatedShots)}
+      ${renderRelatedShots(card.relatedShots, card.relatedValidation)}
     </div>
   `;
   return item;
 }
 
-function renderRelatedShots(relatedShots) {
-  if (!relatedShots.length) {
+function renderRelatedShots(relatedShots, validation = null) {
+  const warnings = relatedWarnings(validation);
+  if (!relatedShots.length && !warnings.length) {
     return "";
   }
+  const groups = groupRelatedShots(relatedShots);
+  const warningTitle = warnings.map((warning) =>
+    `${warning.sectionLabel || warning.sectionKey || "更多截图"}：${warning.message || "校验警告"}`
+  ).join("\n");
 
   return `
     <div class="shot-related">
-      <p class="related-kicker">更多截图</p>
-      <p class="related-title">Banner 轮播图</p>
-      <div class="related-grid">
-        ${relatedShots.map((shot) => `
-          <a class="related-thumb" href="${shot.imageUrl}" target="_blank" rel="noreferrer" title="${escapeHtml(shot.label)}">
-            <img src="${shot.imageUrl}" alt="${escapeHtml(shot.label)}" loading="lazy">
-            <span>${escapeHtml(shot.label)}</span>
-          </a>
-        `).join("")}
-      </div>
+      <p class="related-kicker">
+        更多截图
+        ${warnings.length ? `<span class="related-warning" title="${escapeHtml(warningTitle)}">校验警告</span>` : ""}
+      </p>
+      ${groups.map((group) => `
+        <section class="related-section">
+          <p class="related-title">${escapeHtml(group.title)}</p>
+          <div class="related-grid">
+            ${group.shots.map((shot) => `
+              <a class="related-thumb" href="${shot.imageUrl}" target="_blank" rel="noreferrer" title="${escapeHtml(relatedShotTitle(shot))}">
+                <img src="${shot.imageUrl}" alt="${escapeHtml(shot.label)}" loading="lazy">
+                <span>${escapeHtml(shot.label)}</span>
+              </a>
+            `).join("")}
+          </div>
+        </section>
+      `).join("")}
     </div>
   `;
+}
+
+function groupRelatedShots(relatedShots) {
+  const groups = new Map();
+  for (const shot of sortedRelatedShots(relatedShots)) {
+    const sectionKey = shot.sectionKey || "banner";
+    if (!groups.has(sectionKey)) {
+      groups.set(sectionKey, {
+        sectionKey,
+        title: shot.sectionTitle || relatedSectionTitles[sectionKey] || shot.sectionLabel || "更多截图",
+        shots: []
+      });
+    }
+    groups.get(sectionKey).shots.push(shot);
+  }
+  return [...groups.values()].sort((a, b) => relatedSectionSort(a.sectionKey) - relatedSectionSort(b.sectionKey));
+}
+
+function relatedWarnings(validation) {
+  return Array.isArray(validation?.warnings) ? validation.warnings : [];
+}
+
+function relatedShotTitle(shot) {
+  return [
+    shot.sectionLabel,
+    shot.tabLabel,
+    shot.label,
+    shot.visualAudit?.status === "warning" ? shot.visualAudit.message : ""
+  ].filter(Boolean).join(" / ");
 }
 
 function relatedShotsFromSnapshot(snapshot) {
@@ -381,6 +456,9 @@ function relatedShotsFromSnapshot(snapshot) {
 function relatedShotFromSnapshot(snapshot) {
   return normalizeRelatedShot({
     kind: "banner",
+    sectionKey: "banner",
+    sectionLabel: "Banner",
+    sectionTitle: relatedSectionTitles.banner,
     label: `轮播 ${snapshot.bannerIndex || ""}`.trim(),
     file: snapshot.file,
     imageUrl: snapshot.imageUrl,
@@ -391,6 +469,8 @@ function relatedShotFromSnapshot(snapshot) {
     bannerCount: snapshot.bannerCount,
     bannerSignature: snapshot.bannerSignature,
     visualSignature: snapshot.visualSignature,
+    visualHash: snapshot.visualHash,
+    visualAudit: snapshot.visualAudit,
     bannerClip: snapshot.bannerClip,
     bannerState: snapshot.bannerState,
     urlCheck: snapshot.urlCheck,
@@ -404,20 +484,35 @@ function normalizeRelatedShot(shot) {
     return null;
   }
   const bannerIndex = Number(shot.bannerIndex || 0) || null;
+  const sectionKey = shot.sectionKey || (bannerIndex ? "banner" : "related");
   return {
     kind: shot.kind || "banner",
+    sectionKey,
+    sectionLabel: shot.sectionLabel || (sectionKey === "banner" ? "Banner" : ""),
+    sectionTitle: shot.sectionTitle || relatedSectionTitles[sectionKey] || "",
     label: shot.label || (bannerIndex ? `轮播 ${bannerIndex}` : "轮播"),
     file: shot.file || "",
     imageUrl: shot.imageUrl,
     bytes: shot.bytes || null,
     width: shot.width || null,
     height: shot.height || null,
+    stateIndex: shot.stateIndex || bannerIndex || null,
+    stateCount: shot.stateCount || shot.bannerCount || null,
+    stateLabel: shot.stateLabel || shot.label || null,
+    tabLabel: shot.tabLabel || null,
+    pageIndex: shot.pageIndex || null,
+    logicalSignature: shot.logicalSignature || shot.bannerSignature || null,
+    visualHash: shot.visualHash || null,
+    visualAudit: shot.visualAudit || null,
+    clip: shot.clip || shot.bannerClip || null,
+    isDefaultState: Boolean(shot.isDefaultState),
     bannerIndex,
     bannerCount: shot.bannerCount || null,
     bannerSignature: shot.bannerSignature || null,
     visualSignature: shot.visualSignature || null,
     bannerClip: shot.bannerClip || null,
     bannerState: shot.bannerState || null,
+    sectionState: shot.sectionState || null,
     urlCheck: shot.urlCheck || null,
     requestedUrl: shot.requestedUrl || null,
     finalUrl: shot.finalUrl || null

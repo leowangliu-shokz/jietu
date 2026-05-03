@@ -132,24 +132,28 @@ async function driveCapture(client, url, outputPath, options) {
     await verifyCurrentUrl(client, url, "after opening Shokz products navigation", urlCheck);
   }
 
-  if (options.captureMode === "shokz-home-banners") {
+  if (options.captureMode === "shokz-home-banners" || options.captureMode === "shokz-home-related") {
     stage = "reading page title";
     const titleResult = await readPageTitle(client);
-    stage = "capturing Shokz home banners";
-    const bannerCapture = await captureShokzHomeBanners(client, outputPath, viewport);
-    const finalUrl = await verifyCurrentUrl(client, url, "after banner capture", urlCheck);
+    stage = options.captureMode === "shokz-home-related"
+      ? "capturing Shokz home related sections"
+      : "capturing Shokz home banners";
+    const relatedCapture = options.captureMode === "shokz-home-related"
+      ? await captureShokzHomeRelated(client, outputPath, viewport)
+      : await captureShokzHomeBanners(client, outputPath, viewport);
+    const finalUrl = await verifyCurrentUrl(client, url, "after related capture", urlCheck);
     urlCheck.ok = true;
     return {
       requestedUrl: url,
       finalUrl,
       urlCheck,
       title: titleResult,
-      width: bannerCapture.width,
-      height: bannerCapture.height,
-      fullPageHeight: bannerCapture.height,
+      width: relatedCapture.width,
+      height: relatedCapture.height,
+      fullPageHeight: relatedCapture.height,
       truncated: false,
       scrollInfo: null,
-      ...bannerCapture
+      ...relatedCapture
     };
   }
 
@@ -244,6 +248,141 @@ function shouldGuardShokzSearchOverlay(url, viewport, options = {}) {
   }
 }
 
+const homeRelatedSectionDefinitions = [
+  {
+    key: "product-showcase",
+    sectionLabel: "产品橱窗",
+    title: "产品橱窗轮播图",
+    mode: "tabs-carousel",
+    anchors: ["Best Selling", "Sports Headphones", "Workout & Lifestyle Earbuds", "Communication Headsets"],
+    tabs: ["Best Selling", "Sports Headphones", "Workout & Lifestyle Earbuds", "Communication Headsets"],
+    labelMode: "tab"
+  },
+  {
+    key: "scene-explore",
+    sectionLabel: "场景探索区",
+    title: "场景探索轮播图",
+    mode: "carousel",
+    anchors: [
+      "How Shokz Makes It Possible",
+      "Headphones Built for Sport",
+      "Why Open-Ear Listening Matters"
+    ],
+    labelPrefix: "场景"
+  },
+  {
+    key: "athletes",
+    sectionLabel: "运动员区",
+    title: "运动员区轮播图",
+    mode: "tabs-carousel",
+    anchors: ["Trusted by Athletes", "Marathon", "Trail Running", "Triathlon"],
+    tabs: ["Marathon", "Trail Running", "Triathlon"],
+    labelMode: "tab"
+  },
+  {
+    key: "media",
+    sectionLabel: "媒体区",
+    title: "媒体区轮播图",
+    mode: "carousel",
+    anchors: ["Media Reviews"],
+    labelPrefix: "媒体"
+  },
+  {
+    key: "voices",
+    sectionLabel: "用户心声区",
+    title: "用户心声轮播图",
+    mode: "carousel",
+    anchors: ["Real Stories, Inspiring Moments."],
+    labelPrefix: "心声"
+  }
+];
+
+async function captureShokzHomeRelated(client, outputPath, viewport) {
+  await scrollTo(client, 0);
+  await sleep(700);
+  await primeLazyImages(client);
+
+  const captures = [];
+  const sections = [];
+  const warnings = [];
+  let maxWidth = 0;
+  let maxHeight = 0;
+
+  try {
+    const bannerCapture = await captureShokzHomeBanners(client, outputPath, viewport);
+    captures.push(...bannerCapture.captures);
+    maxWidth = Math.max(maxWidth, bannerCapture.width || 0);
+    maxHeight = Math.max(maxHeight, bannerCapture.height || 0);
+    sections.push({
+      sectionKey: "banner",
+      sectionLabel: "Banner",
+      expectedCount: bannerCapture.bannerInfo?.expectedCount || bannerCapture.captures.length,
+      capturedCount: bannerCapture.captures.length,
+      savedCount: bannerCapture.captures.filter((item) => !item.isDefaultState).length,
+      status: "ok"
+    });
+  } catch (error) {
+    warnings.push({
+      sectionKey: "banner",
+      sectionLabel: "Banner",
+      message: error.message
+    });
+    sections.push({
+      sectionKey: "banner",
+      sectionLabel: "Banner",
+      expectedCount: 0,
+      capturedCount: 0,
+      savedCount: 0,
+      status: "warning"
+    });
+  }
+
+  for (const definition of homeRelatedSectionDefinitions) {
+    try {
+      const sectionCapture = await captureShokzHomeRelatedSection(client, outputPath, viewport, definition);
+      captures.push(...sectionCapture.captures);
+      warnings.push(...sectionCapture.warnings);
+      maxWidth = Math.max(maxWidth, sectionCapture.width || 0);
+      maxHeight = Math.max(maxHeight, sectionCapture.height || 0);
+      sections.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        expectedCount: sectionCapture.expectedCount,
+        capturedCount: sectionCapture.capturedCount,
+        savedCount: sectionCapture.captures.length,
+        status: sectionCapture.warnings.length ? "warning" : "ok"
+      });
+    } catch (error) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        message: error.message
+      });
+      sections.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        expectedCount: 0,
+        capturedCount: 0,
+        savedCount: 0,
+        status: "warning"
+      });
+    }
+  }
+
+  captures.sort(compareRelatedCaptures);
+
+  return {
+    width: maxWidth || viewport.width,
+    height: maxHeight || viewport.height,
+    captures,
+    relatedValidation: {
+      status: warnings.length ? "warning" : "ok",
+      warnings,
+      sections
+    }
+  };
+}
+
 async function captureShokzHomeBanners(client, outputPath, viewport) {
   await scrollTo(client, 0);
   await sleep(700);
@@ -291,6 +430,7 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
     });
     const buffer = Buffer.from(screenshot.data, "base64");
     const visualSignature = hashBuffer(buffer);
+    const visualHash = visualHashForBuffer(buffer);
     const bannerIndex = bannerIndexForCapture(index, state, slide, plan.count);
     const bannerSignature = state.signature || slide.signature || `banner-${bannerIndex}`;
     const duplicate = seenLogical.has(bannerSignature) || seenVisual.has(visualSignature);
@@ -315,6 +455,18 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
       outputPath: bannerOutput,
       width: Math.round(clip.width),
       height: Math.round(clip.height),
+      kind: "banner",
+      sectionKey: "banner",
+      sectionLabel: "Banner",
+      sectionTitle: "Banner 轮播图",
+      stateIndex: bannerIndex,
+      stateCount: plan.count,
+      stateLabel: `轮播 ${bannerIndex}`,
+      label: `轮播 ${bannerIndex}`,
+      logicalSignature: bannerSignature,
+      visualHash,
+      visualAudit: { status: "ok", visualHash },
+      isDefaultState: bannerIndex === 1,
       bannerIndex,
       bannerCount: plan.count,
       bannerSignature,
@@ -354,6 +506,707 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
       slides: plan.slides
     }
   };
+}
+
+async function captureShokzHomeRelatedSection(client, outputPath, viewport, definition) {
+  await primeLazyImages(client);
+  const plan = await readShokzHomeRelatedSectionPlan(client, definition);
+  if (!plan.ok || !Array.isArray(plan.states) || !plan.states.length) {
+    const reason = plan.reason ? ` ${plan.reason}` : "";
+    throw new Error(`Could not identify Shokz ${definition.sectionLabel} carousel.${reason}`);
+  }
+
+  const captures = [];
+  const warnings = [];
+  const seenLogical = new Set();
+  const seenVisual = new Set();
+  const seenHashes = [];
+  let maxWidth = 0;
+  let maxHeight = 0;
+
+  for (const state of plan.states) {
+    if (state.isDefaultState) {
+      continue;
+    }
+
+    await activateShokzHomeRelatedState(client, definition, state);
+    await sleep(650);
+    await waitForRelatedSectionImages(client, definition.key);
+    await dismissObstructions(client, { rounds: 2 });
+    await hideFixedElements(client);
+    await sleep(180);
+
+    const current = await readShokzHomeRelatedState(client, definition, state);
+    if (!current.ok) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: state.stateLabel,
+        message: current.reason || `Could not read ${definition.sectionLabel} state.`
+      });
+      continue;
+    }
+
+    const clip = normalizeRelatedClip(current.clip, viewport);
+    if (!clip) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: state.stateLabel,
+        message: `Could not compute a valid crop for ${definition.sectionLabel} ${state.stateLabel}.`
+      });
+      continue;
+    }
+
+    const screenshot = await client.send("Page.captureScreenshot", {
+      format: "png",
+      fromSurface: true,
+      captureBeyondViewport: true,
+      clip
+    });
+    const buffer = Buffer.from(screenshot.data, "base64");
+    const visualSignature = hashBuffer(buffer);
+    const visualHash = visualHashForBuffer(buffer);
+    const logicalSignature = current.logicalSignature || state.logicalSignature || `${definition.key}:${state.stateIndex}`;
+
+    if (seenLogical.has(logicalSignature) || seenVisual.has(visualSignature)) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: state.stateLabel,
+        message: `${definition.sectionLabel} ${state.stateLabel} looked duplicated and was not saved.`
+      });
+      continue;
+    }
+
+    const similar = nearestVisualHash(visualHash, seenHashes);
+    const visualAudit = similar && similar.distance <= 3
+      ? {
+          status: "warning",
+          visualHash,
+          similarTo: similar.label,
+          distance: similar.distance,
+          message: `视觉签名与 ${similar.label} 非常接近`
+        }
+      : { status: "ok", visualHash };
+    if (visualAudit.status === "warning") {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: state.stateLabel,
+        message: visualAudit.message
+      });
+    }
+
+    seenLogical.add(logicalSignature);
+    seenVisual.add(visualSignature);
+    seenHashes.push({ hash: visualHash, label: state.stateLabel });
+
+    const relatedOutput = relatedOutputPath(outputPath, definition.key, state.fileId || state.stateIndex);
+    await fs.writeFile(relatedOutput, buffer);
+    maxWidth = Math.max(maxWidth, Math.round(clip.width));
+    maxHeight = Math.max(maxHeight, Math.round(clip.height));
+    captures.push({
+      outputPath: relatedOutput,
+      width: Math.round(clip.width),
+      height: Math.round(clip.height),
+      kind: state.kind || "carousel",
+      sectionKey: definition.key,
+      sectionLabel: definition.sectionLabel,
+      sectionTitle: definition.title,
+      stateIndex: state.stateIndex,
+      stateCount: plan.states.length,
+      stateLabel: state.stateLabel,
+      label: state.stateLabel,
+      tabLabel: state.tabLabel || null,
+      pageIndex: state.pageIndex || null,
+      logicalSignature,
+      visualSignature,
+      visualHash,
+      visualAudit,
+      clip: {
+        x: Math.round(clip.x),
+        y: Math.round(clip.y),
+        width: Math.round(clip.width),
+        height: Math.round(clip.height)
+      },
+      isDefaultState: false,
+      sectionState: {
+        text: current.text || "",
+        images: current.images || [],
+        activeIndex: current.activeIndex ?? state.stateIndex,
+        tabLabel: state.tabLabel || null,
+        pageIndex: state.pageIndex || null
+      }
+    });
+  }
+
+  return {
+    width: maxWidth,
+    height: maxHeight,
+    captures,
+    warnings,
+    expectedCount: plan.states.length,
+    capturedCount: plan.states.length
+  };
+}
+
+async function readShokzHomeRelatedSectionPlan(client, definition) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const definition = ${JSON.stringify(definition)};
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const cleanText = (value, max = 360) => String(value || "")
+        .replace(/\\s+/g, " ")
+        .trim()
+        .slice(0, max);
+      const classText = (element) => String(element?.className?.baseVal || element?.className || "");
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const intersects = (rect, rootRect) =>
+        Math.max(0, Math.min(rect.right, rootRect.right) - Math.max(rect.left, rootRect.left)) *
+        Math.max(0, Math.min(rect.bottom, rootRect.bottom) - Math.max(rect.top, rootRect.top));
+      const textOf = (element, max = 360) => cleanText([
+        element?.innerText,
+        element?.textContent,
+        element?.getAttribute?.("aria-label"),
+        element?.getAttribute?.("title")
+      ].filter(Boolean).join(" "), max);
+      const imageSources = (element) => Array.from(element.querySelectorAll("img, source"))
+        .flatMap((node) => [
+          node.currentSrc,
+          node.src,
+          node.srcset,
+          node.getAttribute("data-src"),
+          node.getAttribute("data-srcset"),
+          node.getAttribute("data-original"),
+          node.getAttribute("data-lazy-src"),
+          node.getAttribute("data-lazy-srcset")
+        ])
+        .filter(Boolean)
+        .map((value) => String(value).split(",")[0].trim())
+        .filter(Boolean);
+      const backgroundSources = (element) => {
+        const sources = [];
+        for (const node of [element, ...element.querySelectorAll("*")].slice(0, 180)) {
+          const match = getComputedStyle(node).backgroundImage.match(/url\\(["']?([^"')]+)["']?\\)/);
+          if (match?.[1]) sources.push(match[1]);
+        }
+        return sources;
+      };
+      const visibleSignature = (root) => {
+        const rootRect = root.getBoundingClientRect();
+        const visibleImages = Array.from(root.querySelectorAll("img, source"))
+          .filter((node) => visible(node instanceof HTMLSourceElement ? node.parentElement : node))
+          .filter((node) => intersects((node instanceof HTMLSourceElement ? node.parentElement : node).getBoundingClientRect(), rootRect) > 80)
+          .flatMap((node) => [
+            node.currentSrc,
+            node.src,
+            node.srcset,
+            node.getAttribute("data-src"),
+            node.getAttribute("data-srcset"),
+            node.getAttribute("data-original"),
+            node.getAttribute("data-lazy-src"),
+            node.getAttribute("data-lazy-srcset")
+          ])
+          .filter(Boolean)
+          .map((value) => String(value).split(",")[0].trim())
+          .slice(0, 20);
+        const visibleText = Array.from(root.querySelectorAll("a, button, h1, h2, h3, h4, p, li, article, [class*='card'], [class*='slide']"))
+          .filter(visible)
+          .filter((node) => intersects(node.getBoundingClientRect(), rootRect) > 80)
+          .map((node) => textOf(node, 140))
+          .filter(Boolean)
+          .filter((value, index, list) => list.indexOf(value) === index)
+          .slice(0, 24);
+        return JSON.stringify({
+          text: visibleText,
+          images: visibleImages,
+          backgrounds: backgroundSources(root).slice(0, 12)
+        });
+      };
+      const findRoots = () => {
+        const roots = new Set();
+        const baseSelector = [
+          "section",
+          ".shopify-section",
+          "main > div",
+          "[class*='section']",
+          "[class*='swiper']",
+          "[class*='slider']",
+          "[class*='carousel']"
+        ].join(",");
+        document.querySelectorAll(baseSelector).forEach((element) => roots.add(element));
+        for (const anchor of definition.anchors || []) {
+          for (const element of document.querySelectorAll("body *")) {
+            if (!textOf(element, 500).includes(anchor)) continue;
+            let current = element;
+            for (let depth = 0; current && depth < 6; depth += 1) {
+              if (current.matches?.("section, .shopify-section, main > div, [class*='section'], [class*='swiper'], [class*='slider'], [class*='carousel']")) {
+                roots.add(current);
+              }
+              current = current.parentElement;
+            }
+          }
+        }
+        return [...roots].filter((root) => {
+          if (!root || root === document.body || root === document.documentElement || !visible(root)) return false;
+          const rect = root.getBoundingClientRect();
+          return rect.width >= Math.min(260, window.innerWidth * 0.45) && rect.height >= 140;
+        });
+      };
+      const anchorHits = (root) => (definition.anchors || [])
+        .filter((anchor) => textOf(root, 5000).includes(anchor)).length;
+      const findRoot = () => {
+        const minHits = Math.min(definition.anchors?.length || 1, definition.mode === "carousel" ? 1 : 2);
+        return findRoots()
+          .map((root) => {
+            const rect = root.getBoundingClientRect();
+            const area = rect.width * rect.height;
+            const hits = anchorHits(root);
+            const className = classText(root);
+            const score = hits * 10000 +
+              Number(/shopify-section|section|swiper|slider|carousel/i.test(className)) * 120 -
+              Math.log(Math.max(area, 1)) * 30 -
+              Number(rect.height > window.innerHeight * 3) * 2000;
+            return { root, hits, area, score };
+          })
+          .filter((item) => item.hits >= minHits)
+          .sort((a, b) => b.score - a.score || a.area - b.area)[0]?.root || null;
+      };
+      const clickElement = (element) => {
+        const target = element?.closest?.("button, [role='button'], a, [tabindex]") || element;
+        if (!target || !visible(target)) return false;
+        if (navigatesAway(target)) return false;
+        const rect = target.getBoundingClientRect();
+        const x = Math.round(rect.left + rect.width / 2);
+        const y = Math.round(rect.top + rect.height / 2);
+        for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+          target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window }));
+        }
+        if (typeof target.click === "function") target.click();
+        return true;
+      };
+      const navigatesAway = (target) => {
+        const link = target.closest?.("a[href]");
+        if (!link) return false;
+        const rawHref = String(link.getAttribute("href") || "").trim();
+        if (!rawHref || rawHref === "#" || rawHref.startsWith("#") || /^javascript:/i.test(rawHref)) {
+          return false;
+        }
+        try {
+          const current = new URL(window.location.href);
+          const destination = new URL(rawHref, current);
+          return destination.origin !== current.origin ||
+            destination.pathname !== current.pathname ||
+            destination.search !== current.search;
+        } catch {
+          return true;
+        }
+      };
+      const clickLabel = (root, label) => {
+        const choices = Array.from(root.querySelectorAll("button, [role='tab'], [role='button'], a, li, span, div"))
+          .filter(visible)
+          .map((element) => {
+            const rect = element.getBoundingClientRect();
+            const text = textOf(element, 180);
+            return { element, text, rect, area: rect.width * rect.height };
+          })
+          .filter((item) => item.text === label || item.text.startsWith(label + " ") || item.text.includes(label))
+          .sort((a, b) =>
+            Number(b.text === label) - Number(a.text === label) ||
+            a.area - b.area ||
+            a.rect.top - b.rect.top ||
+            a.rect.left - b.rect.left
+          );
+        return clickElement(choices[0]?.element);
+      };
+      const activeSwipers = (root) => [root, ...root.querySelectorAll(".swiper, [class*='swiper']")]
+        .map((element) => element.swiper)
+        .filter((swiper, index, list) => swiper && list.indexOf(swiper) === index);
+      const resetCarousel = (root) => {
+        for (const swiper of activeSwipers(root)) {
+          if (swiper.autoplay?.stop) swiper.autoplay.stop();
+          if (typeof swiper.slideToLoop === "function") {
+            swiper.slideToLoop(0, 0, false);
+          } else if (typeof swiper.slideTo === "function") {
+            swiper.slideTo(0, 0, false);
+          }
+          if (typeof swiper.update === "function") swiper.update();
+        }
+        const firstBullet = root.querySelector(".swiper-pagination-bullet, .slick-dots button, [role='tab'][aria-label*='slide' i]");
+        if (firstBullet) clickElement(firstBullet);
+      };
+      const findNextControl = (root) => {
+        const rootRect = root.getBoundingClientRect();
+        return Array.from(root.querySelectorAll(".swiper-button-next, .slick-next, button, [role='button'], a, [aria-label], [title]"))
+          .map((element) => element.closest("button, [role='button'], a, .swiper-button-next, .slick-next") || element)
+          .filter((element, index, list) => list.indexOf(element) === index)
+          .filter(visible)
+          .filter((element) => !navigatesAway(element))
+          .map((element) => {
+            const rect = element.getBoundingClientRect();
+            const text = [
+              textOf(element, 140),
+              element.getAttribute?.("aria-label"),
+              element.getAttribute?.("title"),
+              element.id,
+              classText(element)
+            ].filter(Boolean).join(" ");
+            const disabled = element.disabled ||
+              element.getAttribute?.("aria-disabled") === "true" ||
+              /disabled|lock/i.test(classText(element));
+            const compact = rect.width <= 130 && rect.height <= 130;
+            const rightSide = rect.left >= rootRect.left + rootRect.width * 0.45;
+            const explicit = /next|right|arrow|swiper-button-next|slick-next/i.test(text);
+            const score = Number(explicit) * 18 + Number(rightSide) * 8 + Number(compact) * 5 -
+              Number(disabled) * 100;
+            return { element, score, disabled };
+          })
+          .filter((item) => item.score >= 10 && !item.disabled)
+          .sort((a, b) => b.score - a.score)[0]?.element || null;
+      };
+      const advance = async (root) => {
+        const swipers = activeSwipers(root).filter((swiper) => typeof swiper.slideNext === "function");
+        if (swipers.length) {
+          for (const swiper of swipers) {
+            if (swiper.autoplay?.stop) swiper.autoplay.stop();
+            swiper.slideNext(0, false);
+            if (typeof swiper.update === "function") swiper.update();
+          }
+          await sleep(360);
+          return true;
+        }
+        const next = findNextControl(root);
+        if (!next) return false;
+        clickElement(next);
+        await sleep(420);
+        return true;
+      };
+      const collectPages = async (root, tabLabel, tabIndex, states) => {
+        if (tabLabel) {
+          clickLabel(root, tabLabel);
+          await sleep(450);
+        }
+        resetCarousel(root);
+        await sleep(300);
+        const seen = new Set();
+        for (let pageIndex = 1; pageIndex <= 12; pageIndex += 1) {
+          const signature = visibleSignature(root);
+          if (!signature || seen.has(signature)) break;
+          seen.add(signature);
+          const isDefaultState = states.length === 0 && (!tabIndex || tabIndex === 0) && pageIndex === 1;
+          const label = definition.labelMode === "tab" && tabLabel
+            ? tabLabel + " " + pageIndex
+            : (definition.labelPrefix || "轮播") + " " + pageIndex;
+          states.push({
+            kind: definition.mode === "tabs-carousel" ? "tab-carousel" : "carousel",
+            sectionKey: definition.key,
+            sectionLabel: definition.sectionLabel,
+            tabLabel: tabLabel || "",
+            pageIndex,
+            stateIndex: states.length + 1,
+            stateLabel: label,
+            logicalSignature: definition.key + "|" + (tabLabel || "") + "|" + pageIndex + "|" + signature,
+            fileId: (tabLabel || "state") + "-" + pageIndex,
+            isDefaultState
+          });
+          const before = signature;
+          const moved = await advance(root);
+          const after = visibleSignature(root);
+          if (!moved || after === before || seen.has(after)) break;
+        }
+      };
+
+      return (async () => {
+        const root = findRoot();
+        if (!root) {
+          return { ok: false, reason: "No matching homepage section was found." };
+        }
+        root.scrollIntoView({ block: "center", inline: "nearest" });
+        await sleep(450);
+        window.__pageShotRelatedSections = window.__pageShotRelatedSections || {};
+        window.__pageShotRelatedSections[definition.key] = { root, definition };
+        const states = [];
+        if (definition.mode === "tabs-carousel") {
+          for (const [tabIndex, tabLabel] of (definition.tabs || []).entries()) {
+            await collectPages(root, tabLabel, tabIndex, states);
+          }
+        } else {
+          await collectPages(root, "", 0, states);
+        }
+        window.__pageShotRelatedSections[definition.key].states = states;
+        return {
+          ok: true,
+          sectionKey: definition.key,
+          sectionLabel: definition.sectionLabel,
+          count: states.length,
+          states,
+          rootText: textOf(root, 280),
+          rootClass: classText(root).slice(0, 180)
+        };
+      })();
+    })()`,
+    awaitPromise: true,
+    returnByValue: true
+  });
+  return result.result?.value || { ok: false };
+}
+
+async function activateShokzHomeRelatedState(client, definition, state) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const definition = ${JSON.stringify(definition)};
+      const state = ${JSON.stringify(state)};
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const cleanText = (value, max = 240) => String(value || "")
+        .replace(/\\s+/g, " ")
+        .trim()
+        .slice(0, max);
+      const classText = (element) => String(element?.className?.baseVal || element?.className || "");
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const textOf = (element, max = 220) => cleanText([
+        element?.innerText,
+        element?.textContent,
+        element?.getAttribute?.("aria-label"),
+        element?.getAttribute?.("title")
+      ].filter(Boolean).join(" "), max);
+      const root = window.__pageShotRelatedSections?.[definition.key]?.root;
+      if (!root) return { ok: false, reason: "Related section root is not available." };
+      const clickElement = (element) => {
+        const target = element?.closest?.("button, [role='button'], a, [tabindex]") || element;
+        if (!target || !visible(target)) return false;
+        if (navigatesAway(target)) return false;
+        const rect = target.getBoundingClientRect();
+        const x = Math.round(rect.left + rect.width / 2);
+        const y = Math.round(rect.top + rect.height / 2);
+        for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+          target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window }));
+        }
+        if (typeof target.click === "function") target.click();
+        return true;
+      };
+      const navigatesAway = (target) => {
+        const link = target.closest?.("a[href]");
+        if (!link) return false;
+        const rawHref = String(link.getAttribute("href") || "").trim();
+        if (!rawHref || rawHref === "#" || rawHref.startsWith("#") || /^javascript:/i.test(rawHref)) {
+          return false;
+        }
+        try {
+          const current = new URL(window.location.href);
+          const destination = new URL(rawHref, current);
+          return destination.origin !== current.origin ||
+            destination.pathname !== current.pathname ||
+            destination.search !== current.search;
+        } catch {
+          return true;
+        }
+      };
+      const clickLabel = (label) => {
+        if (!label) return true;
+        const choices = Array.from(root.querySelectorAll("button, [role='tab'], [role='button'], a, li, span, div"))
+          .filter(visible)
+          .map((element) => {
+            const rect = element.getBoundingClientRect();
+            const text = textOf(element);
+            return { element, text, rect, area: rect.width * rect.height };
+          })
+          .filter((item) => item.text === label || item.text.startsWith(label + " ") || item.text.includes(label))
+          .sort((a, b) =>
+            Number(b.text === label) - Number(a.text === label) ||
+            a.area - b.area ||
+            a.rect.top - b.rect.top ||
+            a.rect.left - b.rect.left
+          );
+        return clickElement(choices[0]?.element);
+      };
+      const activeSwipers = () => [root, ...root.querySelectorAll(".swiper, [class*='swiper']")]
+        .map((element) => element.swiper)
+        .filter((swiper, index, list) => swiper && list.indexOf(swiper) === index);
+      const resetCarousel = () => {
+        for (const swiper of activeSwipers()) {
+          if (swiper.autoplay?.stop) swiper.autoplay.stop();
+          if (typeof swiper.slideToLoop === "function") {
+            swiper.slideToLoop(0, 0, false);
+          } else if (typeof swiper.slideTo === "function") {
+            swiper.slideTo(0, 0, false);
+          }
+          if (typeof swiper.update === "function") swiper.update();
+        }
+        const firstBullet = root.querySelector(".swiper-pagination-bullet, .slick-dots button, [role='tab'][aria-label*='slide' i]");
+        if (firstBullet) clickElement(firstBullet);
+      };
+      const findNextControl = () => {
+        const rootRect = root.getBoundingClientRect();
+        return Array.from(root.querySelectorAll(".swiper-button-next, .slick-next, button, [role='button'], a, [aria-label], [title]"))
+          .map((element) => element.closest("button, [role='button'], a, .swiper-button-next, .slick-next") || element)
+          .filter((element, index, list) => list.indexOf(element) === index)
+          .filter(visible)
+          .filter((element) => !navigatesAway(element))
+          .map((element) => {
+            const rect = element.getBoundingClientRect();
+            const text = [textOf(element), element.getAttribute?.("aria-label"), element.getAttribute?.("title"), element.id, classText(element)]
+              .filter(Boolean).join(" ");
+            const disabled = element.disabled || element.getAttribute?.("aria-disabled") === "true" || /disabled|lock/i.test(classText(element));
+            const compact = rect.width <= 130 && rect.height <= 130;
+            const rightSide = rect.left >= rootRect.left + rootRect.width * 0.45;
+            const explicit = /next|right|arrow|swiper-button-next|slick-next/i.test(text);
+            const score = Number(explicit) * 18 + Number(rightSide) * 8 + Number(compact) * 5 - Number(disabled) * 100;
+            return { element, score, disabled };
+          })
+          .filter((item) => item.score >= 10 && !item.disabled)
+          .sort((a, b) => b.score - a.score)[0]?.element || null;
+      };
+      const advance = async () => {
+        const swipers = activeSwipers().filter((swiper) => typeof swiper.slideNext === "function");
+        if (swipers.length) {
+          for (const swiper of swipers) {
+            if (swiper.autoplay?.stop) swiper.autoplay.stop();
+            swiper.slideNext(0, false);
+            if (typeof swiper.update === "function") swiper.update();
+          }
+          await sleep(340);
+          return true;
+        }
+        const next = findNextControl();
+        if (!next) return false;
+        clickElement(next);
+        await sleep(420);
+        return true;
+      };
+      return (async () => {
+        root.scrollIntoView({ block: "center", inline: "nearest" });
+        await sleep(260);
+        if (state.tabLabel) {
+          clickLabel(state.tabLabel);
+          await sleep(420);
+        }
+        resetCarousel();
+        await sleep(260);
+        const clicks = Math.max(0, Number(state.pageIndex || 1) - 1);
+        for (let index = 0; index < clicks; index += 1) {
+          await advance();
+        }
+        root.scrollIntoView({ block: "center", inline: "nearest" });
+        await sleep(260);
+        return { ok: true };
+      })();
+    })()`,
+    awaitPromise: true,
+    returnByValue: true
+  });
+  const value = result.result?.value || {};
+  if (!value.ok) {
+    throw new Error(value.reason || `Could not activate ${definition.sectionLabel} ${state.stateLabel}.`);
+  }
+  return value;
+}
+
+async function waitForRelatedSectionImages(client, sectionKey) {
+  await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const sectionKey = ${JSON.stringify(sectionKey)};
+      const root = window.__pageShotRelatedSections?.[sectionKey]?.root || document;
+      const images = Array.from(root.querySelectorAll("img")).filter((img) => img.currentSrc || img.src);
+      return Promise.all(images.map((img) => {
+        if (img.complete && img.naturalWidth > 0) return true;
+        return new Promise((resolve) => {
+          const done = () => resolve(true);
+          img.addEventListener("load", done, { once: true });
+          img.addEventListener("error", done, { once: true });
+          setTimeout(done, 1800);
+        });
+      }));
+    })()`,
+    awaitPromise: true,
+    returnByValue: true
+  }).catch(() => null);
+}
+
+async function readShokzHomeRelatedState(client, definition, state) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const definition = ${JSON.stringify(definition)};
+      const state = ${JSON.stringify(state)};
+      const root = window.__pageShotRelatedSections?.[definition.key]?.root;
+      if (!root) return { ok: false, reason: "Related section root is not available." };
+      const cleanText = (value, max = 360) => String(value || "")
+        .replace(/\\s+/g, " ")
+        .trim()
+        .slice(0, max);
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const intersects = (rect, rootRect) =>
+        Math.max(0, Math.min(rect.right, rootRect.right) - Math.max(rect.left, rootRect.left)) *
+        Math.max(0, Math.min(rect.bottom, rootRect.bottom) - Math.max(rect.top, rootRect.top));
+      const imageSources = (element) => Array.from(element.querySelectorAll("img, source"))
+        .flatMap((node) => [
+          node.currentSrc,
+          node.src,
+          node.srcset,
+          node.getAttribute("data-src"),
+          node.getAttribute("data-srcset"),
+          node.getAttribute("data-original"),
+          node.getAttribute("data-lazy-src"),
+          node.getAttribute("data-lazy-srcset")
+        ])
+        .filter(Boolean)
+        .map((value) => String(value).split(",")[0].trim())
+        .filter(Boolean);
+      const rootRect = root.getBoundingClientRect();
+      const visibleText = Array.from(root.querySelectorAll("a, button, h1, h2, h3, h4, p, li, article, [class*='card'], [class*='slide']"))
+        .filter(visible)
+        .filter((node) => intersects(node.getBoundingClientRect(), rootRect) > 80)
+        .map((node) => cleanText([node.innerText, node.textContent].filter(Boolean).join(" "), 140))
+        .filter(Boolean)
+        .filter((value, index, list) => list.indexOf(value) === index)
+        .slice(0, 24);
+      const images = imageSources(root).slice(0, 24);
+      const top = Math.max(0, rootRect.top + window.scrollY);
+      const left = Math.max(0, rootRect.left + window.scrollX);
+      const clip = {
+        x: left,
+        y: top,
+        width: Math.min(rootRect.width, document.documentElement.scrollWidth, window.innerWidth * 1.4),
+        height: rootRect.height
+      };
+      return {
+        ok: true,
+        clip,
+        text: visibleText.join(" "),
+        images,
+        logicalSignature: state.logicalSignature,
+        activeIndex: state.stateIndex
+      };
+    })()`,
+    returnByValue: true
+  });
+  return result.result?.value || { ok: false };
 }
 
 function bannerIndexForCapture(loopIndex, state, slide, bannerCount) {
@@ -873,12 +1726,117 @@ function normalizeBannerClip(inputClip, viewport) {
   return { x, y, width, height, scale: 1 };
 }
 
+function normalizeRelatedClip(inputClip, viewport) {
+  if (!inputClip) {
+    return null;
+  }
+  const maxWidth = Math.max(1, Math.min(6000, Number(viewport.width || 1920) * 3));
+  const maxHeight = Math.max(220, Math.min(3200, Number(viewport.height || 1080) * 2.4));
+  const x = Math.max(0, Math.floor(Number(inputClip.x) || 0));
+  const y = Math.max(0, Math.floor(Number(inputClip.y) || 0));
+  const width = Math.max(1, Math.min(maxWidth, Math.ceil(Number(inputClip.width) || 0)));
+  const height = Math.max(1, Math.min(maxHeight, Math.ceil(Number(inputClip.height) || 0)));
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width < 2 || height < 2) {
+    return null;
+  }
+  return { x, y, width, height, scale: 1 };
+}
+
 function bannerOutputPath(outputPath, bannerIndex) {
   return outputPath.replace(/\.png$/i, `-banner-${bannerIndex}.png`);
 }
 
+function relatedOutputPath(outputPath, sectionKey, stateId) {
+  const safeSection = safeFilePart(sectionKey);
+  const safeState = safeFilePart(stateId);
+  return outputPath.replace(/\.png$/i, `-${safeSection}-${safeState}.png`);
+}
+
 function hashBuffer(buffer) {
   return crypto.createHash("sha1").update(buffer).digest("hex");
+}
+
+function visualHashForBuffer(buffer) {
+  try {
+    const image = decodePng(buffer);
+    const samples = [];
+    for (let y = 0; y < 8; y += 1) {
+      const sourceY = Math.min(image.height - 1, Math.floor((y + 0.5) * image.height / 8));
+      for (let x = 0; x < 8; x += 1) {
+        const sourceX = Math.min(image.width - 1, Math.floor((x + 0.5) * image.width / 8));
+        const offset = (sourceY * image.width + sourceX) * 4;
+        const gray = Math.round(
+          image.rgba[offset] * 0.299 +
+          image.rgba[offset + 1] * 0.587 +
+          image.rgba[offset + 2] * 0.114
+        );
+        samples.push(gray);
+      }
+    }
+    const average = samples.reduce((sum, value) => sum + value, 0) / samples.length;
+    let bits = "";
+    for (const value of samples) {
+      bits += value >= average ? "1" : "0";
+    }
+    let hex = "";
+    for (let index = 0; index < bits.length; index += 4) {
+      hex += Number.parseInt(bits.slice(index, index + 4), 2).toString(16);
+    }
+    return hex;
+  } catch {
+    return hashBuffer(buffer).slice(0, 16);
+  }
+}
+
+function visualHashDistance(a, b) {
+  if (!a || !b || a.length !== b.length) {
+    return Number.POSITIVE_INFINITY;
+  }
+  let distance = 0;
+  for (let index = 0; index < a.length; index += 1) {
+    const left = Number.parseInt(a[index], 16);
+    const right = Number.parseInt(b[index], 16);
+    if (!Number.isFinite(left) || !Number.isFinite(right)) {
+      return Number.POSITIVE_INFINITY;
+    }
+    distance += bitCount(left ^ right);
+  }
+  return distance;
+}
+
+function nearestVisualHash(hash, previous) {
+  return previous
+    .map((item) => ({ ...item, distance: visualHashDistance(hash, item.hash) }))
+    .sort((a, b) => a.distance - b.distance)[0] || null;
+}
+
+function bitCount(value) {
+  let count = 0;
+  let number = value;
+  while (number) {
+    count += number & 1;
+    number >>= 1;
+  }
+  return count;
+}
+
+function safeFilePart(value) {
+  return String(value || "state")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "state";
+}
+
+function compareRelatedCaptures(a, b) {
+  const sectionOrder = ["banner", ...homeRelatedSectionDefinitions.map((definition) => definition.key)];
+  const sectionA = sectionOrder.indexOf(a.sectionKey);
+  const sectionB = sectionOrder.indexOf(b.sectionKey);
+  const orderA = sectionA === -1 ? 1000 : sectionA;
+  const orderB = sectionB === -1 ? 1000 : sectionB;
+  return orderA - orderB ||
+    Number(a.stateIndex || a.bannerIndex || 0) - Number(b.stateIndex || b.bannerIndex || 0) ||
+    String(a.label || "").localeCompare(String(b.label || ""), "zh-CN");
 }
 
 async function openShokzProductsNavigation(client, viewport) {
