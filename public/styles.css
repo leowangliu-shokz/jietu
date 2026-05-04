@@ -392,10 +392,7 @@ select:focus {
 }
 
 .change-card-main {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 120px;
-  gap: 12px;
-  align-items: start;
+  display: block;
 }
 
 .change-title {
@@ -415,21 +412,53 @@ select:focus {
   font-size: 12px;
 }
 
-.change-diff-thumb {
-  display: block;
+.change-compare-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.change-image {
+  position: relative;
+  display: grid;
+  place-items: center;
   overflow: hidden;
   aspect-ratio: 16 / 10;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--panel-alt);
+  color: var(--muted);
+  font-size: 12px;
+  text-decoration: none;
 }
 
-.change-diff-thumb img {
+.change-image img {
   width: 100%;
   height: 100%;
   display: block;
   object-fit: cover;
   object-position: top;
+}
+
+.change-image span {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  border-radius: 999px;
+  background: rgba(15, 17, 20, 0.72);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1;
+  padding: 4px 7px;
+}
+
+.change-image p {
+  margin: 0;
+}
+
+.change-diff-image {
+  border-color: rgba(180, 35, 24, 0.35);
 }
 
 .change-text {
@@ -676,10 +705,10 @@ select:focus {
   }
 
   .change-card-main {
-    grid-template-columns: 1fr;
+    display: block;
   }
 
-  .change-diff-thumb {
-    width: min(180px, 100%);
+  .change-compare-grid {
+    grid-template-columns: 1fr;
   }
 }

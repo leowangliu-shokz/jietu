@@ -232,17 +232,40 @@ function renderChangesSummary() {
             <span>${formatDate(change.from?.capturedAt)} → ${formatDate(change.to?.capturedAt)}</span>
           </p>
         </div>
-        ${change.visualChange?.diffImageUrl ? `
-          <a class="change-diff-thumb" href="${change.visualChange.diffImageUrl}" target="_blank" rel="noreferrer">
-            <img src="${change.visualChange.diffImageUrl}" alt="${escapeHtml(changeTitle(change))}" loading="lazy">
-          </a>
-        ` : ""}
       </div>
+      ${renderChangeComparisonImages(change)}
       ${renderTextChange(change.textChange)}
       ${renderVisualChange(change.visualChange)}
     `;
     elements.changesList.append(item);
   }
+}
+
+function renderChangeComparisonImages(change) {
+  return `
+    <div class="change-compare-grid">
+      ${renderChangeImage("变化前", change.from?.imageUrl, change.from?.capturedAt)}
+      ${renderChangeImage("变化后", change.to?.imageUrl, change.to?.capturedAt)}
+      ${renderChangeImage("标注图", change.visualChange?.diffImageUrl, change.to?.capturedAt, "change-diff-image")}
+    </div>
+  `;
+}
+
+function renderChangeImage(label, imageUrl, capturedAt, extraClass = "") {
+  if (!imageUrl) {
+    return `
+      <div class="change-image ${extraClass}">
+        <span>${escapeHtml(label)}</span>
+        <p>暂无图片</p>
+      </div>
+    `;
+  }
+  return `
+    <a class="change-image ${extraClass}" href="${imageUrl}" target="_blank" rel="noreferrer">
+      <img src="${imageUrl}" alt="${escapeHtml(label)} ${capturedAt ? formatDate(capturedAt) : ""}" loading="lazy">
+      <span>${escapeHtml(label)}</span>
+    </a>
+  `;
 }
 
 function renderTextChange(textChange) {
