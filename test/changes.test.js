@@ -78,6 +78,88 @@ test("detects visual regions and filters tiny noise", async () => {
   assert.equal(noiseDiff.changed, false);
 });
 
+test("ignores banner pixel drift when copy and image assets are unchanged", async () => {
+  const archiveRoot = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-banner-drift-"));
+  const beforeFile = "2026-05-03/example-com/banner-before.png";
+  const afterFile = "2026-05-03/example-com/banner-after.png";
+
+  const beforeImage = solidImage(100, 50, [255, 255, 255, 255]);
+  const afterImage = solidImage(100, 50, [255, 255, 255, 255]);
+  fillRect(afterImage, 100, 24, 14, 20, 10, [220, 220, 220, 255]);
+  await writeArchiveImage(archiveRoot, beforeFile, 100, 50, beforeImage);
+  await writeArchiveImage(archiveRoot, afterFile, 100, 50, afterImage);
+
+  const changes = await compareSnapshots([
+    snapshot("snap-1", "2026-05-03T08:00:00.000Z", [bannerShot(beforeFile)]),
+    snapshot("snap-2", "2026-05-03T09:00:00.000Z", [bannerShot(afterFile)])
+  ], { archiveRoot, writeDiffImages: false });
+
+  assert.equal(changes.length, 0);
+});
+
+test("keeps banner image asset changes even when copy is unchanged", async () => {
+  const archiveRoot = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-banner-image-"));
+  const beforeFile = "2026-05-03/example-com/banner-before.png";
+  const afterFile = "2026-05-03/example-com/banner-after.png";
+
+  const beforeImage = solidImage(100, 50, [255, 255, 255, 255]);
+  const afterImage = solidImage(100, 50, [255, 255, 255, 255]);
+  fillRect(afterImage, 100, 24, 14, 20, 10, [220, 220, 220, 255]);
+  await writeArchiveImage(archiveRoot, beforeFile, 100, 50, beforeImage);
+  await writeArchiveImage(archiveRoot, afterFile, 100, 50, afterImage);
+
+  const changes = await compareSnapshots([
+    snapshot("snap-1", "2026-05-03T08:00:00.000Z", [
+      bannerShot(beforeFile, { bannerState: bannerState({ images: ["https://cdn.example.com/openrun-old.webp"] }) })
+    ]),
+    snapshot("snap-2", "2026-05-03T09:00:00.000Z", [
+      bannerShot(afterFile, { bannerState: bannerState({ images: ["https://cdn.example.com/openrun-new.webp"] }) })
+    ])
+  ], { archiveRoot, writeDiffImages: false });
+
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].changeType, "visual");
+  assert.ok(changes[0].visualChange.signals.some((signal) => signal.type === "image"));
+});
+
+test("keeps banner layout moves for stable copy", async () => {
+  const archiveRoot = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-banner-layout-"));
+  const beforeFile = "2026-05-03/example-com/banner-before.png";
+  const afterFile = "2026-05-03/example-com/banner-after.png";
+
+  const beforeImage = solidImage(200, 100, [255, 255, 255, 255]);
+  const afterImage = solidImage(200, 100, [255, 255, 255, 255]);
+  fillRect(beforeImage, 200, 10, 12, 60, 18, [20, 20, 20, 255]);
+  fillRect(afterImage, 200, 145, 12, 60, 18, [20, 20, 20, 255]);
+  await writeArchiveImage(archiveRoot, beforeFile, 200, 100, beforeImage);
+  await writeArchiveImage(archiveRoot, afterFile, 200, 100, afterImage);
+
+  const changes = await compareSnapshots([
+    snapshot("snap-1", "2026-05-03T08:00:00.000Z", [
+      bannerShot(beforeFile, {
+        width: 200,
+        height: 100,
+        bannerState: bannerState({
+          textBlocks: [{ text: "Shop Now", x: 10, y: 12, width: 60, height: 18 }]
+        })
+      })
+    ]),
+    snapshot("snap-2", "2026-05-03T09:00:00.000Z", [
+      bannerShot(afterFile, {
+        width: 200,
+        height: 100,
+        bannerState: bannerState({
+          textBlocks: [{ text: "Shop Now", x: 145, y: 12, width: 60, height: 18 }]
+        })
+      })
+    ])
+  ], { archiveRoot, writeDiffImages: false });
+
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].changeType, "visual");
+  assert.ok(changes[0].visualChange.signals.some((signal) => signal.type === "layout"));
+});
+
 test("backfill writes diff artifacts without rewriting archived screenshots", async () => {
   const archiveRoot = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-archive-"));
   const folder = path.join(archiveRoot, "2026-05-03", "example-com");
@@ -120,6 +202,40 @@ function snapshot(id, capturedAt, relatedShots = [], file = `${id}.png`) {
     devicePresetId: "pc",
     deviceName: "PC",
     relatedShots
+  };
+}
+
+async function writeArchiveImage(archiveRoot, relativeFile, width, height, rgba) {
+  const filePath = path.join(archiveRoot, relativeFile);
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, encodePng(width, height, rgba));
+}
+
+function bannerShot(file, overrides = {}) {
+  return {
+    kind: "banner",
+    sectionKey: "banner",
+    sectionLabel: "Banner",
+    sectionTitle: "Banner",
+    label: "Slide 2",
+    file,
+    imageUrl: `/archive/${file}`,
+    width: overrides.width || 100,
+    height: overrides.height || 50,
+    bannerIndex: 2,
+    stateIndex: 2,
+    stateCount: 3,
+    bannerState: bannerState(),
+    ...overrides
+  };
+}
+
+function bannerState(overrides = {}) {
+  return {
+    text: "OpenRun Pro 2 Shop Now",
+    images: ["https://cdn.example.com/openrun-pro-2.webp"],
+    textBlocks: [],
+    ...overrides
   };
 }
 

@@ -13,6 +13,15 @@ const defaultDiffOptions = {
   maxRegions: 40
 };
 
+const defaultVisualJudgmentOptions = {
+  pageMinRatio: 0.02,
+  sectionMinRatio: 0.04,
+  bannerMinRatio: 0.12,
+  layoutMoveMinPixels: 48,
+  layoutMoveMinRatio: 0.08,
+  layoutResizeRatio: 0.35
+};
+
 export async function loadChanges() {
   try {
     const parsed = JSON.parse(await fs.readFile(changesPath, "utf8"));
@@ -268,6 +277,10 @@ async function buildVisualChange(fromItem, toItem, options) {
     if (!diff.changed) {
       return null;
     }
+    const judgment = judgeHumanVisibleChange(fromItem, toItem, diff, options);
+    if (!judgment.changed) {
+      return null;
+    }
     return {
       diffFile: diff.outputPath ? outputRelativePath : null,
       diffImageUrl: diff.outputPath ? publicSnapshotUrl(outputRelativePath) : null,
@@ -279,7 +292,10 @@ async function buildVisualChange(fromItem, toItem, options) {
       ratio: Number(diff.ratio.toFixed(6)),
       width: diff.width,
       height: diff.height,
-      dimensionChanged: diff.dimensionChanged
+      dimensionChanged: diff.dimensionChanged,
+      judgment: judgment.kind,
+      signals: judgment.signals,
+      summary: judgment.summary
     };
   } catch (error) {
     if (options.recordVisualSkips) {
@@ -301,6 +317,76 @@ async function buildVisualChange(fromItem, toItem, options) {
     }
     return null;
   }
+}
+
+export function judgeHumanVisibleChange(fromItem, toItem, diff, options = {}) {
+  const settings = { ...defaultVisualJudgmentOptions, ...options };
+  const signals = [];
+  const beforeText = normalizeComparableText(extractText(fromItem));
+  const afterText = normalizeComparableText(extractText(toItem));
+  const textChanged = Boolean(beforeText || afterText) && beforeText !== afterText;
+  if (textChanged) {
+    signals.push({ type: "copy", label: "copy changed" });
+  }
+
+  const assetChange = imageAssetChange(fromItem, toItem);
+  if (assetChange.changed) {
+    signals.push({
+      type: "image",
+      label: "image asset changed",
+      before: assetChange.before,
+      after: assetChange.after
+    });
+  }
+
+  const layoutChange = layoutChangeForTextBlocks(fromItem, toItem, settings);
+  if (layoutChange.changed) {
+    signals.push({
+      type: "layout",
+      label: "content position changed",
+      text: truncateText(layoutChange.text, 180),
+      beforeRect: layoutChange.beforeRect,
+      afterRect: layoutChange.afterRect,
+      deltaX: layoutChange.deltaX,
+      deltaY: layoutChange.deltaY
+    });
+  }
+
+  if (diff.dimensionChanged) {
+    signals.push({ type: "dimension", label: "image dimensions changed" });
+  }
+
+  const semanticSignals = signals.filter((signal) => signal.type !== "dimension");
+  if (semanticSignals.length > 0 || diff.dimensionChanged) {
+    return {
+      changed: true,
+      kind: semanticSignals.length > 0 ? "semantic" : "dimension",
+      signals,
+      summary: summarizeSignals(signals)
+    };
+  }
+
+  const minRatio = minVisualRatioForItem(toItem, settings);
+  if (Number(diff.ratio || 0) >= minRatio) {
+    const signal = {
+      type: "large-visual",
+      label: "large visual change",
+      ratio: Number(diff.ratio.toFixed(6))
+    };
+    return {
+      changed: true,
+      kind: "large-visual",
+      signals: [signal],
+      summary: summarizeSignals([signal])
+    };
+  }
+
+  return {
+    changed: false,
+    kind: "suppressed-drift",
+    signals: [],
+    summary: "only pixel drift; text, image assets, and layout stayed the same"
+  };
 }
 
 function createComparableItem(snapshot, shot, relatedIndex = null) {
@@ -353,6 +439,7 @@ function createComparableItem(snapshot, shot, relatedIndex = null) {
     pageIndex,
     visualSignature: source.visualSignature || null,
     visualHash: source.visualHash || null,
+    logicalSignature: source.logicalSignature || source.bannerSignature || null,
     bannerState: source.bannerState || null,
     sectionState: source.sectionState || null,
     positionKey
@@ -404,6 +491,169 @@ function extractTextBlocks(item) {
       }))
       .filter((block) => block.text)
     : [];
+}
+
+function extractImageSources(item) {
+  const state = item.sectionState || item.bannerState || {};
+  const images = Array.isArray(state.images) ? state.images : [];
+  const backgrounds = Array.isArray(state.backgrounds) ? state.backgrounds : [];
+  const parsed = parseLogicalSignature(item.logicalSignature);
+  const parsedImages = Array.isArray(parsed?.images) ? parsed.images : [];
+  const parsedBackgrounds = Array.isArray(parsed?.backgrounds) ? parsed.backgrounds : [];
+  return [...images, ...backgrounds, ...parsedImages, ...parsedBackgrounds]
+    .map((source) => String(source || "").trim())
+    .filter(Boolean);
+}
+
+function imageAssetChange(fromItem, toItem) {
+  const before = imageAssetFingerprint(fromItem);
+  const after = imageAssetFingerprint(toItem);
+  if (before.families.size === 0 || after.families.size === 0) {
+    return { changed: false, before: [...before.families], after: [...after.families] };
+  }
+
+  const exactOverlap = intersectionSize(before.exact, after.exact);
+  const familyOverlap = intersectionSize(before.families, after.families);
+  const overlap = Math.max(exactOverlap, familyOverlap);
+  const minSize = Math.max(1, Math.min(before.families.size, after.families.size));
+  const changed = overlap === 0 || overlap / minSize < 0.5;
+  return {
+    changed,
+    before: [...before.families],
+    after: [...after.families]
+  };
+}
+
+function imageAssetFingerprint(item) {
+  const exact = new Set();
+  const families = new Set();
+  for (const source of extractImageSources(item)) {
+    const key = imageAssetKey(source);
+    if (!key) {
+      continue;
+    }
+    exact.add(key.exact);
+    families.add(key.family);
+  }
+  return { exact, families };
+}
+
+function imageAssetKey(source) {
+  const firstCandidate = String(source || "").split(",")[0].trim().split(/\s+/)[0];
+  if (!firstCandidate) {
+    return null;
+  }
+  try {
+    const url = new URL(firstCandidate, "https://asset.local");
+    const basename = decodeURIComponent(url.pathname.split("/").filter(Boolean).pop() || "");
+    const exact = basename
+      .toLowerCase()
+      .replace(/\.(avif|webp|png|jpe?g|gif|svg)$/i, "")
+      .replace(/@[\dx]+$/i, "")
+      .replace(/[-_]\d{2,5}w$/i, "")
+      .replace(/[-_]\d+x\d+$/i, "");
+    const family = exact
+      .replace(/^m[-_]/i, "")
+      .replace(/[-_](mb|mobile|desktop|pc)$/i, "");
+    return exact ? { exact, family: family || exact } : null;
+  } catch {
+    return null;
+  }
+}
+
+function layoutChangeForTextBlocks(fromItem, toItem, settings) {
+  const beforeBlocks = extractTextBlocks(fromItem);
+  const afterBlocks = extractTextBlocks(toItem);
+  if (!beforeBlocks.length || !afterBlocks.length) {
+    return { changed: false };
+  }
+
+  const beforeByText = new Map();
+  for (const block of beforeBlocks) {
+    if (!beforeByText.has(block.text)) {
+      beforeByText.set(block.text, block);
+    }
+  }
+
+  const itemWidth = Math.max(Number(fromItem.width || 0), Number(toItem.width || 0), 1);
+  const itemHeight = Math.max(Number(fromItem.height || 0), Number(toItem.height || 0), 1);
+  const moveXThreshold = Math.max(settings.layoutMoveMinPixels, itemWidth * settings.layoutMoveMinRatio);
+  const moveYThreshold = Math.max(settings.layoutMoveMinPixels, itemHeight * settings.layoutMoveMinRatio);
+
+  for (const afterBlock of afterBlocks) {
+    const beforeBlock = beforeByText.get(afterBlock.text);
+    if (!beforeBlock?.rect || !afterBlock.rect) {
+      continue;
+    }
+
+    const beforeCenter = rectCenter(beforeBlock.rect);
+    const afterCenter = rectCenter(afterBlock.rect);
+    const deltaX = Math.round(afterCenter.x - beforeCenter.x);
+    const deltaY = Math.round(afterCenter.y - beforeCenter.y);
+    const moved = Math.abs(deltaX) >= moveXThreshold || Math.abs(deltaY) >= moveYThreshold;
+    const resized = rectResizeRatio(beforeBlock.rect, afterBlock.rect) >= settings.layoutResizeRatio;
+    if (moved || resized) {
+      return {
+        changed: true,
+        text: afterBlock.text,
+        beforeRect: beforeBlock.rect,
+        afterRect: afterBlock.rect,
+        deltaX,
+        deltaY
+      };
+    }
+  }
+
+  return { changed: false };
+}
+
+function minVisualRatioForItem(item, settings) {
+  if (item.sectionKey === "banner" || item.bannerIndex) {
+    return settings.bannerMinRatio;
+  }
+  if (item.itemKind === "section") {
+    return settings.sectionMinRatio;
+  }
+  return settings.pageMinRatio;
+}
+
+function summarizeSignals(signals) {
+  return signals.map((signal) => signal.label).filter(Boolean).join(", ");
+}
+
+function parseLogicalSignature(value) {
+  if (!value) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function intersectionSize(left, right) {
+  let count = 0;
+  for (const value of left) {
+    if (right.has(value)) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function rectCenter(rect) {
+  return {
+    x: rect.x + rect.width / 2,
+    y: rect.y + rect.height / 2
+  };
+}
+
+function rectResizeRatio(beforeRect, afterRect) {
+  const beforeArea = Math.max(1, beforeRect.width * beforeRect.height);
+  const afterArea = Math.max(1, afterRect.width * afterRect.height);
+  return Math.abs(afterArea - beforeArea) / Math.max(beforeArea, afterArea);
 }
 
 function firstChangedTextBlock(beforeBlocks, afterBlocks) {

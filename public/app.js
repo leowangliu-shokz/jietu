@@ -288,11 +288,31 @@ function renderVisualChange(visualChange) {
     return `<p class="change-note">视觉对比跳过：${escapeHtml(visualChange.reason || "无法读取图片")}</p>`;
   }
   const ratio = `${(Number(visualChange.ratio || 0) * 100).toFixed(2)}%`;
+  const summary = visualChangeSummary(visualChange);
+  const judgment = summary ? `，判断依据：${escapeHtml(summary)}` : "";
   return `
     <p class="change-note">
-      视觉变化：${visualChange.regionCount || 0} 个区域，变化像素占比 ${ratio}
+      视觉变化：${visualChange.regionCount || 0} 个区域，变化像素占比 ${ratio}${judgment}
     </p>
   `;
+}
+
+function visualChangeSummary(visualChange) {
+  const labels = (visualChange.signals || []).map(visualSignalLabel).filter(Boolean);
+  if (labels.length) {
+    return labels.join("、");
+  }
+  return visualChange.summary || "";
+}
+
+function visualSignalLabel(signal) {
+  return {
+    copy: "文案变化",
+    image: "图片素材变化",
+    layout: "内容位置明显变化",
+    dimension: "图片尺寸变化",
+    "large-visual": "大面积视觉变化"
+  }[signal.type] || signal.label || "";
 }
 
 function changeTitle(change) {
