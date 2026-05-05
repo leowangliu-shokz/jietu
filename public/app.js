@@ -1,5 +1,7 @@
 const elements = {
   refresh: document.querySelector("#refresh"),
+  tabs: [...document.querySelectorAll("[data-tab]")],
+  tabPanels: [...document.querySelectorAll("[data-tab-panel]")],
   shotCount: document.querySelector("#shotCount"),
   scheduleState: document.querySelector("#scheduleState"),
   browserState: document.querySelector("#browserState"),
@@ -30,6 +32,7 @@ const relatedSectionTitles = {
 };
 
 let state = null;
+let activeTab = "archive";
 const selectedDeviceFilters = {
   devices: new Set()
 };
@@ -38,6 +41,10 @@ await refreshState();
 setInterval(refreshState, 10000);
 
 elements.refresh.addEventListener("click", refreshState);
+for (const tab of elements.tabs) {
+  tab.addEventListener("click", () => setActiveTab(tab.dataset.tab));
+  tab.addEventListener("keydown", handleTabKeydown);
+}
 elements.urlFilter.addEventListener("change", renderGallery);
 elements.runSourceFilter.addEventListener("change", renderGallery);
 elements.deviceFilterButton.addEventListener("click", toggleDeviceFilterMenu);
@@ -45,6 +52,52 @@ elements.deviceFilterMenu.addEventListener("change", handleDeviceFilterChange);
 elements.deviceFilterMenu.addEventListener("click", handleDeviceFilterClick);
 document.addEventListener("click", closeDeviceFilterOnOutsideClick);
 document.addEventListener("keydown", closeDeviceFilterOnEscape);
+
+function setActiveTab(tabName) {
+  activeTab = tabName === "changes" ? "changes" : "archive";
+
+  for (const tab of elements.tabs) {
+    const isActive = tab.dataset.tab === activeTab;
+    tab.classList.toggle("is-active", isActive);
+    tab.setAttribute("aria-selected", String(isActive));
+    tab.tabIndex = isActive ? 0 : -1;
+  }
+
+  for (const panel of elements.tabPanels) {
+    const isActive = panel.dataset.tabPanel === activeTab;
+    panel.classList.toggle("is-active", isActive);
+    panel.hidden = !isActive;
+  }
+
+  if (activeTab !== "archive") {
+    setDeviceFilterMenuOpen(false);
+  }
+}
+
+function handleTabKeydown(event) {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+    return;
+  }
+
+  event.preventDefault();
+  const currentIndex = elements.tabs.indexOf(event.currentTarget);
+  const lastIndex = elements.tabs.length - 1;
+  let nextIndex = currentIndex;
+
+  if (event.key === "ArrowLeft") {
+    nextIndex = currentIndex <= 0 ? lastIndex : currentIndex - 1;
+  } else if (event.key === "ArrowRight") {
+    nextIndex = currentIndex >= lastIndex ? 0 : currentIndex + 1;
+  } else if (event.key === "Home") {
+    nextIndex = 0;
+  } else if (event.key === "End") {
+    nextIndex = lastIndex;
+  }
+
+  const nextTab = elements.tabs[nextIndex];
+  setActiveTab(nextTab.dataset.tab);
+  nextTab.focus();
+}
 
 async function refreshState() {
   const response = await fetch("/api/state");

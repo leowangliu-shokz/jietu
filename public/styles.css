@@ -84,6 +84,47 @@ button.primary:hover {
   padding: 10px 0 22px;
 }
 
+.toolbar-title {
+  min-width: 0;
+}
+
+.tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-alt);
+  padding: 4px;
+}
+
+.tab {
+  min-height: 38px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.tab:hover {
+  border-color: transparent;
+  background: #fff;
+  transform: none;
+}
+
+.tab:focus-visible {
+  outline: 3px solid rgba(15, 118, 110, 0.18);
+  outline-offset: 2px;
+}
+
+.tab.is-active {
+  background: #fff;
+  color: var(--accent-dark);
+  box-shadow: 0 1px 8px rgba(23, 33, 28, 0.08);
+}
+
 .eyebrow {
   margin: 0 0 6px;
   color: var(--accent);
@@ -126,6 +167,10 @@ h2 {
   margin-bottom: 16px;
 }
 
+.changes-status {
+  grid-template-columns: minmax(180px, 280px);
+}
+
 .stat {
   min-height: 86px;
   border: 1px solid var(--line);
@@ -156,6 +201,15 @@ h2 {
 .workspace {
   display: grid;
   gap: 16px;
+}
+
+.tab-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.tab-panel[hidden] {
+  display: none;
 }
 
 .timeline {
@@ -685,11 +739,13 @@ select:focus {
   }
 
   .actions,
+  .tabs,
   .timeline-filters {
     width: 100%;
   }
 
   .actions button,
+  .tab,
   .timeline-filters select,
   .timeline-filters .multi-filter-button {
     flex: 1;

@@ -9,81 +9,126 @@
   <body>
     <main class="shell">
       <section class="toolbar" aria-label="截图工具栏">
-        <div>
+        <div class="toolbar-title">
           <p class="eyebrow">Page Shot Archive</p>
           <h1>网页截图时间档案</h1>
         </div>
+        <nav class="tabs" role="tablist" aria-label="页面内容">
+          <button
+            id="tabArchive"
+            class="tab is-active"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            aria-controls="archivePanel"
+            data-tab="archive"
+          >
+            截图存档
+          </button>
+          <button
+            id="tabChanges"
+            class="tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="changesPanel"
+            data-tab="changes"
+            tabindex="-1"
+          >
+            变更汇总
+          </button>
+        </nav>
         <div class="actions">
           <button id="refresh" type="button">刷新</button>
         </div>
       </section>
 
-      <section class="status-grid" aria-label="当前状态">
-        <div class="stat">
-          <span>归档数量</span>
-          <strong id="shotCount">0</strong>
-        </div>
-        <div class="stat">
-          <span>自动截图</span>
-          <strong id="scheduleState">整点（所有设备）</strong>
-        </div>
-        <div class="stat">
-          <span>浏览器</span>
-          <strong id="browserState">检查中</strong>
-        </div>
-        <div class="stat">
-          <span>运行状态</span>
-          <strong id="captureState">空闲</strong>
-        </div>
-        <div class="stat">
-          <span>变更记录</span>
-          <strong id="changeCount">0</strong>
-        </div>
-      </section>
-
       <section class="workspace">
-        <section class="changes-panel" aria-label="变更汇总">
-          <div class="timeline-head">
-            <div>
-              <h2>变更汇总</h2>
-              <p>按同 URL、设备和页面位置，与上一张图对比</p>
+        <section
+          id="archivePanel"
+          class="tab-panel is-active"
+          role="tabpanel"
+          aria-labelledby="tabArchive"
+          data-tab-panel="archive"
+        >
+          <section class="status-grid" aria-label="截图存档状态">
+            <div class="stat">
+              <span>归档数量</span>
+              <strong id="shotCount">0</strong>
             </div>
-          </div>
-          <div id="changesList" class="changes-list"></div>
-          <p id="changesEmpty" class="empty">暂无变更记录。</p>
+            <div class="stat">
+              <span>自动截图</span>
+              <strong id="scheduleState">整点（所有设备）</strong>
+            </div>
+            <div class="stat">
+              <span>浏览器</span>
+              <strong id="browserState">检查中</strong>
+            </div>
+            <div class="stat">
+              <span>运行状态</span>
+              <strong id="captureState">空闲</strong>
+            </div>
+          </section>
+
+          <section class="timeline" aria-label="截图历史">
+            <div class="timeline-head">
+              <div>
+                <h2>历史截图</h2>
+                <p id="nextRun">下次整点自动截图：计算中</p>
+              </div>
+              <div class="timeline-filters">
+                <div class="multi-filter" id="deviceFilter" data-open="false">
+                  <button
+                    id="deviceFilterButton"
+                    class="multi-filter-button"
+                    type="button"
+                    aria-haspopup="true"
+                    aria-expanded="false"
+                  >
+                    <span id="deviceFilterLabel">全部截图设备</span>
+                  </button>
+                  <div id="deviceFilterMenu" class="multi-filter-menu" role="group" aria-label="按截图设备过滤"></div>
+                </div>
+                <select id="runSourceFilter" aria-label="按运行方式过滤">
+                  <option value="">全部运行方式</option>
+                  <option value="auto">自动跑（整点）</option>
+                  <option value="manual">手动跑</option>
+                </select>
+                <select id="urlFilter" aria-label="按 URL 过滤">
+                  <option value="">全部 URL</option>
+                </select>
+              </div>
+            </div>
+            <div id="gallery" class="gallery"></div>
+            <p id="empty" class="empty">还没有归档截图。</p>
+          </section>
         </section>
 
-        <section class="timeline" aria-label="截图历史">
-          <div class="timeline-head">
-            <div>
-              <h2>历史截图</h2>
-              <p id="nextRun">下次整点自动截图：计算中</p>
+        <section
+          id="changesPanel"
+          class="tab-panel"
+          role="tabpanel"
+          aria-labelledby="tabChanges"
+          data-tab-panel="changes"
+          hidden
+        >
+          <section class="status-grid changes-status" aria-label="变更汇总状态">
+            <div class="stat">
+              <span>变更记录</span>
+              <strong id="changeCount">0</strong>
             </div>
-            <div class="timeline-filters">
-              <div class="multi-filter" id="deviceFilter" data-open="false">
-                <button
-                  id="deviceFilterButton"
-                  class="multi-filter-button"
-                  type="button"
-                  aria-haspopup="true"
-                  aria-expanded="false"
-                >
-                  <span id="deviceFilterLabel">全部截图设备</span>
-                </button>
-                <div id="deviceFilterMenu" class="multi-filter-menu" role="group" aria-label="按截图设备过滤"></div>
+          </section>
+
+          <section class="changes-panel" aria-label="变更汇总">
+            <div class="timeline-head">
+              <div>
+                <h2>变更汇总</h2>
+                <p>按同 URL、设备和页面位置，与上一张图对比</p>
               </div>
-              <select id="runSourceFilter" aria-label="按运行方式过滤">
-                <option value="">全部运行方式</option>
-                <option value="auto">自动跑（整点）</option>
-                <option value="manual">手动跑</option>
-              </select>
-              <select id="urlFilter" aria-label="按 URL 过滤">
-                <option value="">全部 URL</option>
-              </select>
             </div>
-          </div>
-          <div id="gallery" class="gallery"></div>
-          <p id="empty" class="empty">还没有归档截图。</p>
+            <div id="changesList" class="changes-list"></div>
+            <p id="changesEmpty" class="empty">暂无变更记录。</p>
+          </section>
         </section>
       </section>
     </main>
