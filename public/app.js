@@ -54,6 +54,7 @@ elements.dateClearFilter.addEventListener("click", clearDateFilter);
 elements.deviceFilterButton.addEventListener("click", toggleDeviceFilterMenu);
 elements.deviceFilterMenu.addEventListener("change", handleDeviceFilterChange);
 elements.deviceFilterMenu.addEventListener("click", handleDeviceFilterClick);
+elements.gallery.addEventListener("click", handleGalleryClick);
 document.addEventListener("click", closeDeviceFilterOnOutsideClick);
 document.addEventListener("keydown", closeDeviceFilterOnEscape);
 
@@ -245,6 +246,22 @@ function handleDeviceFilterChange(event) {
 
   renderDeviceFilterOptions();
   renderGallery();
+}
+
+function handleGalleryClick(event) {
+  const warning = event.target.closest(".related-warning");
+  if (!warning || !elements.gallery.contains(warning)) {
+    return;
+  }
+
+  const details = warning.closest(".shot-related")?.querySelector(".related-warning-details");
+  if (!details) {
+    return;
+  }
+
+  const isExpanded = warning.getAttribute("aria-expanded") === "true";
+  warning.setAttribute("aria-expanded", String(!isExpanded));
+  details.hidden = isExpanded;
 }
 
 function renderDeviceFilterLabel(devices) {
@@ -634,8 +651,9 @@ function renderRelatedShots(relatedShots, validation = null) {
     <div class="shot-related">
       <p class="related-kicker">
         更多截图
-        ${warnings.length ? `<span class="related-warning" title="${escapeHtml(warningTitle)}">校验警告</span>` : ""}
+        ${warnings.length ? `<button type="button" class="related-warning" title="${escapeHtml(warningTitle)}" aria-expanded="false">校验警告</button>` : ""}
       </p>
+      ${warnings.length ? renderRelatedWarningDetails(warnings) : ""}
       ${groups.map((group) => `
         <section class="related-section">
           <p class="related-title">${escapeHtml(group.title)}</p>
@@ -651,6 +669,37 @@ function renderRelatedShots(relatedShots, validation = null) {
       `).join("")}
     </div>
   `;
+}
+
+function renderRelatedWarningDetails(warnings) {
+  return `
+    <div class="related-warning-details" hidden>
+      <p class="related-warning-heading">校验明细</p>
+      <ul>
+        ${warnings.map((warning) => `
+          <li>
+            <strong>${escapeHtml(relatedWarningScope(warning))}</strong>
+            <span>${escapeHtml(relatedWarningMessage(warning))}</span>
+          </li>
+        `).join("")}
+      </ul>
+    </div>
+  `;
+}
+
+function relatedWarningScope(warning) {
+  return [
+    warning.sectionLabel || warning.sectionKey || "更多截图",
+    warning.stateLabel
+  ].filter(Boolean).join(" / ");
+}
+
+function relatedWarningMessage(warning) {
+  const message = warning.message || "校验警告";
+  if (/looked duplicated and was not saved\.$/.test(message)) {
+    return "判定为重复截图，已跳过保存。";
+  }
+  return message;
 }
 
 function groupRelatedShots(relatedShots) {

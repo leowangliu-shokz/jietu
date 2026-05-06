@@ -717,13 +717,67 @@ select:focus {
 
 .related-warning {
   flex: 0 0 auto;
+  min-height: 0;
+  border: 0;
   border-radius: 999px;
   background: rgba(180, 83, 9, 0.18);
   color: #ffd9a8;
+  cursor: pointer;
   font-size: 10px;
   font-weight: 750;
   line-height: 1;
   padding: 4px 7px;
+}
+
+.related-warning:hover,
+.related-warning[aria-expanded="true"] {
+  background: rgba(180, 83, 9, 0.34);
+  transform: none;
+}
+
+.related-warning:focus-visible {
+  outline: 2px solid rgba(255, 217, 168, 0.55);
+  outline-offset: 2px;
+}
+
+.related-warning-details {
+  display: grid;
+  gap: 6px;
+  border: 1px solid rgba(255, 217, 168, 0.24);
+  border-radius: 6px;
+  background: rgba(180, 83, 9, 0.14);
+  padding: 8px;
+}
+
+.related-warning-details[hidden] {
+  display: none;
+}
+
+.related-warning-heading {
+  margin: 0;
+  color: #ffd9a8;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.related-warning-details ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 15px;
+}
+
+.related-warning-details li {
+  color: #d9e2ea;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.related-warning-details strong {
+  display: block;
+  margin-bottom: 2px;
+  color: #fff;
+  font-weight: 750;
 }
 
 .pill {
