@@ -442,6 +442,7 @@ function visualSignalLabel(signal) {
     image: "图片素材变化",
     layout: "内容位置明显变化",
     dimension: "图片尺寸变化",
+    "media-item": signal.mediaItemLabel ? `媒体项变化：${signal.mediaItemLabel}` : "媒体项变化",
     "large-visual": "大面积视觉变化"
   }[signal.type] || signal.label || "";
 }
@@ -858,9 +859,13 @@ function normalizeRelatedShot(shot) {
     tabLabel: shot.tabLabel || null,
     tabIndex: shot.tabIndex || null,
     pageIndex: shot.pageIndex || null,
+    trackLabel: shot.trackLabel || shot.tabLabel || null,
+    trackIndex: shot.trackIndex || shot.tabIndex || null,
     itemCount: shot.itemCount || null,
     visibleItemCount: shot.visibleItemCount || null,
     visibleItems: shot.visibleItems || null,
+    itemRects: shot.itemRects || null,
+    windowSignature: shot.windowSignature || null,
     logicalSignature: shot.logicalSignature || shot.bannerSignature || null,
     visualHash: shot.visualHash || null,
     visualAudit: shot.visualAudit || null,

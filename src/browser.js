@@ -625,12 +625,16 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
       tabLabel: state.tabLabel || null,
       tabIndex: state.tabIndex || null,
       pageIndex: state.pageIndex || null,
+      trackLabel: state.trackLabel || state.tabLabel || null,
+      trackIndex: state.trackIndex || state.tabIndex || null,
       productCount: state.productCount || null,
       visibleProductCount: state.visibleProductCount || null,
       visibleProducts: state.visibleProducts || null,
       itemCount: state.itemCount || null,
-      visibleItemCount: state.visibleItemCount || null,
-      visibleItems: state.visibleItems || null,
+      visibleItemCount: current.visibleItemCount || state.visibleItemCount || null,
+      visibleItems: current.visibleItems || state.visibleItems || null,
+      itemRects: current.itemRects || state.itemRects || null,
+      windowSignature: state.windowSignature || null,
       logicalSignature,
       visualSignature,
       visualHash,
@@ -650,12 +654,16 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
         tabLabel: state.tabLabel || null,
         tabIndex: state.tabIndex || null,
         pageIndex: state.pageIndex || null,
+        trackLabel: state.trackLabel || state.tabLabel || null,
+        trackIndex: state.trackIndex || state.tabIndex || null,
         productCount: state.productCount || null,
         visibleProductCount: state.visibleProductCount || null,
         visibleProducts: state.visibleProducts || null,
         itemCount: state.itemCount || null,
-        visibleItemCount: state.visibleItemCount || null,
-        visibleItems: state.visibleItems || null
+        visibleItemCount: current.visibleItemCount || state.visibleItemCount || null,
+        visibleItems: current.visibleItems || state.visibleItems || null,
+        itemRects: current.itemRects || state.itemRects || null,
+        windowSignature: state.windowSignature || null
       }
     });
   }
@@ -922,6 +930,208 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
           title: item.title,
           subheader: item.subheader
         }))) : "";
+      };
+      const mediaTrackDefinitions = [
+        {
+          key: "pioneer",
+          label: "Shokz | Open-Ear Audio Pioneer",
+          selector: ".co-number-swiper",
+          rootSelector: ".co-number-box-banner, section, .shopify-section"
+        },
+        {
+          key: "awards",
+          label: "Sports partnership & Awards",
+          selector: ".co-brand-swiper-left",
+          rootSelector: ".co-brand-box"
+        },
+        {
+          key: "reviews",
+          label: "Media Reviews",
+          selector: ".co-brand-swiper-right",
+          rootSelector: ".co-brand-box"
+        }
+      ];
+      const mediaTrackForLabel = (label) =>
+        mediaTrackDefinitions.find((track) => track.label === label) || null;
+      const mediaTrackPanel = (track) => track ? document.querySelector(track.selector) : null;
+      const mediaTrackRoot = (track) => {
+        const panel = mediaTrackPanel(track);
+        return panel?.closest(track.rootSelector) || panel;
+      };
+      const firstImageSource = (element) => imageSources(element)[0] || "";
+      const mediaImageFamily = (source) => {
+        const first = String(source || "").split(",")[0].trim().split(/\\s+/)[0];
+        if (!first) return "";
+        try {
+          const url = new URL(first, window.location.href);
+          return decodeURIComponent(url.pathname.split("/").filter(Boolean).pop() || "")
+            .toLowerCase()
+            .replace(/\\.(avif|webp|png|jpe?g|gif|svg)$/i, "")
+            .replace(/@[\dx]+$/i, "")
+            .replace(/[-_]\\d{2,5}w$/i, "")
+            .replace(/[-_]\\d+x\\d+$/i, "")
+            .replace(/^m[-_]/i, "")
+            .replace(/[-_](mb|mobile|desktop|pc)$/i, "");
+        } catch {
+          return first.toLowerCase();
+        }
+      };
+      const dedupeRepeatedText = (value, max = 220) => {
+        let text = cleanText(value, max)
+          .replace(/\\s+\\d+\\s*\\/\\s*\\d+\\s*$/g, "")
+          .trim();
+        const midpoint = Math.floor(text.length / 2);
+        if (midpoint > 0 && text.length % 2 === 0) {
+          const left = text.slice(0, midpoint).trim();
+          const right = text.slice(midpoint).trim();
+          if (left && left === right) {
+            text = left;
+          }
+        }
+        return text;
+      };
+      const slidePosition = (slide) => {
+        const label = [
+          slide.getAttribute?.("aria-label"),
+          textOf(slide, 120)
+        ].filter(Boolean).join(" ");
+        const match = label.match(/(\\d+)\\s*\\/\\s*(\\d+)/);
+        return match ? {
+          index: Number(match[1]),
+          total: Number(match[2])
+        } : { index: null, total: null };
+      };
+      const mediaItemLabel = (slide, track, imageFamily, position) => {
+        if (track.key === "pioneer") {
+          const value = dedupeRepeatedText(slide.querySelector(".co-number-title")?.innerText || "", 80);
+          const description = dedupeRepeatedText(slide.querySelector(".co-number-content")?.innerText || "", 140);
+          return [value, description].filter(Boolean).join(" ");
+        }
+        if (track.key === "reviews") {
+          const quote = dedupeRepeatedText(slide.querySelector("p")?.innerText || textOf(slide, 220), 180);
+          const image = imageFamily ? imageFamily.replace(/[-_]+/g, " ") : "";
+          return [image, quote].filter(Boolean).join(" | ");
+        }
+        const altText = cleanText(slide.querySelector("img")?.getAttribute("alt") || "", 120);
+        return altText || imageFamily.replace(/[-_]+/g, " ") || (position.index ? track.label + " " + position.index : track.label);
+      };
+      const mediaItems = (track, options = {}) => {
+        const panel = mediaTrackPanel(track);
+        const trackRoot = mediaTrackRoot(track);
+        if (!panel || !trackRoot) return [];
+        const panelRect = panel.getBoundingClientRect();
+        const rootRect = trackRoot.getBoundingClientRect();
+        const slides = Array.from(panel.querySelectorAll(".swiper-slide, [class*='swiper-slide']"))
+          .filter((slide) => visible(slide))
+          .map((slide, domIndex) => {
+            const rect = slide.getBoundingClientRect();
+            const area = Math.max(1, rect.width * rect.height);
+            const visibleArea = intersects(rect, panelRect);
+            const position = slidePosition(slide);
+            const image = firstImageSource(slide);
+            const imageFamily = mediaImageFamily(image);
+            const label = mediaItemLabel(slide, track, imageFamily, position);
+            const text = dedupeRepeatedText(textOf(slide, 260), 220);
+            const keySeed = [
+              track.key,
+              position.index ? "pos:" + position.index : "",
+              imageFamily ? "img:" + imageFamily : "",
+              label ? "label:" + label : "",
+              !position.index && !imageFamily ? "dom:" + domIndex : ""
+            ].filter(Boolean).join("|");
+            const clippedLeft = Math.max(rect.left, rootRect.left);
+            const clippedTop = Math.max(rect.top, rootRect.top);
+            const clippedRight = Math.min(rect.right, rootRect.right);
+            const clippedBottom = Math.min(rect.bottom, rootRect.bottom);
+            return {
+              mediaItemId: keySeed,
+              key: keySeed,
+              label,
+              text,
+              image,
+              imageFamily,
+              position: position.index,
+              positionTotal: position.total,
+              rect,
+              visibleArea,
+              visibleRatio: visibleArea / area,
+              centerY: rect.top + rect.height / 2,
+              rectRelative: {
+                x: Math.round(Math.max(0, clippedLeft - rootRect.left)),
+                y: Math.round(Math.max(0, clippedTop - rootRect.top)),
+                width: Math.round(Math.max(0, clippedRight - clippedLeft)),
+                height: Math.round(Math.max(0, clippedBottom - clippedTop))
+              }
+            };
+          })
+          .filter((item) =>
+            item.key &&
+            item.rect.width >= 24 &&
+            item.rect.height >= 18 &&
+            item.centerY >= panelRect.top - 20 &&
+            item.centerY <= panelRect.bottom + 20 &&
+            (!options.visibleOnly || (
+              item.visibleArea > 120 &&
+              item.visibleRatio >= 0.55 &&
+              item.rect.right > panelRect.left + 4 &&
+              item.rect.left < panelRect.right - 4
+            ))
+          )
+          .sort((a, b) =>
+            Number(a.position || 0) - Number(b.position || 0) ||
+            a.rect.left - b.rect.left ||
+            a.rect.top - b.rect.top
+          );
+        const deduped = [];
+        const seen = new Set();
+        for (const item of slides) {
+          if (seen.has(item.key)) continue;
+          seen.add(item.key);
+          deduped.push({
+            mediaItemId: item.mediaItemId,
+            key: item.key,
+            label: item.label,
+            text: item.text,
+            image: item.image,
+            imageFamily: item.imageFamily,
+            position: item.position,
+            positionTotal: item.positionTotal,
+            rect: item.rectRelative
+          });
+        }
+        return deduped;
+      };
+      const mediaWindowSignature = (track) => {
+        const items = mediaItems(track, { visibleOnly: true });
+        return items.length ? JSON.stringify(items.map((item) => ({
+          key: item.key,
+          label: item.label,
+          imageFamily: item.imageFamily
+        }))) : "";
+      };
+      const resetMediaTrack = async (track) => {
+        const panel = mediaTrackPanel(track);
+        const swiper = panel?.swiper;
+        if (swiper?.autoplay?.stop) swiper.autoplay.stop();
+        if (swiper && typeof swiper.slideToLoop === "function") {
+          swiper.slideToLoop(0, 0, false);
+        } else if (swiper && typeof swiper.slideTo === "function") {
+          swiper.slideTo(0, 0, false);
+        }
+        if (swiper && typeof swiper.update === "function") swiper.update();
+        await sleep(260);
+      };
+      const advanceMediaTrack = async (track) => {
+        const panel = mediaTrackPanel(track);
+        const swiper = panel?.swiper;
+        if (swiper && typeof swiper.slideNext === "function") {
+          if (swiper.autoplay?.stop) swiper.autoplay.stop();
+          swiper.slideNext(0, false);
+          if (typeof swiper.update === "function") swiper.update();
+          await sleep(380);
+          return true;
+        }
+        return false;
       };
       const pageSignature = (root) => {
         if (definition.key === "product-showcase") {
@@ -1453,6 +1663,82 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
           if (!moved || !after || after === before || seen.has(after)) break;
         }
       };
+      const collectMediaPages = async (states) => {
+        for (const [trackIndex, track] of mediaTrackDefinitions.entries()) {
+          const trackRoot = mediaTrackRoot(track);
+          if (!trackRoot) {
+            warnings.push({
+              sectionKey: definition.key,
+              sectionLabel: definition.sectionLabel,
+              stateLabel: track.label,
+              message: "Could not find media track " + track.label + "."
+            });
+            continue;
+          }
+          trackRoot.scrollIntoView({ block: "center", inline: "nearest" });
+          await sleep(420);
+          await resetMediaTrack(track);
+
+          const allItems = mediaItems(track);
+          const firstWindowItems = mediaItems(track, { visibleOnly: true });
+          const firstWindowSignature = mediaWindowSignature(track);
+          if (!allItems.length || !firstWindowItems.length || !firstWindowSignature) {
+            warnings.push({
+              sectionKey: definition.key,
+              sectionLabel: definition.sectionLabel,
+              stateLabel: track.label,
+              message: "Could not read visible media items for " + track.label + "."
+            });
+            continue;
+          }
+
+          const seen = new Set();
+          const covered = new Set();
+          const maxPages = Math.max(1, allItems.length) + 2;
+          for (let pageIndex = 1; pageIndex <= maxPages; pageIndex += 1) {
+            const visibleItems = mediaItems(track, { visibleOnly: true });
+            const signature = mediaWindowSignature(track);
+            if (!signature || seen.has(signature)) break;
+            seen.add(signature);
+            for (const item of visibleItems) covered.add(item.key);
+
+            const label = track.label + " " + pageIndex;
+            states.push({
+              kind: "tab-carousel",
+              sectionKey: definition.key,
+              sectionLabel: definition.sectionLabel,
+              tabLabel: track.label,
+              tabIndex: trackIndex + 1,
+              trackLabel: track.label,
+              trackIndex: trackIndex + 1,
+              pageIndex,
+              stateIndex: states.length + 1,
+              stateLabel: label,
+              logicalSignature: definition.key + "|" + track.label + "|" + pageIndex + "|" + signature,
+              windowSignature: signature,
+              itemCount: allItems.length,
+              visibleItemCount: visibleItems.length,
+              visibleItems,
+              itemRects: visibleItems.map((item) => ({
+                mediaItemId: item.mediaItemId,
+                key: item.key,
+                label: item.label,
+                rect: item.rect
+              })),
+              fileId: track.label + "-" + pageIndex,
+              isDefaultState: pageIndex === 1
+            });
+
+            if (allItems.every((item) => covered.has(item.key))) {
+              break;
+            }
+            const before = signature;
+            const moved = await advanceMediaTrack(track);
+            const after = mediaWindowSignature(track);
+            if (!moved || !after || after === before || seen.has(after)) break;
+          }
+        }
+      };
       const collectPages = async (root, tabLabel, tabIndex, states, warnings, knownTabFirstSignatures) => {
         if (definition.key === "product-showcase") {
           await collectProductPages(root, tabLabel, tabIndex, states);
@@ -1565,7 +1851,13 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
         window.__pageShotRelatedSections[definition.key] = { root, definition };
         const states = [];
         const knownTabFirstSignatures = new Set();
-        if (definition.mode === "tabs-carousel") {
+        if (definition.key === "media") {
+          await collectMediaPages(states);
+          for (const state of states) {
+            const tabCount = states.filter((item) => item.tabIndex === state.tabIndex).length;
+            state.pageCount = tabCount || states.length;
+          }
+        } else if (definition.mode === "tabs-carousel") {
           for (const [tabIndex, tabLabel] of (definition.tabs || []).entries()) {
             const tabStates = [];
             await collectPages(root, tabLabel, tabIndex, tabStates, warnings, knownTabFirstSignatures);
@@ -1804,6 +2096,151 @@ async function activateShokzHomeRelatedState(client, definition, state) {
           title: item.title,
           subheader: item.subheader
         }))) : "";
+      };
+      const mediaTrackDefinitions = [
+        { key: "pioneer", label: "Shokz | Open-Ear Audio Pioneer", selector: ".co-number-swiper", rootSelector: ".co-number-box-banner, section, .shopify-section" },
+        { key: "awards", label: "Sports partnership & Awards", selector: ".co-brand-swiper-left", rootSelector: ".co-brand-box" },
+        { key: "reviews", label: "Media Reviews", selector: ".co-brand-swiper-right", rootSelector: ".co-brand-box" }
+      ];
+      const mediaTrackForState = () =>
+        mediaTrackDefinitions.find((track) =>
+          track.label === state.tabLabel ||
+          track.label === state.trackLabel ||
+          mediaTrackDefinitions.indexOf(track) + 1 === Number(state.tabIndex || state.trackIndex || 0)
+        ) || null;
+      const mediaTrackPanel = (track) => track ? document.querySelector(track.selector) : null;
+      const mediaTrackRoot = (track) => {
+        const panel = mediaTrackPanel(track);
+        return panel?.closest(track.rootSelector) || panel;
+      };
+      const mediaImageFamily = (source) => {
+        const first = String(source || "").split(",")[0].trim().split(/\\s+/)[0];
+        if (!first) return "";
+        try {
+          const url = new URL(first, window.location.href);
+          return decodeURIComponent(url.pathname.split("/").filter(Boolean).pop() || "")
+            .toLowerCase()
+            .replace(/\\.(avif|webp|png|jpe?g|gif|svg)$/i, "")
+            .replace(/@[\dx]+$/i, "")
+            .replace(/[-_]\\d{2,5}w$/i, "")
+            .replace(/[-_]\\d+x\\d+$/i, "")
+            .replace(/^m[-_]/i, "")
+            .replace(/[-_](mb|mobile|desktop|pc)$/i, "");
+        } catch {
+          return first.toLowerCase();
+        }
+      };
+      const dedupeRepeatedText = (value, max = 220) => {
+        let text = cleanText(value, max).replace(/\\s+\\d+\\s*\\/\\s*\\d+\\s*$/g, "").trim();
+        const midpoint = Math.floor(text.length / 2);
+        if (midpoint > 0 && text.length % 2 === 0) {
+          const left = text.slice(0, midpoint).trim();
+          const right = text.slice(midpoint).trim();
+          if (left && left === right) text = left;
+        }
+        return text;
+      };
+      const slidePosition = (slide) => {
+        const label = [slide.getAttribute?.("aria-label"), textOf(slide, 120)].filter(Boolean).join(" ");
+        const match = label.match(/(\\d+)\\s*\\/\\s*(\\d+)/);
+        return match ? { index: Number(match[1]), total: Number(match[2]) } : { index: null, total: null };
+      };
+      const mediaItemLabel = (slide, track, imageFamily, position) => {
+        if (track.key === "pioneer") {
+          return [
+            dedupeRepeatedText(slide.querySelector(".co-number-title")?.innerText || "", 80),
+            dedupeRepeatedText(slide.querySelector(".co-number-content")?.innerText || "", 140)
+          ].filter(Boolean).join(" ");
+        }
+        if (track.key === "reviews") {
+          return [
+            imageFamily ? imageFamily.replace(/[-_]+/g, " ") : "",
+            dedupeRepeatedText(slide.querySelector("p")?.innerText || textOf(slide, 220), 180)
+          ].filter(Boolean).join(" | ");
+        }
+        return cleanText(slide.querySelector("img")?.getAttribute("alt") || "", 120) ||
+          imageFamily.replace(/[-_]+/g, " ") ||
+          (position.index ? track.label + " " + position.index : track.label);
+      };
+      const mediaItems = (track) => {
+        const panel = mediaTrackPanel(track);
+        if (!panel) return [];
+        const panelRect = panel.getBoundingClientRect();
+        const slides = Array.from(panel.querySelectorAll(".swiper-slide, [class*='swiper-slide']"))
+          .filter(visible)
+          .map((slide, domIndex) => {
+            const rect = slide.getBoundingClientRect();
+            const area = Math.max(1, rect.width * rect.height);
+            const visibleArea = intersects(rect, panelRect);
+            const position = slidePosition(slide);
+            const image = imageSources(slide)[0] || "";
+            const imageFamily = mediaImageFamily(image);
+            const label = mediaItemLabel(slide, track, imageFamily, position);
+            const key = [
+              track.key,
+              position.index ? "pos:" + position.index : "",
+              imageFamily ? "img:" + imageFamily : "",
+              label ? "label:" + label : "",
+              !position.index && !imageFamily ? "dom:" + domIndex : ""
+            ].filter(Boolean).join("|");
+            return {
+              key,
+              label,
+              imageFamily,
+              rect,
+              visibleArea,
+              visibleRatio: visibleArea / area,
+              centerY: rect.top + rect.height / 2
+            };
+          })
+          .filter((item) =>
+            item.key &&
+            item.rect.width >= 24 &&
+            item.rect.height >= 18 &&
+            item.visibleArea > 120 &&
+            item.visibleRatio >= 0.55 &&
+            item.rect.right > panelRect.left + 4 &&
+            item.rect.left < panelRect.right - 4 &&
+            item.centerY >= panelRect.top - 20 &&
+            item.centerY <= panelRect.bottom + 20
+          )
+          .sort((a, b) => a.rect.left - b.rect.left || a.rect.top - b.rect.top);
+        const deduped = [];
+        const seen = new Set();
+        for (const item of slides) {
+          if (seen.has(item.key)) continue;
+          seen.add(item.key);
+          deduped.push(item);
+        }
+        return deduped;
+      };
+      const mediaWindowSignature = (track) => {
+        const items = mediaItems(track);
+        return items.length ? JSON.stringify(items.map((item) => ({
+          key: item.key,
+          label: item.label,
+          imageFamily: item.imageFamily
+        }))) : "";
+      };
+      const resetMediaTrack = async (track) => {
+        const swiper = mediaTrackPanel(track)?.swiper;
+        if (swiper?.autoplay?.stop) swiper.autoplay.stop();
+        if (swiper && typeof swiper.slideToLoop === "function") {
+          swiper.slideToLoop(0, 0, false);
+        } else if (swiper && typeof swiper.slideTo === "function") {
+          swiper.slideTo(0, 0, false);
+        }
+        if (swiper && typeof swiper.update === "function") swiper.update();
+        await sleep(260);
+      };
+      const advanceMediaTrack = async (track) => {
+        const swiper = mediaTrackPanel(track)?.swiper;
+        if (!swiper || typeof swiper.slideNext !== "function") return false;
+        if (swiper.autoplay?.stop) swiper.autoplay.stop();
+        swiper.slideNext(0, false);
+        if (typeof swiper.update === "function") swiper.update();
+        await sleep(380);
+        return true;
       };
       const clickElement = (element) => {
         const target = element?.closest?.("button, [role='button'], a, [tabindex]") || element;
@@ -2088,6 +2525,36 @@ async function activateShokzHomeRelatedState(client, definition, state) {
       return (async () => {
         root.scrollIntoView({ block: "center", inline: "nearest" });
         await sleep(260);
+        if (definition.key === "media") {
+          const track = mediaTrackForState();
+          const trackRoot = mediaTrackRoot(track);
+          if (!track || !trackRoot) {
+            return { ok: false, reason: "Could not find media track " + (state.tabLabel || state.trackLabel || state.stateLabel) + "." };
+          }
+          trackRoot.scrollIntoView({ block: "center", inline: "nearest" });
+          await sleep(360);
+          await resetMediaTrack(track);
+          const targetSignature = state.windowSignature || "";
+          const maxAttempts = Math.max(12, Number(state.pageIndex || 1) + Number(state.itemCount || 0) + 2);
+          for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+            const currentSignature = mediaWindowSignature(track);
+            if (targetSignature && currentSignature === targetSignature) {
+              trackRoot.scrollIntoView({ block: "center", inline: "nearest" });
+              await sleep(220);
+              return { ok: true };
+            }
+            if (!targetSignature && attempt >= Math.max(0, Number(state.pageIndex || 1) - 1)) {
+              trackRoot.scrollIntoView({ block: "center", inline: "nearest" });
+              await sleep(220);
+              return { ok: true };
+            }
+            const before = currentSignature;
+            const moved = await advanceMediaTrack(track);
+            const after = mediaWindowSignature(track);
+            if (!moved || !after || after === before) break;
+          }
+          return { ok: false, reason: "Could not activate media window " + state.stateLabel + "." };
+        }
         if (isTabbedCardSection) {
           if (state.tabLabel) {
             const clicked = clickProductTab(state.tabLabel);
@@ -2367,6 +2834,219 @@ async function readShokzHomeRelatedState(client, definition, state) {
         }
         return deduped.length ? JSON.stringify(deduped) : "";
       };
+      const mediaTrackDefinitions = [
+        { key: "pioneer", label: "Shokz | Open-Ear Audio Pioneer", selector: ".co-number-swiper", rootSelector: ".co-number-box-banner, section, .shopify-section" },
+        { key: "awards", label: "Sports partnership & Awards", selector: ".co-brand-swiper-left", rootSelector: ".co-brand-box" },
+        { key: "reviews", label: "Media Reviews", selector: ".co-brand-swiper-right", rootSelector: ".co-brand-box" }
+      ];
+      const mediaTrackForState = () =>
+        mediaTrackDefinitions.find((track) =>
+          track.label === state.tabLabel ||
+          track.label === state.trackLabel ||
+          mediaTrackDefinitions.indexOf(track) + 1 === Number(state.tabIndex || state.trackIndex || 0)
+        ) || null;
+      const mediaTrackPanel = (track) => track ? document.querySelector(track.selector) : null;
+      const mediaTrackRoot = (track) => {
+        const panel = mediaTrackPanel(track);
+        return panel?.closest(track.rootSelector) || panel;
+      };
+      const imageSourcesForElement = (element) => Array.from(element.querySelectorAll("img, source"))
+        .flatMap((node) => imageSourcesForNode(node))
+        .filter(Boolean);
+      const mediaImageFamily = (source) => {
+        const first = String(source || "").split(",")[0].trim().split(/\\s+/)[0];
+        if (!first) return "";
+        try {
+          const url = new URL(first, window.location.href);
+          return decodeURIComponent(url.pathname.split("/").filter(Boolean).pop() || "")
+            .toLowerCase()
+            .replace(/\\.(avif|webp|png|jpe?g|gif|svg)$/i, "")
+            .replace(/@[\dx]+$/i, "")
+            .replace(/[-_]\\d{2,5}w$/i, "")
+            .replace(/[-_]\\d+x\\d+$/i, "")
+            .replace(/^m[-_]/i, "")
+            .replace(/[-_](mb|mobile|desktop|pc)$/i, "");
+        } catch {
+          return first.toLowerCase();
+        }
+      };
+      const dedupeRepeatedText = (value, max = 220) => {
+        let text = cleanText(value, max).replace(/\\s+\\d+\\s*\\/\\s*\\d+\\s*$/g, "").trim();
+        const midpoint = Math.floor(text.length / 2);
+        if (midpoint > 0 && text.length % 2 === 0) {
+          const left = text.slice(0, midpoint).trim();
+          const right = text.slice(midpoint).trim();
+          if (left && left === right) text = left;
+        }
+        return text;
+      };
+      const slidePosition = (slide) => {
+        const label = [slide.getAttribute?.("aria-label"), cleanText([slide.innerText, slide.textContent].filter(Boolean).join(" "), 120)].filter(Boolean).join(" ");
+        const match = label.match(/(\\d+)\\s*\\/\\s*(\\d+)/);
+        return match ? { index: Number(match[1]), total: Number(match[2]) } : { index: null, total: null };
+      };
+      const mediaItemLabel = (slide, track, imageFamily, position) => {
+        if (track.key === "pioneer") {
+          return [
+            dedupeRepeatedText(slide.querySelector(".co-number-title")?.innerText || "", 80),
+            dedupeRepeatedText(slide.querySelector(".co-number-content")?.innerText || "", 140)
+          ].filter(Boolean).join(" ");
+        }
+        if (track.key === "reviews") {
+          return [
+            imageFamily ? imageFamily.replace(/[-_]+/g, " ") : "",
+            dedupeRepeatedText(slide.querySelector("p")?.innerText || [slide.innerText, slide.textContent].filter(Boolean).join(" "), 180)
+          ].filter(Boolean).join(" | ");
+        }
+        return cleanText(slide.querySelector("img")?.getAttribute("alt") || "", 120) ||
+          imageFamily.replace(/[-_]+/g, " ") ||
+          (position.index ? track.label + " " + position.index : track.label);
+      };
+      const mediaItems = (track) => {
+        const panel = mediaTrackPanel(track);
+        const trackRoot = mediaTrackRoot(track);
+        if (!panel || !trackRoot) return [];
+        const panelRect = panel.getBoundingClientRect();
+        const rootRect = trackRoot.getBoundingClientRect();
+        const slides = Array.from(panel.querySelectorAll(".swiper-slide, [class*='swiper-slide']"))
+          .filter(visible)
+          .map((slide, domIndex) => {
+            const rect = slide.getBoundingClientRect();
+            const area = Math.max(1, rect.width * rect.height);
+            const visibleArea = intersects(rect, panelRect);
+            const position = slidePosition(slide);
+            const image = imageSourcesForElement(slide)[0] || "";
+            const imageFamily = mediaImageFamily(image);
+            const label = mediaItemLabel(slide, track, imageFamily, position);
+            const key = [
+              track.key,
+              position.index ? "pos:" + position.index : "",
+              imageFamily ? "img:" + imageFamily : "",
+              label ? "label:" + label : "",
+              !position.index && !imageFamily ? "dom:" + domIndex : ""
+            ].filter(Boolean).join("|");
+            const clippedLeft = Math.max(rect.left, rootRect.left);
+            const clippedTop = Math.max(rect.top, rootRect.top);
+            const clippedRight = Math.min(rect.right, rootRect.right);
+            const clippedBottom = Math.min(rect.bottom, rootRect.bottom);
+            return {
+              mediaItemId: key,
+              key,
+              label,
+              text: dedupeRepeatedText([slide.innerText, slide.textContent].filter(Boolean).join(" "), 220),
+              image,
+              imageFamily,
+              position: position.index,
+              positionTotal: position.total,
+              rect,
+              visibleArea,
+              visibleRatio: visibleArea / area,
+              centerY: rect.top + rect.height / 2,
+              rectRelative: {
+                x: Math.round(Math.max(0, clippedLeft - rootRect.left)),
+                y: Math.round(Math.max(0, clippedTop - rootRect.top)),
+                width: Math.round(Math.max(0, clippedRight - clippedLeft)),
+                height: Math.round(Math.max(0, clippedBottom - clippedTop))
+              }
+            };
+          })
+          .filter((item) =>
+            item.key &&
+            item.rect.width >= 24 &&
+            item.rect.height >= 18 &&
+            item.visibleArea > 120 &&
+            item.visibleRatio >= 0.55 &&
+            item.rect.right > panelRect.left + 4 &&
+            item.rect.left < panelRect.right - 4 &&
+            item.centerY >= panelRect.top - 20 &&
+            item.centerY <= panelRect.bottom + 20
+          )
+          .sort((a, b) => a.rect.left - b.rect.left || a.rect.top - b.rect.top);
+        const deduped = [];
+        const seen = new Set();
+        for (const item of slides) {
+          if (seen.has(item.key)) continue;
+          seen.add(item.key);
+          deduped.push({
+            mediaItemId: item.mediaItemId,
+            key: item.key,
+            label: item.label,
+            text: item.text,
+            image: item.image,
+            imageFamily: item.imageFamily,
+            position: item.position,
+            positionTotal: item.positionTotal,
+            rect: item.rectRelative
+          });
+        }
+        return deduped;
+      };
+      const mediaWindowSignature = (track) => {
+        const items = mediaItems(track);
+        return items.length ? JSON.stringify(items.map((item) => ({
+          key: item.key,
+          label: item.label,
+          imageFamily: item.imageFamily
+        }))) : "";
+      };
+      if (definition.key === "media") {
+        const track = mediaTrackForState();
+        const trackRoot = mediaTrackRoot(track);
+        if (!track || !trackRoot) {
+          return { ok: false, reason: "Could not find media track " + (state.tabLabel || state.trackLabel || state.stateLabel) + "." };
+        }
+        const trackRect = trackRoot.getBoundingClientRect();
+        const visibleItems = mediaItems(track);
+        const mediaSignature = mediaWindowSignature(track);
+        if (state.windowSignature && mediaSignature !== state.windowSignature) {
+          return {
+            ok: false,
+            reason: "Visible media items did not match planned media window " + state.stateLabel + "."
+          };
+        }
+        const mediaTextNodes = Array.from(trackRoot.querySelectorAll("a, button, h1, h2, h3, h4, p, li, article, [class*='card'], [class*='slide'], [class*='header'], [class*='title']"))
+          .filter(visible)
+          .filter((node) => intersects(node.getBoundingClientRect(), trackRect) > 40);
+        const seenMediaText = new Set();
+        const mediaTextBlocks = [];
+        for (const node of mediaTextNodes) {
+          const text = cleanText([node.innerText, node.textContent].filter(Boolean).join(" "), 140);
+          if (!text || seenMediaText.has(text)) continue;
+          seenMediaText.add(text);
+          const rect = node.getBoundingClientRect();
+          mediaTextBlocks.push({
+            text,
+            x: Math.round(rect.left - trackRect.left),
+            y: Math.round(rect.top - trackRect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height)
+          });
+          if (mediaTextBlocks.length >= 24) break;
+        }
+        const mediaImages = visibleImageSources(trackRoot, trackRect).slice(0, 24);
+        return {
+          ok: true,
+          clip: {
+            x: Math.max(0, trackRect.left + window.scrollX),
+            y: Math.max(0, trackRect.top + window.scrollY),
+            width: Math.min(trackRect.width, document.documentElement.scrollWidth, window.innerWidth * 1.4),
+            height: trackRect.height
+          },
+          text: mediaTextBlocks.map((block) => block.text).join(" "),
+          textBlocks: mediaTextBlocks,
+          images: mediaImages,
+          logicalSignature: mediaSignature || state.logicalSignature,
+          activeIndex: state.stateIndex,
+          visibleItemCount: visibleItems.length,
+          visibleItems,
+          itemRects: visibleItems.map((item) => ({
+            mediaItemId: item.mediaItemId,
+            key: item.key,
+            label: item.label,
+            rect: item.rect
+          }))
+        };
+      }
       const rootRect = root.getBoundingClientRect();
       const textNodes = Array.from(root.querySelectorAll("a, button, h1, h2, h3, h4, p, li, article, [class*='card'], [class*='slide']"))
         .filter(visible)

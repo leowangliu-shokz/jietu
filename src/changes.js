@@ -241,7 +241,10 @@ async function compareItems(fromItem, toItem, options) {
       stateCount: toItem.stateCount,
       tabIndex: toItem.tabIndex,
       tabLabel: toItem.tabLabel,
-      pageIndex: toItem.pageIndex
+      pageIndex: toItem.pageIndex,
+      trackIndex: toItem.trackIndex,
+      trackLabel: toItem.trackLabel,
+      visibleItems: toItem.visibleItems
     },
     occurredBetween: {
       from: fromItem.capturedAt,
@@ -281,11 +284,16 @@ async function buildVisualChange(fromItem, toItem, options) {
     if (!judgment.changed) {
       return null;
     }
+    const mediaRegions = mediaItemSignalRegions(judgment.signals, diff.width, diff.height);
+    if (diff.outputPath && mediaRegions.length) {
+      await markAdditionalRegions(diff.outputPath, mediaRegions);
+    }
+    const regions = [...diff.regions, ...mediaRegions];
     return {
       diffFile: diff.outputPath ? outputRelativePath : null,
       diffImageUrl: diff.outputPath ? publicSnapshotUrl(outputRelativePath) : null,
-      regionCount: diff.regions.length,
-      regions: diff.regions,
+      regionCount: regions.length,
+      regions,
       changedPixels: diff.changedPixels,
       rawChangedPixels: diff.rawChangedPixels,
       comparedPixels: diff.comparedPixels,
@@ -338,6 +346,8 @@ export function judgeHumanVisibleChange(fromItem, toItem, diff, options = {}) {
       after: assetChange.after
     });
   }
+
+  signals.push(...mediaItemChangeSignals(fromItem, toItem, diff));
 
   const layoutChange = layoutChangeForTextBlocks(fromItem, toItem, settings);
   if (layoutChange.changed) {
@@ -437,6 +447,12 @@ function createComparableItem(snapshot, shot, relatedIndex = null) {
     tabIndex,
     tabLabel: source.tabLabel || null,
     pageIndex,
+    trackIndex: numberOrNull(source.trackIndex || source.tabIndex),
+    trackLabel: source.trackLabel || source.tabLabel || null,
+    itemCount: numberOrNull(source.itemCount),
+    visibleItemCount: numberOrNull(source.visibleItemCount),
+    visibleItems: Array.isArray(source.visibleItems) ? source.visibleItems : null,
+    itemRects: Array.isArray(source.itemRects) ? source.itemRects : null,
     visualSignature: source.visualSignature || null,
     visualHash: source.visualHash || null,
     logicalSignature: source.logicalSignature || source.bannerSignature || null,
@@ -473,7 +489,8 @@ function publicItemRef(item) {
     imageUrl: item.imageUrl,
     width: item.width,
     height: item.height,
-    text: truncateText(normalizeComparableText(extractText(item)), 2000)
+    text: truncateText(normalizeComparableText(extractText(item)), 2000),
+    visibleItems: item.visibleItems || item.sectionState?.visibleItems || null
   };
 }
 
@@ -559,6 +576,157 @@ function imageAssetKey(source) {
   } catch {
     return null;
   }
+}
+
+function mediaItemChangeSignals(fromItem, toItem, diff) {
+  if (toItem.sectionKey !== "media") {
+    return [];
+  }
+
+  const beforeItems = mediaComparableItems(fromItem);
+  const afterItems = mediaComparableItems(toItem);
+  if (!afterItems.length) {
+    return [];
+  }
+
+  const beforeById = new Map(beforeItems.map((item) => [item.id, item]));
+  const signals = [];
+  const signaled = new Set();
+  const addSignal = (item, reason) => {
+    const key = item.id || item.label || reason;
+    if (!key || signaled.has(key)) {
+      return;
+    }
+    signaled.add(key);
+    signals.push({
+      type: "media-item",
+      label: `media item changed: ${item.label || item.id}`,
+      reason,
+      mediaItemId: item.id,
+      mediaItemLabel: item.label,
+      rect: item.rect || null
+    });
+  };
+
+  for (const item of afterItems) {
+    const before = beforeById.get(item.id);
+    if (!before) {
+      addSignal(item, "added or moved into this window");
+      continue;
+    }
+    if (before.imageFamily && item.imageFamily && before.imageFamily !== item.imageFamily) {
+      addSignal(item, "image asset changed");
+    }
+  }
+  const afterById = new Map(afterItems.map((item) => [item.id, item]));
+  for (const item of beforeItems) {
+    if (!afterById.has(item.id)) {
+      addSignal(item, "removed from this window");
+    }
+  }
+
+  for (const region of diff.regions || []) {
+    const match = bestMediaItemForRegion(afterItems, region);
+    if (match && match.overlapRatio >= 0.12) {
+      addSignal(match.item, "pixel region overlaps item");
+    }
+  }
+
+  return signals;
+}
+
+function mediaItemSignalRegions(signals, width, height) {
+  return (signals || [])
+    .filter((signal) => signal?.type === "media-item")
+    .map((signal) => {
+      const rect = normalizeRect(signal.rect);
+      if (!rect) {
+        return null;
+      }
+      const x = Math.max(0, Math.min(width, rect.x));
+      const y = Math.max(0, Math.min(height, rect.y));
+      const right = Math.max(x, Math.min(width, rect.x + rect.width));
+      const bottom = Math.max(y, Math.min(height, rect.y + rect.height));
+      if (right <= x || bottom <= y) {
+        return null;
+      }
+      return {
+        x: Math.round(x),
+        y: Math.round(y),
+        width: Math.round(right - x),
+        height: Math.round(bottom - y),
+        pixels: 0,
+        source: "media-item",
+        mediaItemId: signal.mediaItemId || null,
+        mediaItemLabel: signal.mediaItemLabel || null
+      };
+    })
+    .filter(Boolean);
+}
+
+function mediaComparableItems(item) {
+  const state = item.sectionState || {};
+  const sourceItems = Array.isArray(item.visibleItems)
+    ? item.visibleItems
+    : (Array.isArray(state.visibleItems) ? state.visibleItems : []);
+  const sourceRects = Array.isArray(item.itemRects)
+    ? item.itemRects
+    : (Array.isArray(state.itemRects) ? state.itemRects : []);
+  const rectById = new Map();
+  for (const itemRect of sourceRects) {
+    const id = String(itemRect?.mediaItemId || itemRect?.key || "");
+    const rect = normalizeRect(itemRect?.rect || itemRect);
+    if (id && rect) {
+      rectById.set(id, rect);
+    }
+  }
+
+  return sourceItems
+    .map((source, index) => {
+      const id = String(source?.mediaItemId || source?.key || source?.id || "");
+      const rect = normalizeRect(source?.rect) || rectById.get(id) || null;
+      const imageFamily = source?.imageFamily || mediaItemImageFamily(source?.image);
+      return {
+        id: id || `${item.sectionKey || "media"}:${item.tabIndex || ""}:${index}`,
+        label: source?.label || source?.title || source?.text || imageFamily || `item ${index + 1}`,
+        imageFamily,
+        rect
+      };
+    })
+    .filter((source) => source.id);
+}
+
+function mediaItemImageFamily(source) {
+  const key = imageAssetKey(source);
+  return key?.family || "";
+}
+
+function bestMediaItemForRegion(items, region) {
+  let best = null;
+  for (const item of items) {
+    if (!item.rect) {
+      continue;
+    }
+    const overlap = rectOverlapArea(item.rect, region);
+    if (overlap <= 0) {
+      continue;
+    }
+    const itemArea = Math.max(1, item.rect.width * item.rect.height);
+    const regionArea = Math.max(1, Number(region.width || 0) * Number(region.height || 0));
+    const overlapRatio = overlap / Math.min(itemArea, regionArea);
+    if (!best || overlapRatio > best.overlapRatio) {
+      best = { item, overlapRatio };
+    }
+  }
+  return best;
+}
+
+function rectOverlapArea(left, right) {
+  const x1 = Math.max(Number(left.x || 0), Number(right.x || 0));
+  const y1 = Math.max(Number(left.y || 0), Number(right.y || 0));
+  const x2 = Math.min(Number(left.x || 0) + Number(left.width || 0), Number(right.x || 0) + Number(right.width || 0));
+  const y2 = Math.min(Number(left.y || 0) + Number(left.height || 0), Number(right.y || 0) + Number(right.height || 0));
+  return Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
 }
 
 function layoutChangeForTextBlocks(fromItem, toItem, settings) {
@@ -850,6 +1018,15 @@ function markDiffImage(toImage, mask, maskWidth, regions) {
     drawBox(output, toImage.width, toImage.height, region, [225, 29, 72, 255]);
   }
   return output;
+}
+
+async function markAdditionalRegions(filePath, regions) {
+  const image = decodePng(await fs.readFile(filePath));
+  const output = new Uint8Array(image.rgba);
+  for (const region of regions) {
+    drawBox(output, image.width, image.height, region, [255, 107, 53, 255]);
+  }
+  await fs.writeFile(filePath, encodePng(image.width, image.height, output));
 }
 
 function drawBox(rgba, width, height, region, color) {

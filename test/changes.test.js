@@ -202,6 +202,71 @@ test("keeps banner layout moves for stable copy", async () => {
   assert.ok(changes[0].visualChange.signals.some((signal) => signal.type === "layout"));
 });
 
+test("labels media visual diffs with the overlapping item", async () => {
+  const archiveRoot = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-media-item-"));
+  const beforeFile = "2026-05-03/example-com/media-before.png";
+  const afterFile = "2026-05-03/example-com/media-after.png";
+
+  const beforeImage = solidImage(160, 100, [255, 255, 255, 255]);
+  const afterImage = solidImage(160, 100, [255, 255, 255, 255]);
+  fillRect(beforeImage, 160, 35, 35, 42, 24, [40, 80, 160, 255]);
+  fillRect(afterImage, 160, 35, 35, 42, 24, [220, 40, 40, 255]);
+  await writeArchiveImage(archiveRoot, beforeFile, 160, 100, beforeImage);
+  await writeArchiveImage(archiveRoot, afterFile, 160, 100, afterImage);
+
+  const item = {
+    mediaItemId: "awards|pos:3|img:toms-guide",
+    key: "awards|pos:3|img:toms-guide",
+    label: "toms guide",
+    image: "https://cdn.example.com/toms-guide.webp",
+    imageFamily: "toms-guide",
+    rect: { x: 30, y: 30, width: 55, height: 35 }
+  };
+  const relatedShot = (file) => ({
+    file,
+    imageUrl: `/archive/${file}`,
+    width: 160,
+    height: 100,
+    kind: "tab-carousel",
+    sectionKey: "media",
+    sectionLabel: "媒体区",
+    tabLabel: "Sports partnership & Awards",
+    tabIndex: 2,
+    pageIndex: 1,
+    stateIndex: 1,
+    stateLabel: "Sports partnership & Awards 1",
+    label: "Sports partnership & Awards 1",
+    visibleItems: [item],
+    itemRects: [{ mediaItemId: item.mediaItemId, key: item.key, label: item.label, rect: item.rect }],
+    sectionState: {
+      text: "Sports partnership & Awards",
+      images: [item.image],
+      visibleItems: [item],
+      itemRects: [{ mediaItemId: item.mediaItemId, key: item.key, label: item.label, rect: item.rect }]
+    }
+  });
+
+  const changes = await compareSnapshots([
+    snapshot("snap-1", "2026-05-03T08:00:00.000Z", [relatedShot(beforeFile)]),
+    snapshot("snap-2", "2026-05-03T09:00:00.000Z", [relatedShot(afterFile)])
+  ], { archiveRoot, writeDiffImages: false });
+
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].location.sectionKey, "media");
+  assert.equal(changes[0].location.tabLabel, "Sports partnership & Awards");
+  assert.ok(changes[0].visualChange.signals.some((signal) =>
+    signal.type === "media-item" &&
+    signal.mediaItemId === item.mediaItemId &&
+    signal.mediaItemLabel === "toms guide"
+  ));
+  assert.ok(changes[0].visualChange.regions.some((region) =>
+    region.source === "media-item" &&
+    region.mediaItemId === item.mediaItemId &&
+    region.x === item.rect.x &&
+    region.y === item.rect.y
+  ));
+});
+
 test("backfill writes diff artifacts without rewriting archived screenshots", async () => {
   const archiveRoot = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-archive-"));
   const folder = path.join(archiveRoot, "2026-05-03", "example-com");
