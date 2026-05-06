@@ -251,7 +251,7 @@ async function compareItems(fromItem, toItem, options) {
     to: publicItemRef(toItem),
     textChange,
     visualChange,
-    createdAt: new Date().toISOString()
+    createdAt: toItem.capturedAt || new Date().toISOString()
   };
 }
 

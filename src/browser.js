@@ -518,7 +518,7 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
   }
 
   const captures = [];
-  const warnings = [];
+  const warnings = Array.isArray(plan.warnings) ? [...plan.warnings] : [];
   const seenLogicalByScope = new Map();
   const seenVisualByScope = new Map();
   const seenHashesByScope = new Map();
@@ -684,20 +684,6 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
         element?.getAttribute?.("aria-label"),
         element?.getAttribute?.("title")
       ].filter(Boolean).join(" "), max);
-      const imageSources = (element) => Array.from(element.querySelectorAll("img, source"))
-        .flatMap((node) => [
-          node.currentSrc,
-          node.src,
-          node.srcset,
-          node.getAttribute("data-src"),
-          node.getAttribute("data-srcset"),
-          node.getAttribute("data-original"),
-          node.getAttribute("data-lazy-src"),
-          node.getAttribute("data-lazy-srcset")
-        ])
-        .filter(Boolean)
-        .map((value) => String(value).split(",")[0].trim())
-        .filter(Boolean);
       const backgroundSources = (element) => {
         const sources = [];
         for (const node of [element, ...element.querySelectorAll("*")].slice(0, 180)) {
@@ -892,6 +878,21 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
           );
         return clickElement(choices[0]?.element);
       };
+      const activeTabMatches = (root, label) => {
+        if (!label) return true;
+        return Array.from(root.querySelectorAll("button, [role='tab'], [role='button'], a, li, span, div"))
+          .filter(visible)
+          .some((element) => {
+            const text = textOf(element, 180);
+            if (!(text === label || text.startsWith(label + " ") || text.includes(label))) {
+              return false;
+            }
+            const className = classText(element);
+            return element.getAttribute?.("aria-selected") === "true" ||
+              element.getAttribute?.("aria-current") === "true" ||
+              /active|selected|current/i.test(className);
+          });
+      };
       const activeSwipers = (root) => [root, ...root.querySelectorAll(".swiper, [class*='swiper']")]
         .map((element) => element.swiper)
         .filter((swiper, index, list) => swiper && list.indexOf(swiper) === index);
@@ -1018,10 +1019,40 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
         await sleep(420);
         return true;
       };
-      const collectPages = async (root, tabLabel, tabIndex, states) => {
+      const collectPages = async (root, tabLabel, tabIndex, states, warnings, knownTabFirstSignatures) => {
         if (tabLabel) {
-          clickLabel(root, tabLabel);
+          const beforeTabSignature = pageSignature(root);
+          const clicked = clickLabel(root, tabLabel);
           await sleep(450);
+          const afterTabSignature = pageSignature(root);
+          const active = activeTabMatches(root, tabLabel);
+          if (!clicked) {
+            warnings.push({
+              sectionKey: definition.key,
+              sectionLabel: definition.sectionLabel,
+              stateLabel: tabLabel,
+              message: 'Could not activate tab "' + tabLabel + '".'
+            });
+            return;
+          }
+          if (!afterTabSignature) {
+            warnings.push({
+              sectionKey: definition.key,
+              sectionLabel: definition.sectionLabel,
+              stateLabel: tabLabel,
+              message: 'Could not verify tab "' + tabLabel + '" after activation.'
+            });
+            return;
+          }
+          if (tabIndex > 0 && afterTabSignature === beforeTabSignature && !active) {
+            warnings.push({
+              sectionKey: definition.key,
+              sectionLabel: definition.sectionLabel,
+              stateLabel: tabLabel,
+              message: 'Tab "' + tabLabel + '" did not show an active or changed state.'
+            });
+            return;
+          }
         }
         resetCarousel(root);
         await sleep(300);
@@ -1041,6 +1072,18 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
           }
           const signature = pageSignature(root);
           if (!signature || seen.has(signature)) break;
+          if (pageIndex === 1 && tabLabel) {
+            if (knownTabFirstSignatures.has(signature)) {
+              warnings.push({
+                sectionKey: definition.key,
+                sectionLabel: definition.sectionLabel,
+                stateLabel: tabLabel,
+                message: 'Tab "' + tabLabel + '" duplicated a previously captured tab and was skipped.'
+              });
+              break;
+            }
+            knownTabFirstSignatures.add(signature);
+          }
           seen.add(signature);
           const isDefaultState = pageIndex === 1;
           const label = definition.labelMode === "tab" && tabLabel
@@ -1079,10 +1122,12 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
         window.__pageShotRelatedSections = window.__pageShotRelatedSections || {};
         window.__pageShotRelatedSections[definition.key] = { root, definition };
         const states = [];
+        const warnings = [];
+        const knownTabFirstSignatures = new Set();
         if (definition.mode === "tabs-carousel") {
           for (const [tabIndex, tabLabel] of (definition.tabs || []).entries()) {
             const tabStates = [];
-            await collectPages(root, tabLabel, tabIndex, tabStates);
+            await collectPages(root, tabLabel, tabIndex, tabStates, warnings, knownTabFirstSignatures);
             for (const state of tabStates) {
               state.pageCount = tabStates.length;
               states.push(state);
@@ -1090,7 +1135,7 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
           }
         } else {
           const pageStates = [];
-          await collectPages(root, "", 0, pageStates);
+          await collectPages(root, "", 0, pageStates, warnings, knownTabFirstSignatures);
           for (const state of pageStates) {
             state.pageCount = pageStates.length;
             states.push(state);
@@ -1103,6 +1148,7 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
           sectionLabel: definition.sectionLabel,
           count: states.length,
           states,
+          warnings,
           rootText: textOf(root, 280),
           rootClass: classText(root).slice(0, 180)
         };
@@ -1314,8 +1360,11 @@ async function activateShokzHomeRelatedState(client, definition, state) {
         root.scrollIntoView({ block: "center", inline: "nearest" });
         await sleep(260);
         if (state.tabLabel) {
-          clickLabel(state.tabLabel);
+          const clicked = clickLabel(state.tabLabel);
           await sleep(420);
+          if (!clicked) {
+            return { ok: false, reason: 'Could not activate tab "' + state.tabLabel + '".' };
+          }
         }
         resetCarousel();
         await sleep(260);
@@ -1387,8 +1436,7 @@ async function readShokzHomeRelatedState(client, definition, state) {
       const intersects = (rect, rootRect) =>
         Math.max(0, Math.min(rect.right, rootRect.right) - Math.max(rect.left, rootRect.left)) *
         Math.max(0, Math.min(rect.bottom, rootRect.bottom) - Math.max(rect.top, rootRect.top));
-      const imageSources = (element) => Array.from(element.querySelectorAll("img, source"))
-        .flatMap((node) => [
+      const imageSourcesForNode = (node) => [
           node.currentSrc,
           node.src,
           node.srcset,
@@ -1397,10 +1445,26 @@ async function readShokzHomeRelatedState(client, definition, state) {
           node.getAttribute("data-original"),
           node.getAttribute("data-lazy-src"),
           node.getAttribute("data-lazy-srcset")
-        ])
+        ]
         .filter(Boolean)
         .map((value) => String(value).split(",")[0].trim())
         .filter(Boolean);
+      const visibleImageSources = (root, rootRect) => {
+        const seen = new Set();
+        const sources = [];
+        for (const node of Array.from(root.querySelectorAll("img, source"))) {
+          const visualNode = node instanceof HTMLSourceElement ? node.parentElement : node;
+          if (!visualNode || !visible(visualNode)) continue;
+          if (intersects(visualNode.getBoundingClientRect(), rootRect) <= 80) continue;
+          for (const source of imageSourcesForNode(node)) {
+            if (seen.has(source)) continue;
+            seen.add(source);
+            sources.push(source);
+            if (sources.length >= 24) return sources;
+          }
+        }
+        return sources;
+      };
       const productCardSignature = (root) => {
         const rootRect = root.getBoundingClientRect();
         const visibleLinks = Array.from(root.querySelectorAll("a[href*='/products/']"))
@@ -1475,7 +1539,7 @@ async function readShokzHomeRelatedState(client, definition, state) {
         if (textBlocks.length >= 24) break;
       }
       const visibleText = textBlocks.map((block) => block.text);
-      const images = imageSources(root).slice(0, 24);
+      const images = visibleImageSources(root, rootRect).slice(0, 24);
       const top = Math.max(0, rootRect.top + window.scrollY);
       const left = Math.max(0, rootRect.left + window.scrollX);
       const clip = {

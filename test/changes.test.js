@@ -45,6 +45,7 @@ test("matches the same section position when tab copy changes", async () => {
   assert.equal(changes[0].location.tabLabel, "Best Sell");
   assert.equal(changes[0].textChange.beforeFragment, "Best Selling");
   assert.equal(changes[0].textChange.afterFragment, "Best Sell");
+  assert.equal(changes[0].createdAt, "2026-05-03T10:00:00.000Z");
 });
 
 test("prefers tab and page identity when state index shifts", async () => {
