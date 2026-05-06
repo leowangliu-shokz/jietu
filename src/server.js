@@ -41,8 +41,7 @@ const server = http.createServer(async (request, response) => {
       const body = await readJsonBody(request);
       const result = await runCapture({
         url: body.url || null,
-        allDevices: Boolean(body.allDevices),
-        runSource: body.runSource === "auto" ? "auto" : "manual"
+        allDevices: Boolean(body.allDevices)
       });
       return sendJson(response, result, result.ok ? 200 : 409);
     }
@@ -85,7 +84,6 @@ async function runCapture(options = {}) {
     return { ok: false, error: "A capture is already running." };
   }
 
-  const runSource = options.runSource === "auto" ? "auto" : "manual";
   const allDevices = Boolean(options.allDevices);
 
   captureState = {
@@ -93,16 +91,15 @@ async function runCapture(options = {}) {
     running: true,
     startedAt: new Date().toISOString(),
     lastResults: [],
-    runSource,
     allDevices
   };
 
   try {
     const results = allDevices
-      ? await captureAllDevices(config, { runSource })
+      ? await captureAllDevices(config)
       : options.url
-        ? [await captureOne(options.url, config, { runSource })]
-        : await captureConfiguredUrls(config, { runSource });
+        ? [await captureOne(options.url, config)]
+        : await captureConfiguredUrls(config);
     captureState.lastResults = results;
     return { ok: true, results, state: await buildState() };
   } finally {
@@ -128,7 +125,7 @@ function scheduleNext() {
   const next = new Date(Date.now() + delay);
   nextRunAt = next.toISOString();
   scheduleTimer = setTimeout(async () => {
-    const result = await runCapture({ allDevices: true, runSource: "auto" }).catch((error) => {
+    const result = await runCapture({ allDevices: true }).catch((error) => {
       captureState.lastResults = [{ ok: false, error: error.message }];
       return { ok: false };
     });

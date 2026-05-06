@@ -12,7 +12,7 @@ const elements = {
   deviceFilterButton: document.querySelector("#deviceFilterButton"),
   deviceFilterLabel: document.querySelector("#deviceFilterLabel"),
   deviceFilterMenu: document.querySelector("#deviceFilterMenu"),
-  runSourceFilter: document.querySelector("#runSourceFilter"),
+  timeFilter: document.querySelector("#timeFilter"),
   urlFilter: document.querySelector("#urlFilter"),
   gallery: document.querySelector("#gallery"),
   empty: document.querySelector("#empty"),
@@ -46,7 +46,7 @@ for (const tab of elements.tabs) {
   tab.addEventListener("keydown", handleTabKeydown);
 }
 elements.urlFilter.addEventListener("change", renderGallery);
-elements.runSourceFilter.addEventListener("change", renderGallery);
+elements.timeFilter.addEventListener("change", renderGallery);
 elements.deviceFilterButton.addEventListener("click", toggleDeviceFilterMenu);
 elements.deviceFilterMenu.addEventListener("change", handleDeviceFilterChange);
 elements.deviceFilterMenu.addEventListener("click", handleDeviceFilterClick);
@@ -267,6 +267,32 @@ function matchesDeviceFilters(snapshot) {
   return selectedDeviceFilters.devices.has(device.id);
 }
 
+function matchesTimeFilter(snapshot) {
+  const value = elements.timeFilter.value;
+  if (!value) {
+    return true;
+  }
+
+  const capturedAt = timestamp(snapshot.capturedAt);
+  if (!capturedAt) {
+    return false;
+  }
+
+  const now = Date.now();
+  if (value === "today") {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    return capturedAt >= start.getTime();
+  }
+  if (value === "7d") {
+    return capturedAt >= now - 7 * 24 * 60 * 60 * 1000;
+  }
+  if (value === "30d") {
+    return capturedAt >= now - 30 * 24 * 60 * 60 * 1000;
+  }
+  return true;
+}
+
 function renderChangesSummary() {
   const changes = state.changesSummary?.recent || [];
   elements.changesList.innerHTML = "";
@@ -389,14 +415,11 @@ function changeTypeLabel(change) {
 
 function renderGallery() {
   const selectedUrl = elements.urlFilter.value;
-  const selectedRunSource = elements.runSourceFilter.value;
   const snapshots = state.snapshots.filter((snapshot) => {
     const matchesUrl = selectedUrl ? canonicalDisplayUrlForSnapshot(snapshot) === selectedUrl : true;
-    const matchesRunSource = selectedRunSource
-      ? runSourceForSnapshot(snapshot) === selectedRunSource
-      : true;
+    const matchesTime = matchesTimeFilter(snapshot);
     const matchesDevice = matchesDeviceFilters(snapshot);
-    return matchesUrl && matchesRunSource && matchesDevice;
+    return matchesUrl && matchesTime && matchesDevice;
   });
   const cards = buildGalleryCards(snapshots);
 
@@ -552,7 +575,6 @@ function renderShotCard(card) {
       <p class="shot-title" title="${escapeHtml(snapshot.title || displayUrl)}">${escapeHtml(displayUrl)}</p>
       <p class="shot-meta">
         <span class="pill">${formatDate(snapshot.capturedAt)}</span>
-        <span class="pill run ${runSourceForSnapshot(snapshot)}">${escapeHtml(runLabelForSnapshot(snapshot))}</span>
         <span class="pill device">${escapeHtml(deviceNameForSnapshot(snapshot))}</span>
         <span class="pill">${snapshot.width}×${snapshot.height}</span>
         ${snapshot.truncated ? "<span class=\"pill warn\">已截断</span>" : ""}
@@ -763,18 +785,7 @@ function displayUrlForTarget(target) {
 }
 
 function homeGroupKey(snapshot) {
-  return `${deviceIdForSnapshot(snapshot)}|${runSourceForSnapshot(snapshot)}`;
-}
-
-function runSourceForSnapshot(snapshot) {
-  return snapshot.runSource === "auto" ? "auto" : "manual";
-}
-
-function runLabelForSnapshot(snapshot) {
-  if (snapshot.runLabel) {
-    return snapshot.runLabel;
-  }
-  return runSourceForSnapshot(snapshot) === "auto" ? "自动跑（整点）" : "手动跑";
+  return deviceIdForSnapshot(snapshot);
 }
 
 function deviceNameForSnapshot(snapshot) {

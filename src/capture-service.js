@@ -13,16 +13,16 @@ import {
   publicSnapshotUrl
 } from "./store.js";
 
-export async function captureConfiguredUrls(config = null, options = {}) {
+export async function captureConfiguredUrls(config = null) {
   const activeConfig = config || await loadConfig();
   const results = [];
   for (const target of activeConfig.urls) {
-    results.push(await captureOne(target, activeConfig, options));
+    results.push(await captureOne(target, activeConfig));
   }
   return results;
 }
 
-export async function captureAllDevices(config = null, options = {}) {
+export async function captureAllDevices(config = null) {
   const activeConfig = config || await loadConfig();
   const results = [];
   for (const preset of devicePresets) {
@@ -31,13 +31,13 @@ export async function captureAllDevices(config = null, options = {}) {
       devicePresetId: preset.id
     });
     for (const target of presetConfig.urls) {
-      results.push(await captureOne(target, presetConfig, options));
+      results.push(await captureOne(target, presetConfig));
     }
   }
   return results;
 }
 
-export async function captureOne(inputTarget, config = null, options = {}) {
+export async function captureOne(inputTarget, config = null) {
   const activeConfig = config || await loadConfig();
   const target = normalizeCaptureTarget(inputTarget);
   const normalizedUrl = target.url;
@@ -45,7 +45,6 @@ export async function captureOne(inputTarget, config = null, options = {}) {
   const fileInfo = await createSnapshotFilePath(normalizedUrl, capturedAt);
   const devicePreset = findDevicePreset(activeConfig.devicePresetId);
   const publicDevice = devicePreset ? toPublicDevicePreset(devicePreset) : null;
-  const runSource = options.runSource === "auto" ? "auto" : "manual";
   const captureConfig = captureConfigForTarget(activeConfig, target);
 
   try {
@@ -54,7 +53,6 @@ export async function captureOne(inputTarget, config = null, options = {}) {
     const relatedShots = relatedCapture.shots;
     const stamp = capturedAt.toISOString().replace(/[:.]/g, "-");
     const targetLabel = target.label || normalizedUrl;
-    const runLabel = runSource === "auto" ? "\u81ea\u52a8\u8dd1\uff08\u6574\u70b9\uff09" : "\u624b\u52a8\u8dd1";
     const captureItems = Array.isArray(capture.captures) && capture.captures.length
       ? capture.captures
       : [capture];
@@ -70,7 +68,7 @@ export async function captureOne(inputTarget, config = null, options = {}) {
       const itemTargetLabel = item.bannerIndex ? `\u9996\u9875 Banner ${item.bannerIndex}` : targetLabel;
       const displayUrl = item.bannerIndex ? bannerDisplayLabel(targetLabel, item.bannerIndex) : targetLabel;
       const snapshot = await appendSnapshot({
-        id: `${stamp}-${fileInfo.siteSlug}-${itemTargetId}-${publicDevice?.id || "device"}-${runSource}`,
+        id: `${stamp}-${fileInfo.siteSlug}-${itemTargetId}-${publicDevice?.id || "device"}`,
         url: normalizedUrl,
         targetId: itemTargetId,
         targetLabel: itemTargetLabel,
@@ -89,8 +87,6 @@ export async function captureOne(inputTarget, config = null, options = {}) {
         devicePresetId: publicDevice?.id || activeConfig.devicePresetId || null,
         deviceName: publicDevice?.name || null,
         deviceLabel: publicDevice?.label || null,
-        runSource,
-        runLabel,
         fullPageHeight: capture.fullPageHeight,
         truncated: capture.truncated,
         scrollInfo: capture.scrollInfo,
