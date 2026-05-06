@@ -7,7 +7,7 @@ const elements = {
   browserState: document.querySelector("#browserState"),
   captureState: document.querySelector("#captureState"),
   changeCount: document.querySelector("#changeCount"),
-  nextRun: document.querySelector("#nextRun"),
+  latestShotTime: document.querySelector("#latestShotTime"),
   deviceFilter: document.querySelector("#deviceFilter"),
   deviceFilterButton: document.querySelector("#deviceFilterButton"),
   deviceFilterLabel: document.querySelector("#deviceFilterLabel"),
@@ -115,13 +115,19 @@ function render() {
   elements.captureState.textContent = state.capture.running ? "截图中" : "空闲";
   elements.browserState.textContent = state.browser.ok ? browserName(state.browser.path) : "未找到";
   elements.scheduleState.textContent = "整点（所有设备）";
-  elements.nextRun.textContent = state.nextRunAt
-    ? `下次整点自动截图：${formatDate(state.nextRunAt)}`
-    : "下次整点自动截图：计算中";
+  const latestCapturedAt = latestSnapshotCapturedAt();
+  elements.latestShotTime.textContent = latestCapturedAt
+    ? `最近一次截图时间：${formatDate(latestCapturedAt)}`
+    : "最近一次截图时间：暂无";
   renderFilterOptions();
   renderDeviceFilterOptions();
   renderChangesSummary();
   renderGallery();
+}
+
+function latestSnapshotCapturedAt() {
+  const latest = Math.max(...state.snapshots.map((snapshot) => timestamp(snapshot.capturedAt)));
+  return Number.isFinite(latest) ? new Date(latest).toISOString() : null;
 }
 
 function renderFilterOptions() {
