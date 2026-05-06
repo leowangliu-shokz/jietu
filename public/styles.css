@@ -301,14 +301,40 @@ select:focus {
 
 .timeline-filters {
   display: grid;
-  grid-template-columns: minmax(210px, 260px) minmax(160px, 190px) minmax(220px, 320px);
+  grid-template-columns: minmax(210px, 260px) minmax(340px, 430px) minmax(220px, 320px);
   gap: 10px;
   align-items: center;
 }
 
 .timeline-filters select,
+.timeline-filters .date-range-filter,
 .timeline-filters .multi-filter {
   width: 100%;
+}
+
+.date-range-filter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) 40px;
+  gap: 8px;
+  align-items: center;
+}
+
+.date-range-filter span {
+  color: var(--muted);
+  font-weight: 750;
+}
+
+.date-range-filter input {
+  min-width: 0;
+}
+
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  min-width: 40px;
+  padding: 0;
+  font-size: 20px;
+  line-height: 1;
 }
 
 .multi-filter {
@@ -736,6 +762,7 @@ select:focus {
 
   .actions button,
   .tab,
+  .date-range-filter,
   .timeline-filters select,
   .timeline-filters .multi-filter-button {
     flex: 1;

@@ -12,7 +12,9 @@ const elements = {
   deviceFilterButton: document.querySelector("#deviceFilterButton"),
   deviceFilterLabel: document.querySelector("#deviceFilterLabel"),
   deviceFilterMenu: document.querySelector("#deviceFilterMenu"),
-  timeFilter: document.querySelector("#timeFilter"),
+  dateStartFilter: document.querySelector("#dateStartFilter"),
+  dateEndFilter: document.querySelector("#dateEndFilter"),
+  dateClearFilter: document.querySelector("#dateClearFilter"),
   urlFilter: document.querySelector("#urlFilter"),
   gallery: document.querySelector("#gallery"),
   empty: document.querySelector("#empty"),
@@ -46,7 +48,9 @@ for (const tab of elements.tabs) {
   tab.addEventListener("keydown", handleTabKeydown);
 }
 elements.urlFilter.addEventListener("change", renderGallery);
-elements.timeFilter.addEventListener("change", renderGallery);
+elements.dateStartFilter.addEventListener("change", renderGallery);
+elements.dateEndFilter.addEventListener("change", renderGallery);
+elements.dateClearFilter.addEventListener("click", clearDateFilter);
 elements.deviceFilterButton.addEventListener("click", toggleDeviceFilterMenu);
 elements.deviceFilterMenu.addEventListener("change", handleDeviceFilterChange);
 elements.deviceFilterMenu.addEventListener("click", handleDeviceFilterClick);
@@ -268,8 +272,8 @@ function matchesDeviceFilters(snapshot) {
 }
 
 function matchesTimeFilter(snapshot) {
-  const value = elements.timeFilter.value;
-  if (!value) {
+  const range = selectedDateRange();
+  if (!range) {
     return true;
   }
 
@@ -278,19 +282,44 @@ function matchesTimeFilter(snapshot) {
     return false;
   }
 
-  const now = Date.now();
-  if (value === "today") {
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-    return capturedAt >= start.getTime();
+  return capturedAt >= range.start && capturedAt <= range.end;
+}
+
+function selectedDateRange() {
+  const start = startOfDay(elements.dateStartFilter.value);
+  const end = endOfDay(elements.dateEndFilter.value);
+
+  if (!Number.isFinite(start) && !Number.isFinite(end)) {
+    return null;
   }
-  if (value === "7d") {
-    return capturedAt >= now - 7 * 24 * 60 * 60 * 1000;
+
+  const min = Number.isFinite(start) ? start : Number.NEGATIVE_INFINITY;
+  const max = Number.isFinite(end) ? end : Number.POSITIVE_INFINITY;
+  return min <= max
+    ? { start: min, end: max }
+    : { start: max, end: min };
+}
+
+function clearDateFilter() {
+  elements.dateStartFilter.value = "";
+  elements.dateEndFilter.value = "";
+  renderGallery();
+}
+
+function startOfDay(value) {
+  if (!value) {
+    return NaN;
   }
-  if (value === "30d") {
-    return capturedAt >= now - 30 * 24 * 60 * 60 * 1000;
+  const date = new Date(`${value}T00:00:00`);
+  return date.getTime();
+}
+
+function endOfDay(value) {
+  if (!value) {
+    return NaN;
   }
-  return true;
+  const date = new Date(`${value}T23:59:59.999`);
+  return date.getTime();
 }
 
 function renderChangesSummary() {

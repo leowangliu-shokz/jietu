@@ -89,12 +89,14 @@
                   </button>
                   <div id="deviceFilterMenu" class="multi-filter-menu" role="group" aria-label="按截图设备过滤"></div>
                 </div>
-                <select id="timeFilter" aria-label="按截图时间过滤">
-                  <option value="">全部时间</option>
-                  <option value="today">今天</option>
-                  <option value="7d">最近 7 天</option>
-                  <option value="30d">最近 30 天</option>
-                </select>
+                <div class="date-range-filter" aria-label="按截图日期过滤">
+                  <input id="dateStartFilter" type="date" aria-label="开始日期">
+                  <span aria-hidden="true">→</span>
+                  <input id="dateEndFilter" type="date" aria-label="结束日期">
+                  <button id="dateClearFilter" class="icon-button" type="button" aria-label="清除日期筛选" title="清除日期筛选">
+                    ×
+                  </button>
+                </div>
                 <select id="urlFilter" aria-label="按 URL 过滤">
                   <option value="">全部 URL</option>
                 </select>
