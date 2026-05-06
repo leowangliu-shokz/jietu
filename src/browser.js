@@ -513,7 +513,10 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
   await primeLazyImages(client);
   const plan = await readShokzHomeRelatedSectionPlan(client, definition);
   if (!plan.ok || !Array.isArray(plan.states) || !plan.states.length) {
-    const reason = plan.reason ? ` ${plan.reason}` : "";
+    const warningReason = Array.isArray(plan.warnings) && plan.warnings.length
+      ? ` ${plan.warnings.map((warning) => warning.message).filter(Boolean).join(" ")}`
+      : "";
+    const reason = plan.reason ? ` ${plan.reason}` : warningReason;
     throw new Error(`Could not identify Shokz ${definition.sectionLabel} carousel.${reason}`);
   }
 
@@ -622,6 +625,9 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
       tabLabel: state.tabLabel || null,
       tabIndex: state.tabIndex || null,
       pageIndex: state.pageIndex || null,
+      productCount: state.productCount || null,
+      visibleProductCount: state.visibleProductCount || null,
+      visibleProducts: state.visibleProducts || null,
       logicalSignature,
       visualSignature,
       visualHash,
@@ -640,7 +646,10 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
         activeIndex: current.activeIndex ?? state.stateIndex,
         tabLabel: state.tabLabel || null,
         tabIndex: state.tabIndex || null,
-        pageIndex: state.pageIndex || null
+        pageIndex: state.pageIndex || null,
+        productCount: state.productCount || null,
+        visibleProductCount: state.visibleProductCount || null,
+        visibleProducts: state.visibleProducts || null
       }
     });
   }
@@ -659,6 +668,7 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
   const result = await client.send("Runtime.evaluate", {
     expression: `(() => {
       const definition = ${JSON.stringify(definition)};
+      const warnings = [];
       const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
       const cleanText = (value, max = 360) => String(value || "")
         .replace(/\\s+/g, " ")
@@ -723,26 +733,53 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
           backgrounds: backgroundSources(root).slice(0, 12)
         });
       };
-      const productCardSignature = (root) => {
+      const productHref = (element) => {
+        try {
+          return new URL(element.getAttribute("href") || element.href || "", window.location.href).pathname;
+        } catch {
+          return element.getAttribute("href") || element.href || "";
+        }
+      };
+      const imageSources = (element) => Array.from(element.querySelectorAll("img, source"))
+        .flatMap((node) => [
+          node.currentSrc,
+          node.src,
+          node.srcset,
+          node.getAttribute("data-src"),
+          node.getAttribute("data-srcset"),
+          node.getAttribute("data-original"),
+          node.getAttribute("data-lazy-src"),
+          node.getAttribute("data-lazy-srcset")
+        ])
+        .filter(Boolean)
+        .map((value) => String(value).split(",")[0].trim())
+        .filter(Boolean);
+      const productImage = (card) => imageSources(card)[0] || "";
+      const productCardForLink = (link) =>
+        link.closest("[data-product-card], article, li, [class*='product'][class*='card'], [class*='card'], [class*='slide']") || link;
+      const productText = (card) => textOf(card, 220)
+        .replace(/\\b\\d+\\s*\\/\\s*\\d+\\b/g, "")
+        .replace(/\\s+/g, " ")
+        .trim();
+      const productCards = (root, options = {}) => {
         const rootRect = root.getBoundingClientRect();
-        const visibleLinks = Array.from(root.querySelectorAll("a[href*='/products/']"))
+        const cards = Array.from(root.querySelectorAll("a[href*='/products/']"))
           .filter(visible)
           .map((element) => {
-            const card = element.closest("article, li, [class*='card'], [class*='slide'], a") || element;
+            const card = productCardForLink(element);
             const rect = card.getBoundingClientRect();
             const area = Math.max(1, rect.width * rect.height);
             const visibleArea = intersects(rect, rootRect);
             const centerX = rect.left + rect.width / 2;
             const centerY = rect.top + rect.height / 2;
-            let href = "";
-            try {
-              href = new URL(element.getAttribute("href") || element.href || "", window.location.href).pathname;
-            } catch {
-              href = element.getAttribute("href") || element.href || "";
-            }
+            const href = productHref(element);
+            const text = productText(card);
+            const image = productImage(card);
             return {
               href,
-              text: textOf(card, 220),
+              text,
+              image,
+              key: href || text,
               rect,
               visibleArea,
               visibleRatio: visibleArea / area,
@@ -754,27 +791,41 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
             item.href &&
             item.rect.width >= 120 &&
             item.rect.height >= 120 &&
-            item.visibleArea > 800 &&
-            item.visibleRatio >= 0.55 &&
-            item.rect.left >= rootRect.left + 12 &&
-            item.rect.right <= rootRect.right - 12 &&
             item.centerY >= rootRect.top &&
-            item.centerY <= rootRect.bottom
+            item.centerY <= rootRect.bottom &&
+            (!options.visibleOnly || (
+              item.visibleArea > 800 &&
+              item.visibleRatio >= 0.45 &&
+              item.rect.left >= rootRect.left + 12 &&
+              item.rect.right <= rootRect.right - 12
+            ))
           )
           .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
         const deduped = [];
         const seen = new Set();
-        for (const item of visibleLinks) {
-          const key = item.href + "|" + item.text;
-          if (seen.has(key)) continue;
+        for (const item of cards) {
+          const key = item.key || item.href;
+          if (!key || seen.has(key)) continue;
           seen.add(key);
           deduped.push({
+            key,
             href: item.href,
-            text: item.text
+            text: item.text,
+            image: item.image
           });
-          if (deduped.length >= 8) break;
         }
-        return deduped.length ? JSON.stringify(deduped) : "";
+        return deduped;
+      };
+      const productWindowSignature = (root) => {
+        const cards = productCards(root, { visibleOnly: true });
+        return cards.length ? JSON.stringify(cards.map((card) => ({
+          key: card.key,
+          href: card.href
+        }))) : "";
+      };
+      const productCardSignature = (root) => {
+        const signature = productWindowSignature(root);
+        return signature || "";
       };
       const pageSignature = (root) => {
         if (definition.key === "product-showcase") {
@@ -861,8 +912,113 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
           return true;
         }
       };
+      const tabTextOf = (element) => cleanText([
+        element?.innerText,
+        element?.textContent,
+        element?.getAttribute?.("aria-label"),
+        element?.getAttribute?.("title")
+      ].filter(Boolean).join(" "), 120);
+      const exactTabText = (element, label) => {
+        const text = tabTextOf(element);
+        return text === label ||
+          text === label + " " + label ||
+          (text.startsWith(label + " ") && text.length <= label.length * 2 + 6);
+      };
+      const tabContainerFor = (root) => {
+        const rootRect = root.getBoundingClientRect();
+        const labels = definition.tabs || [];
+        const candidates = new Map();
+        for (const element of Array.from(root.querySelectorAll("button, [role='tab'], [role='button'], a, li, span, div, h1, h2, h3, h4, p"))) {
+          if (!visible(element) || element.closest("a[href*='/products/']")) continue;
+          const matchedLabel = labels.find((label) => exactTabText(element, label));
+          if (!matchedLabel) continue;
+          let current = element.parentElement;
+          for (let depth = 0; current && depth < 5; depth += 1) {
+            if (!root.contains(current) || !visible(current)) break;
+            const rect = current.getBoundingClientRect();
+            if (rect.top > rootRect.top + Math.max(180, rootRect.height * 0.28)) {
+              current = current.parentElement;
+              continue;
+            }
+            const foundLabels = labels.filter((label) =>
+              Array.from(current.querySelectorAll("button, [role='tab'], [role='button'], a, li, span, div, h1, h2, h3, h4, p"))
+                .some((node) => visible(node) && !node.closest("a[href*='/products/']") && exactTabText(node, label))
+            );
+            if (foundLabels.length >= 2) {
+              const key = foundLabels.join("|") + "|" + Math.round(rect.top) + "|" + Math.round(rect.left);
+              const score = foundLabels.length * 1000 -
+                Math.max(0, rect.height - 120) * 20 -
+                Math.max(0, rect.top - rootRect.top);
+              const existing = candidates.get(key);
+              if (!existing || score > existing.score) {
+                candidates.set(key, { element: current, score, rect, labelCount: foundLabels.length });
+              }
+            }
+            current = current.parentElement;
+          }
+        }
+        return [...candidates.values()]
+          .sort((a, b) => b.labelCount - a.labelCount || b.score - a.score || a.rect.top - b.rect.top)[0]?.element || null;
+      };
+      const findProductTabControl = (root, label) => {
+        const rootRect = root.getBoundingClientRect();
+        const tabContainer = tabContainerFor(root) || root;
+        return Array.from(tabContainer.querySelectorAll("button, [role='tab'], [role='button'], a, li, span, div, h1, h2, h3, h4, p"))
+          .filter(visible)
+          .filter((element) => !element.closest("a[href*='/products/']"))
+          .filter((element) => exactTabText(element, label))
+          .map((element) => {
+            const target = element.closest("button, [role='tab'], [role='button'], a, [tabindex]") || element;
+            const rect = target.getBoundingClientRect();
+            const role = target.getAttribute?.("role") || "";
+            const className = classText(target);
+            const score = Number(target.tagName === "BUTTON") * 40 +
+              Number(role === "tab") * 35 +
+              Number(/tab|active|selected/i.test(className)) * 10 -
+              Math.max(0, rect.top - rootRect.top) -
+              Math.max(0, rect.height - 80) * 5 -
+              Math.max(0, rect.width - 360);
+            return { element: target, rect, score };
+          })
+          .sort((a, b) => b.score - a.score || a.rect.top - b.rect.top || a.rect.left - b.rect.left)[0]?.element || null;
+      };
+      const clickProductTab = (root, label) => {
+        if (!label) return true;
+        const oneBasedIndex = (definition.tabs || []).indexOf(label) + 1;
+        const clicked = clickElement(findProductTabControl(root, label));
+        let activated = false;
+        if (oneBasedIndex > 0) {
+          for (const item of root.querySelectorAll("[class*='title-item']")) {
+            const isTarget = classText(item).split(/\\s+/).includes("title-item-" + oneBasedIndex);
+            item.classList.toggle("active", isTarget);
+            activated = activated || isTarget;
+          }
+          for (const item of root.querySelectorAll("[class*='swiper-container-product-card']")) {
+            const isTarget = classText(item).split(/\\s+/).includes("swiper-container-product-card-" + oneBasedIndex);
+            item.classList.toggle("active", isTarget);
+            item.setAttribute("aria-hidden", isTarget ? "false" : "true");
+            if (isTarget) {
+              item.style.display = "";
+              item.style.visibility = "";
+            }
+            activated = activated || isTarget;
+          }
+        }
+        return clicked || activated;
+      };
+      const activeProductTabMatches = (root, label) => {
+        const control = findProductTabControl(root, label);
+        if (!control) return false;
+        const stateText = [
+          control.getAttribute?.("aria-selected"),
+          control.getAttribute?.("aria-current"),
+          control.getAttribute?.("data-active"),
+          classText(control)
+        ].filter(Boolean).join(" ");
+        return /true|page|active|selected|current/i.test(stateText);
+      };
       const clickLabel = (root, label) => {
-        const choices = Array.from(root.querySelectorAll("button, [role='tab'], [role='button'], a, li, span, div"))
+        const choices = Array.from(root.querySelectorAll("button, [role='tab'], [role='button'], a, li, span, div, h1, h2, h3, h4, p"))
           .filter(visible)
           .map((element) => {
             const rect = element.getBoundingClientRect();
@@ -880,7 +1036,7 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
       };
       const activeTabMatches = (root, label) => {
         if (!label) return true;
-        return Array.from(root.querySelectorAll("button, [role='tab'], [role='button'], a, li, span, div"))
+        return Array.from(root.querySelectorAll("button, [role='tab'], [role='button'], a, li, span, div, h1, h2, h3, h4, p"))
           .filter(visible)
           .some((element) => {
             const text = textOf(element, 180);
@@ -896,6 +1052,14 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
       const activeSwipers = (root) => [root, ...root.querySelectorAll(".swiper, [class*='swiper']")]
         .map((element) => element.swiper)
         .filter((swiper, index, list) => swiper && list.indexOf(swiper) === index);
+      const activeProductSwipers = (root) => activeSwipers(root).filter((swiper) => {
+        const element = swiper.el || swiper.wrapperEl?.parentElement;
+        return !element || (visible(element) && /active/i.test(classText(element)));
+      });
+      const controlDisabled = (element) =>
+        element?.disabled ||
+        element?.getAttribute?.("aria-disabled") === "true" ||
+        /disabled|lock/i.test(classText(element));
       const resetCarousel = (root) => {
         for (const swiper of activeSwipers(root)) {
           if (swiper.autoplay?.stop) swiper.autoplay.stop();
@@ -950,7 +1114,7 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
             .map((element) => element?.closest?.("button, [role='button'], a, .swiper-button-next, .slick-next") || element)
             .filter(Boolean)
             .filter((element, index, list) => list.indexOf(element) === index)
-            .filter((element) => visible(element) && !navigatesAway(element))
+            .filter((element) => visible(element) && !controlDisabled(element) && !navigatesAway(element))
             .map((element) => ({ element, rect: element.getBoundingClientRect() }))
             .sort((a, b) => b.rect.left - a.rect.left || b.rect.top - a.rect.top);
           if (pointCandidates[0]?.element) {
@@ -971,9 +1135,7 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
               element.id,
               classText(element)
             ].filter(Boolean).join(" ");
-            const disabled = element.disabled ||
-              element.getAttribute?.("aria-disabled") === "true" ||
-              /disabled|lock/i.test(classText(element));
+            const disabled = controlDisabled(element);
             const compact = rect.width <= 130 && rect.height <= 130;
             const rightSide = rect.left >= rootRect.left + rootRect.width * 0.45;
             const nearBottom = rect.top >= rootRect.top + rootRect.height * 0.55;
@@ -996,6 +1158,16 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
       };
       const advance = async (root) => {
         if (definition.key === "product-showcase") {
+          const swipers = activeProductSwipers(root).filter((swiper) => typeof swiper.slideNext === "function");
+          if (swipers.length) {
+            for (const swiper of swipers) {
+              if (swiper.autoplay?.stop) swiper.autoplay.stop();
+              swiper.slideNext(0, false);
+              if (typeof swiper.update === "function") swiper.update();
+            }
+            await sleep(520);
+            return true;
+          }
           const next = findNextControl(root);
           if (next) {
             clickElement(next);
@@ -1019,7 +1191,88 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
         await sleep(420);
         return true;
       };
+      const collectProductPages = async (root, tabLabel, tabIndex, states) => {
+        const clicked = clickProductTab(root, tabLabel);
+        await sleep(700);
+        if (!clicked) {
+          warnings.push({
+            sectionKey: definition.key,
+            sectionLabel: definition.sectionLabel,
+            stateLabel: tabLabel,
+            message: "Could not click product showcase tab " + tabLabel + "."
+          });
+          return;
+        }
+        resetCarousel(root);
+        await sleep(450);
+
+        const allCards = productCards(root);
+        const firstWindowCards = productCards(root, { visibleOnly: true });
+        const firstWindowSignature = productWindowSignature(root);
+        if (!firstWindowCards.length || !firstWindowSignature) {
+          warnings.push({
+            sectionKey: definition.key,
+            sectionLabel: definition.sectionLabel,
+            stateLabel: tabLabel,
+            message: "Could not read visible product cards for " + tabLabel + "."
+          });
+          return;
+        }
+
+        const tabSetSignature = JSON.stringify(allCards.map((card) => card.key));
+        const earlierMatchingTab = states.find((state) => state.tabSetSignature === tabSetSignature);
+        if (earlierMatchingTab && !activeProductTabMatches(root, tabLabel)) {
+          warnings.push({
+            sectionKey: definition.key,
+            sectionLabel: definition.sectionLabel,
+            stateLabel: tabLabel,
+            message: "Product showcase tab " + tabLabel + " did not switch away from " + earlierMatchingTab.tabLabel + "."
+          });
+          return;
+        }
+
+        const seen = new Set();
+        const maxPages = Math.max(1, allCards.length || firstWindowCards.length) + 2;
+        const lastProductKey = allCards[allCards.length - 1]?.key || "";
+        for (let pageIndex = 1; pageIndex <= maxPages; pageIndex += 1) {
+          const visibleCards = productCards(root, { visibleOnly: true });
+          const signature = productWindowSignature(root);
+          if (!signature || seen.has(signature)) break;
+          seen.add(signature);
+          const label = tabLabel + " " + pageIndex;
+          states.push({
+            kind: "tab-carousel",
+            sectionKey: definition.key,
+            sectionLabel: definition.sectionLabel,
+            tabLabel,
+            tabIndex: Number.isFinite(tabIndex) ? tabIndex + 1 : null,
+            pageIndex,
+            stateIndex: states.length + 1,
+            stateLabel: label,
+            logicalSignature: definition.key + "|" + tabLabel + "|" + pageIndex + "|" + signature,
+            windowSignature: signature,
+            tabSetSignature,
+            productCount: allCards.length,
+            visibleProductCount: visibleCards.length,
+            visibleProducts: visibleCards,
+            fileId: tabLabel + "-" + pageIndex,
+            isDefaultState: pageIndex === 1
+          });
+
+          if (lastProductKey && visibleCards.some((card) => card.key === lastProductKey)) {
+            break;
+          }
+          const before = signature;
+          const moved = await advance(root);
+          const after = productWindowSignature(root);
+          if (!moved || !after || after === before || seen.has(after)) break;
+        }
+      };
       const collectPages = async (root, tabLabel, tabIndex, states, warnings, knownTabFirstSignatures) => {
+        if (definition.key === "product-showcase") {
+          await collectProductPages(root, tabLabel, tabIndex, states);
+          return;
+        }
         if (tabLabel) {
           const beforeTabSignature = pageSignature(root);
           const clicked = clickLabel(root, tabLabel);
@@ -1122,7 +1375,6 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
         window.__pageShotRelatedSections = window.__pageShotRelatedSections || {};
         window.__pageShotRelatedSections[definition.key] = { root, definition };
         const states = [];
-        const warnings = [];
         const knownTabFirstSignatures = new Set();
         if (definition.mode === "tabs-carousel") {
           for (const [tabIndex, tabLabel] of (definition.tabs || []).entries()) {
@@ -1157,6 +1409,12 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
     awaitPromise: true,
     returnByValue: true
   });
+  if (result.exceptionDetails) {
+    return {
+      ok: false,
+      reason: result.exceptionDetails.exception?.description || result.exceptionDetails.text || "Runtime evaluation failed."
+    };
+  }
   return result.result?.value || { ok: false };
 }
 
@@ -1188,6 +1446,84 @@ async function activateShokzHomeRelatedState(client, definition, state) {
       ].filter(Boolean).join(" "), max);
       const root = window.__pageShotRelatedSections?.[definition.key]?.root;
       if (!root) return { ok: false, reason: "Related section root is not available." };
+      const intersects = (rect, rootRect) =>
+        Math.max(0, Math.min(rect.right, rootRect.right) - Math.max(rect.left, rootRect.left)) *
+        Math.max(0, Math.min(rect.bottom, rootRect.bottom) - Math.max(rect.top, rootRect.top));
+      const productHref = (element) => {
+        try {
+          return new URL(element.getAttribute("href") || element.href || "", window.location.href).pathname;
+        } catch {
+          return element.getAttribute("href") || element.href || "";
+        }
+      };
+      const productImage = (card) => {
+        const image = card.querySelector("img, source");
+        return [
+          image?.currentSrc,
+          image?.src,
+          image?.srcset,
+          image?.getAttribute?.("data-src"),
+          image?.getAttribute?.("data-srcset")
+        ].filter(Boolean).map((value) => String(value).split(",")[0].trim())[0] || "";
+      };
+      const productCardForLink = (link) =>
+        link.closest("[data-product-card], article, li, [class*='product'][class*='card'], [class*='card'], [class*='slide']") || link;
+      const productText = (card) => textOf(card, 220)
+        .replace(/\\b\\d+\\s*\\/\\s*\\d+\\b/g, "")
+        .replace(/\\s+/g, " ")
+        .trim();
+      const productCards = () => {
+        const rootRect = root.getBoundingClientRect();
+        const cards = Array.from(root.querySelectorAll("a[href*='/products/']"))
+          .filter(visible)
+          .map((element) => {
+            const card = productCardForLink(element);
+            const rect = card.getBoundingClientRect();
+            const area = Math.max(1, rect.width * rect.height);
+            const visibleArea = intersects(rect, rootRect);
+            const href = productHref(element);
+            const text = productText(card);
+            const image = productImage(card);
+            return {
+              key: href || text,
+              href,
+              text,
+              image,
+              rect,
+              visibleArea,
+              visibleRatio: visibleArea / area,
+              centerY: rect.top + rect.height / 2
+            };
+          })
+          .filter((item) =>
+            item.href &&
+            item.rect.width >= 120 &&
+            item.rect.height >= 120 &&
+            item.visibleArea > 800 &&
+            item.visibleRatio >= 0.45 &&
+            item.rect.left >= rootRect.left + 12 &&
+            item.rect.right <= rootRect.right - 12 &&
+            item.centerY >= rootRect.top &&
+            item.centerY <= rootRect.bottom
+          )
+          .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+        const deduped = [];
+        const seen = new Set();
+        for (const item of cards) {
+          const key = item.key || item.href;
+          if (!key || seen.has(key)) continue;
+          seen.add(key);
+          deduped.push({ key, href: item.href, text: item.text, image: item.image });
+        }
+        return deduped;
+      };
+      const productWindowSignature = () => {
+        const cards = productCards();
+        return cards.length ? JSON.stringify(cards.map((card) => ({
+          key: card.key,
+          href: card.href
+        }))) : "";
+      };
       const clickElement = (element) => {
         const target = element?.closest?.("button, [role='button'], a, [tabindex]") || element;
         if (!target || !visible(target)) return false;
@@ -1218,9 +1554,103 @@ async function activateShokzHomeRelatedState(client, definition, state) {
           return true;
         }
       };
+      const tabTextOf = (element) => cleanText([
+        element?.innerText,
+        element?.textContent,
+        element?.getAttribute?.("aria-label"),
+        element?.getAttribute?.("title")
+      ].filter(Boolean).join(" "), 120);
+      const exactTabText = (element, label) => {
+        const text = tabTextOf(element);
+        return text === label ||
+          text === label + " " + label ||
+          (text.startsWith(label + " ") && text.length <= label.length * 2 + 6);
+      };
+      const tabContainerFor = () => {
+        const rootRect = root.getBoundingClientRect();
+        const labels = definition.tabs || [];
+        const candidates = new Map();
+        for (const element of Array.from(root.querySelectorAll("button, [role='tab'], [role='button'], a, li, span, div, h1, h2, h3, h4, p"))) {
+          if (!visible(element) || element.closest("a[href*='/products/']")) continue;
+          const matchedLabel = labels.find((label) => exactTabText(element, label));
+          if (!matchedLabel) continue;
+          let current = element.parentElement;
+          for (let depth = 0; current && depth < 5; depth += 1) {
+            if (!root.contains(current) || !visible(current)) break;
+            const rect = current.getBoundingClientRect();
+            if (rect.top > rootRect.top + Math.max(180, rootRect.height * 0.28)) {
+              current = current.parentElement;
+              continue;
+            }
+            const foundLabels = labels.filter((label) =>
+              Array.from(current.querySelectorAll("button, [role='tab'], [role='button'], a, li, span, div, h1, h2, h3, h4, p"))
+                .some((node) => visible(node) && !node.closest("a[href*='/products/']") && exactTabText(node, label))
+            );
+            if (foundLabels.length >= 2) {
+              const key = foundLabels.join("|") + "|" + Math.round(rect.top) + "|" + Math.round(rect.left);
+              const score = foundLabels.length * 1000 -
+                Math.max(0, rect.height - 120) * 20 -
+                Math.max(0, rect.top - rootRect.top);
+              const existing = candidates.get(key);
+              if (!existing || score > existing.score) {
+                candidates.set(key, { element: current, score, rect, labelCount: foundLabels.length });
+              }
+            }
+            current = current.parentElement;
+          }
+        }
+        return [...candidates.values()]
+          .sort((a, b) => b.labelCount - a.labelCount || b.score - a.score || a.rect.top - b.rect.top)[0]?.element || null;
+      };
+      const findProductTabControl = (label) => {
+        const rootRect = root.getBoundingClientRect();
+        const tabContainer = tabContainerFor() || root;
+        return Array.from(tabContainer.querySelectorAll("button, [role='tab'], [role='button'], a, li, span, div, h1, h2, h3, h4, p"))
+          .filter(visible)
+          .filter((element) => !element.closest("a[href*='/products/']"))
+          .filter((element) => exactTabText(element, label))
+          .map((element) => {
+            const target = element.closest("button, [role='tab'], [role='button'], a, [tabindex]") || element;
+            const rect = target.getBoundingClientRect();
+            const role = target.getAttribute?.("role") || "";
+            const className = classText(target);
+            const score = Number(target.tagName === "BUTTON") * 40 +
+              Number(role === "tab") * 35 +
+              Number(/tab|active|selected/i.test(className)) * 10 -
+              Math.max(0, rect.top - rootRect.top) -
+              Math.max(0, rect.height - 80) * 5 -
+              Math.max(0, rect.width - 360);
+            return { element: target, rect, score };
+          })
+          .sort((a, b) => b.score - a.score || a.rect.top - b.rect.top || a.rect.left - b.rect.left)[0]?.element || null;
+      };
+      const clickProductTab = (label) => {
+        if (!label) return true;
+        const oneBasedIndex = (definition.tabs || []).indexOf(label) + 1;
+        const clicked = clickElement(findProductTabControl(label));
+        let activated = false;
+        if (oneBasedIndex > 0) {
+          for (const item of root.querySelectorAll("[class*='title-item']")) {
+            const isTarget = classText(item).split(/\\s+/).includes("title-item-" + oneBasedIndex);
+            item.classList.toggle("active", isTarget);
+            activated = activated || isTarget;
+          }
+          for (const item of root.querySelectorAll("[class*='swiper-container-product-card']")) {
+            const isTarget = classText(item).split(/\\s+/).includes("swiper-container-product-card-" + oneBasedIndex);
+            item.classList.toggle("active", isTarget);
+            item.setAttribute("aria-hidden", isTarget ? "false" : "true");
+            if (isTarget) {
+              item.style.display = "";
+              item.style.visibility = "";
+            }
+            activated = activated || isTarget;
+          }
+        }
+        return clicked || activated;
+      };
       const clickLabel = (label) => {
         if (!label) return true;
-        const choices = Array.from(root.querySelectorAll("button, [role='tab'], [role='button'], a, li, span, div"))
+        const choices = Array.from(root.querySelectorAll("button, [role='tab'], [role='button'], a, li, span, div, h1, h2, h3, h4, p"))
           .filter(visible)
           .map((element) => {
             const rect = element.getBoundingClientRect();
@@ -1239,6 +1669,14 @@ async function activateShokzHomeRelatedState(client, definition, state) {
       const activeSwipers = () => [root, ...root.querySelectorAll(".swiper, [class*='swiper']")]
         .map((element) => element.swiper)
         .filter((swiper, index, list) => swiper && list.indexOf(swiper) === index);
+      const activeProductSwipers = () => activeSwipers().filter((swiper) => {
+        const element = swiper.el || swiper.wrapperEl?.parentElement;
+        return !element || (visible(element) && /active/i.test(classText(element)));
+      });
+      const controlDisabled = (element) =>
+        element?.disabled ||
+        element?.getAttribute?.("aria-disabled") === "true" ||
+        /disabled|lock/i.test(classText(element));
       const resetCarousel = () => {
         for (const swiper of activeSwipers()) {
           if (swiper.autoplay?.stop) swiper.autoplay.stop();
@@ -1294,7 +1732,7 @@ async function activateShokzHomeRelatedState(client, definition, state) {
             .map((element) => element?.closest?.("button, [role='button'], a, .swiper-button-next, .slick-next") || element)
             .filter(Boolean)
             .filter((element, index, list) => list.indexOf(element) === index)
-            .filter((element) => visible(element) && !navigatesAway(element))
+            .filter((element) => visible(element) && !controlDisabled(element) && !navigatesAway(element))
             .map((element) => ({ element, rect: element.getBoundingClientRect() }))
             .sort((a, b) => b.rect.left - a.rect.left || b.rect.top - a.rect.top);
           if (pointCandidates[0]?.element) {
@@ -1310,7 +1748,7 @@ async function activateShokzHomeRelatedState(client, definition, state) {
             const rect = element.getBoundingClientRect();
             const text = [textOf(element), element.getAttribute?.("aria-label"), element.getAttribute?.("title"), element.id, classText(element)]
               .filter(Boolean).join(" ");
-            const disabled = element.disabled || element.getAttribute?.("aria-disabled") === "true" || /disabled|lock/i.test(classText(element));
+            const disabled = controlDisabled(element);
             const compact = rect.width <= 130 && rect.height <= 130;
             const rightSide = rect.left >= rootRect.left + rootRect.width * 0.45;
             const nearBottom = rect.top >= rootRect.top + rootRect.height * 0.55;
@@ -1333,6 +1771,16 @@ async function activateShokzHomeRelatedState(client, definition, state) {
       };
       const advance = async () => {
         if (definition.key === "product-showcase") {
+          const swipers = activeProductSwipers().filter((swiper) => typeof swiper.slideNext === "function");
+          if (swipers.length) {
+            for (const swiper of swipers) {
+              if (swiper.autoplay?.stop) swiper.autoplay.stop();
+              swiper.slideNext(0, false);
+              if (typeof swiper.update === "function") swiper.update();
+            }
+            await sleep(520);
+            return true;
+          }
           const next = findNextControl();
           if (next) {
             clickElement(next);
@@ -1359,6 +1807,37 @@ async function activateShokzHomeRelatedState(client, definition, state) {
       return (async () => {
         root.scrollIntoView({ block: "center", inline: "nearest" });
         await sleep(260);
+        if (definition.key === "product-showcase") {
+          if (state.tabLabel) {
+            const clicked = clickProductTab(state.tabLabel);
+            await sleep(700);
+            if (!clicked) {
+              return { ok: false, reason: "Could not activate product showcase tab " + state.tabLabel + "." };
+            }
+          }
+          resetCarousel();
+          await sleep(450);
+          const targetSignature = state.windowSignature || "";
+          const maxAttempts = Math.max(12, Number(state.pageIndex || 1) + 4);
+          for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+            const currentSignature = productWindowSignature();
+            if (targetSignature && currentSignature === targetSignature) {
+              root.scrollIntoView({ block: "center", inline: "nearest" });
+              await sleep(260);
+              return { ok: true };
+            }
+            if (!targetSignature && attempt >= Math.max(0, Number(state.pageIndex || 1) - 1)) {
+              root.scrollIntoView({ block: "center", inline: "nearest" });
+              await sleep(260);
+              return { ok: true };
+            }
+            const before = currentSignature;
+            const moved = await advance();
+            const after = productWindowSignature();
+            if (!moved || !after || after === before) break;
+          }
+          return { ok: false, reason: "Could not activate product showcase window " + state.stateLabel + "." };
+        }
         if (state.tabLabel) {
           const clicked = clickLabel(state.tabLabel);
           await sleep(420);
@@ -1465,26 +1944,40 @@ async function readShokzHomeRelatedState(client, definition, state) {
         }
         return sources;
       };
+      const productHref = (element) => {
+        try {
+          return new URL(element.getAttribute("href") || element.href || "", window.location.href).pathname;
+        } catch {
+          return element.getAttribute("href") || element.href || "";
+        }
+      };
+      const productImage = (card) => {
+        const image = card.querySelector("img, source");
+        return image ? imageSourcesForNode(image)[0] || "" : "";
+      };
+      const productText = (card) => cleanText([card.innerText, card.textContent].filter(Boolean).join(" "), 220)
+        .replace(/\\b\\d+\\s*\\/\\s*\\d+\\b/g, "")
+        .replace(/\\s+/g, " ")
+        .trim();
       const productCardSignature = (root) => {
         const rootRect = root.getBoundingClientRect();
         const visibleLinks = Array.from(root.querySelectorAll("a[href*='/products/']"))
           .filter(visible)
           .map((element) => {
-            const card = element.closest("article, li, [class*='card'], [class*='slide'], a") || element;
+            const card = element.closest("[data-product-card], article, li, [class*='product'][class*='card'], [class*='card'], [class*='slide']") || element;
             const rect = card.getBoundingClientRect();
             const area = Math.max(1, rect.width * rect.height);
             const visibleArea = intersects(rect, rootRect);
             const centerX = rect.left + rect.width / 2;
             const centerY = rect.top + rect.height / 2;
-            let href = "";
-            try {
-              href = new URL(element.getAttribute("href") || element.href || "", window.location.href).pathname;
-            } catch {
-              href = element.getAttribute("href") || element.href || "";
-            }
+            const href = productHref(element);
+            const text = productText(card);
+            const image = productImage(card);
             return {
               href,
-              text: cleanText([card.innerText, card.textContent].filter(Boolean).join(" "), 220),
+              text,
+              image,
+              key: href || text,
               rect,
               visibleArea,
               visibleRatio: visibleArea / area,
@@ -1507,14 +2000,13 @@ async function readShokzHomeRelatedState(client, definition, state) {
         const deduped = [];
         const seen = new Set();
         for (const item of visibleLinks) {
-          const key = item.href + "|" + item.text;
-          if (seen.has(key)) continue;
+          const key = item.key || item.href;
+          if (!key || seen.has(key)) continue;
           seen.add(key);
           deduped.push({
-            href: item.href,
-            text: item.text
+            key,
+            href: item.href
           });
-          if (deduped.length >= 8) break;
         }
         return deduped.length ? JSON.stringify(deduped) : "";
       };
@@ -1548,6 +2040,13 @@ async function readShokzHomeRelatedState(client, definition, state) {
         width: Math.min(rootRect.width, document.documentElement.scrollWidth, window.innerWidth * 1.4),
         height: rootRect.height
       };
+      const productSignature = definition.key === "product-showcase" ? productCardSignature(root) : "";
+      if (definition.key === "product-showcase" && state.windowSignature && productSignature !== state.windowSignature) {
+        return {
+          ok: false,
+          reason: "Visible products did not match planned product showcase window " + state.stateLabel + "."
+        };
+      }
       return {
         ok: true,
         clip,
@@ -1555,13 +2054,19 @@ async function readShokzHomeRelatedState(client, definition, state) {
         textBlocks,
         images,
         logicalSignature: definition.key === "product-showcase"
-          ? productCardSignature(root) || state.logicalSignature
+          ? productSignature || state.logicalSignature
           : state.logicalSignature,
         activeIndex: state.stateIndex
       };
     })()`,
     returnByValue: true
   });
+  if (result.exceptionDetails) {
+    return {
+      ok: false,
+      reason: result.exceptionDetails.exception?.description || result.exceptionDetails.text || "Runtime evaluation failed."
+    };
+  }
   return result.result?.value || { ok: false };
 }
 
