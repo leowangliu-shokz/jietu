@@ -574,6 +574,8 @@ select:focus {
 
 .shot {
   display: grid;
+  grid-template-rows: 170px 104px minmax(0, 144px);
+  height: 420px;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -582,7 +584,7 @@ select:focus {
 
 .shot-main-image {
   display: block;
-  aspect-ratio: 16 / 10;
+  min-height: 0;
   background: var(--panel-alt);
 }
 
@@ -594,9 +596,12 @@ select:focus {
   object-position: top;
 }
 
-.shot-body {
+.shot-info {
   display: grid;
   gap: 8px;
+  align-content: start;
+  min-height: 0;
+  overflow: hidden;
   padding: 13px;
 }
 
@@ -615,6 +620,8 @@ select:focus {
   flex-wrap: wrap;
   gap: 6px;
   margin: 0;
+  max-height: 58px;
+  overflow: hidden;
   color: var(--muted);
   font-size: 12px;
 }
@@ -622,12 +629,21 @@ select:focus {
 .shot-related {
   display: grid;
   gap: 10px;
+  align-content: start;
+  min-height: 0;
+  overflow-y: auto;
   border-top: 1px solid #202225;
-  border-radius: 6px;
-  margin-top: 2px;
+  border-radius: 0;
+  margin-top: 0;
   padding: 10px;
   background: #0f1013;
   color: #fff;
+  scrollbar-color: #475467 transparent;
+  scrollbar-width: thin;
+}
+
+.shot-related-empty {
+  background: #101214;
 }
 
 .related-kicker,

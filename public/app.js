@@ -606,7 +606,7 @@ function renderShotCard(card) {
     <a class="shot-main-image" href="${snapshot.imageUrl}" target="_blank" rel="noreferrer">
       <img src="${snapshot.imageUrl}" alt="${escapeHtml(displayUrl)} ${formatDate(snapshot.capturedAt)}" loading="lazy">
     </a>
-    <div class="shot-body">
+    <div class="shot-info">
       <p class="shot-title" title="${escapeHtml(snapshot.title || displayUrl)}">${escapeHtml(displayUrl)}</p>
       <p class="shot-meta">
         <span class="pill">${formatDate(snapshot.capturedAt)}</span>
@@ -614,8 +614,8 @@ function renderShotCard(card) {
         <span class="pill">${snapshot.width}×${snapshot.height}</span>
         ${snapshot.truncated ? "<span class=\"pill warn\">已截断</span>" : ""}
       </p>
-      ${renderRelatedShots(card.relatedShots, card.relatedValidation)}
     </div>
+    ${renderRelatedShots(card.relatedShots, card.relatedValidation)}
   `;
   return item;
 }
@@ -623,7 +623,7 @@ function renderShotCard(card) {
 function renderRelatedShots(relatedShots, validation = null) {
   const warnings = relatedWarnings(validation);
   if (!relatedShots.length && !warnings.length) {
-    return "";
+    return "<div class=\"shot-related shot-related-empty\" aria-hidden=\"true\"></div>";
   }
   const groups = groupRelatedShots(relatedShots);
   const warningTitle = warnings.map((warning) =>
