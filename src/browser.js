@@ -628,6 +628,9 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
       productCount: state.productCount || null,
       visibleProductCount: state.visibleProductCount || null,
       visibleProducts: state.visibleProducts || null,
+      itemCount: state.itemCount || null,
+      visibleItemCount: state.visibleItemCount || null,
+      visibleItems: state.visibleItems || null,
       logicalSignature,
       visualSignature,
       visualHash,
@@ -649,7 +652,10 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
         pageIndex: state.pageIndex || null,
         productCount: state.productCount || null,
         visibleProductCount: state.visibleProductCount || null,
-        visibleProducts: state.visibleProducts || null
+        visibleProducts: state.visibleProducts || null,
+        itemCount: state.itemCount || null,
+        visibleItemCount: state.visibleItemCount || null,
+        visibleItems: state.visibleItems || null
       }
     });
   }
@@ -674,6 +680,7 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
         .replace(/\\s+/g, " ")
         .trim()
         .slice(0, max);
+      const isTabbedCardSection = definition.key === "product-showcase" || definition.key === "athletes";
       const classText = (element) => String(element?.className?.baseVal || element?.className || "");
       const visible = (element) => {
         if (!element || !(element instanceof Element)) return false;
@@ -827,9 +834,101 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
         const signature = productWindowSignature(root);
         return signature || "";
       };
+      const activeTabbedPanel = (root) =>
+        Array.from(root.querySelectorAll("[class*='swiper-container-product-card'], [class*='swiper-container-athlete'], [class*='athlete'][class*='swiper'], .swiper"))
+          .filter((element) => visible(element))
+          .filter((element) => element.querySelector(".swiper-slide, [class*='swiper-slide']"))
+          .sort((a, b) =>
+            Number(/active/i.test(classText(b))) - Number(/active/i.test(classText(a))) ||
+            b.getBoundingClientRect().width * b.getBoundingClientRect().height -
+              a.getBoundingClientRect().width * a.getBoundingClientRect().height
+          )[0] || root;
+      const athleteTitle = (slide) => cleanText(
+        slide.querySelector(".athletes-content-title, [class*='athletes-content-title']")?.innerText ||
+        slide.querySelector("h1, h2, h3, h4, p")?.innerText ||
+        textOf(slide, 120),
+        100
+      );
+      const athleteSubheader = (slide) => cleanText(
+        slide.querySelector(".athletes-subheader, [class*='athletes-subheader']")?.innerText ||
+        "",
+        140
+      );
+      const athleteItems = (root, options = {}) => {
+        const rootRect = root.getBoundingClientRect();
+        const panel = activeTabbedPanel(root);
+        const slides = Array.from(panel.querySelectorAll(".swiper-slide, [class*='swiper-slide']"))
+          .filter(visible)
+          .map((slide) => {
+            const rect = slide.getBoundingClientRect();
+            const area = Math.max(1, rect.width * rect.height);
+            const visibleArea = intersects(rect, rootRect);
+            const title = athleteTitle(slide);
+            const subheader = athleteSubheader(slide);
+            const text = textOf(slide, 260)
+              .replace(/\\b\\d+\\s*\\/\\s*\\d+\\b/g, "")
+              .replace(/\\s+/g, " ")
+              .trim();
+            const link = Array.from(slide.querySelectorAll("a[href]")).map(productHref).filter(Boolean)[0] || "";
+            const image = imageSources(slide)[0] || "";
+            const key = [title || text, subheader, link || image].filter(Boolean).join("|");
+            return {
+              key,
+              title,
+              subheader,
+              text,
+              href: link,
+              image,
+              rect,
+              visibleArea,
+              visibleRatio: visibleArea / area,
+              centerY: rect.top + rect.height / 2
+            };
+          })
+          .filter((item) =>
+            item.key &&
+            item.rect.width >= 160 &&
+            item.rect.height >= 160 &&
+            item.centerY >= rootRect.top &&
+            item.centerY <= rootRect.bottom &&
+            (!options.visibleOnly || (
+              item.visibleArea > 800 &&
+              item.visibleRatio >= 0.45 &&
+              item.rect.left >= rootRect.left + 8 &&
+              item.rect.right <= rootRect.right - 8
+            ))
+          )
+          .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+        const deduped = [];
+        const seen = new Set();
+        for (const item of slides) {
+          if (seen.has(item.key)) continue;
+          seen.add(item.key);
+          deduped.push({
+            key: item.key,
+            title: item.title,
+            subheader: item.subheader,
+            text: item.text,
+            href: item.href,
+            image: item.image
+          });
+        }
+        return deduped;
+      };
+      const athleteWindowSignature = (root) => {
+        const items = athleteItems(root, { visibleOnly: true });
+        return items.length ? JSON.stringify(items.map((item) => ({
+          key: item.key,
+          title: item.title,
+          subheader: item.subheader
+        }))) : "";
+      };
       const pageSignature = (root) => {
         if (definition.key === "product-showcase") {
           return productCardSignature(root) || visibleSignature(root);
+        }
+        if (definition.key === "athletes") {
+          return athleteWindowSignature(root) || visibleSignature(root);
         }
         return visibleSignature(root);
       };
@@ -1007,6 +1106,16 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
         return clicked || activated;
       };
       const activeProductTabMatches = (root, label) => {
+        const oneBasedIndex = (definition.tabs || []).indexOf(label) + 1;
+        if (oneBasedIndex > 0) {
+          const titleItemMatches = Array.from(root.querySelectorAll("[class*='title-item']"))
+            .some((element) =>
+              classText(element).split(/\\s+/).includes("title-item-" + oneBasedIndex) &&
+              /active/i.test(classText(element)) &&
+              exactTabText(element, label)
+            );
+          if (titleItemMatches) return true;
+        }
         const control = findProductTabControl(root, label);
         if (!control) return false;
         const stateText = [
@@ -1100,7 +1209,7 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
       };
       const findNextControl = (root) => {
         const rootRect = root.getBoundingClientRect();
-        if (definition.key === "product-showcase") {
+        if (isTabbedCardSection) {
           const pointCandidates = [
             { x: rootRect.right - 18, y: rootRect.bottom - 18 },
             { x: rootRect.right - 54, y: rootRect.bottom - 18 },
@@ -1144,8 +1253,8 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
             const score = Number(explicit) * 18 +
               Number(rightSide) * 8 +
               Number(compact) * 5 +
-              Number(definition.key === "product-showcase" && farRight) * 18 +
-              Number(definition.key === "product-showcase" && nearBottom) * 12 -
+              Number(isTabbedCardSection && farRight) * 18 +
+              Number(isTabbedCardSection && nearBottom) * 12 -
               Number(disabled) * 100;
             return { element, score, disabled, rect };
           })
@@ -1157,7 +1266,7 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
           )[0]?.element || null;
       };
       const advance = async (root) => {
-        if (definition.key === "product-showcase") {
+        if (isTabbedCardSection) {
           const swipers = activeProductSwipers(root).filter((swiper) => typeof swiper.slideNext === "function");
           if (swipers.length) {
             for (const swiper of swipers) {
@@ -1268,9 +1377,89 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
           if (!moved || !after || after === before || seen.has(after)) break;
         }
       };
+      const collectAthletePages = async (root, tabLabel, tabIndex, states) => {
+        const clicked = clickProductTab(root, tabLabel);
+        await sleep(700);
+        if (!clicked) {
+          warnings.push({
+            sectionKey: definition.key,
+            sectionLabel: definition.sectionLabel,
+            stateLabel: tabLabel,
+            message: "Could not click athletes tab " + tabLabel + "."
+          });
+          return;
+        }
+        resetCarousel(root);
+        await sleep(450);
+
+        const allItems = athleteItems(root);
+        const firstWindowItems = athleteItems(root, { visibleOnly: true });
+        const firstWindowSignature = athleteWindowSignature(root);
+        if (!firstWindowItems.length || !firstWindowSignature) {
+          warnings.push({
+            sectionKey: definition.key,
+            sectionLabel: definition.sectionLabel,
+            stateLabel: tabLabel,
+            message: "Could not read visible athlete slides for " + tabLabel + "."
+          });
+          return;
+        }
+
+        if (!activeProductTabMatches(root, tabLabel)) {
+          warnings.push({
+            sectionKey: definition.key,
+            sectionLabel: definition.sectionLabel,
+            stateLabel: tabLabel,
+            message: "Athletes tab " + tabLabel + " did not become active."
+          });
+          return;
+        }
+
+        const tabSetSignature = JSON.stringify(allItems.map((item) => item.key));
+        const seen = new Set();
+        const maxPages = Math.max(1, allItems.length || firstWindowItems.length) + 2;
+        const lastItemKey = allItems[allItems.length - 1]?.key || "";
+        for (let pageIndex = 1; pageIndex <= maxPages; pageIndex += 1) {
+          const visibleItems = athleteItems(root, { visibleOnly: true });
+          const signature = athleteWindowSignature(root);
+          if (!signature || seen.has(signature)) break;
+          seen.add(signature);
+          const label = tabLabel + " " + pageIndex;
+          states.push({
+            kind: "tab-carousel",
+            sectionKey: definition.key,
+            sectionLabel: definition.sectionLabel,
+            tabLabel,
+            tabIndex: Number.isFinite(tabIndex) ? tabIndex + 1 : null,
+            pageIndex,
+            stateIndex: states.length + 1,
+            stateLabel: label,
+            logicalSignature: definition.key + "|" + tabLabel + "|" + pageIndex + "|" + signature,
+            windowSignature: signature,
+            tabSetSignature,
+            itemCount: allItems.length,
+            visibleItemCount: visibleItems.length,
+            visibleItems,
+            fileId: tabLabel + "-" + pageIndex,
+            isDefaultState: pageIndex === 1
+          });
+
+          if (lastItemKey && visibleItems.some((item) => item.key === lastItemKey)) {
+            break;
+          }
+          const before = signature;
+          const moved = await advance(root);
+          const after = athleteWindowSignature(root);
+          if (!moved || !after || after === before || seen.has(after)) break;
+        }
+      };
       const collectPages = async (root, tabLabel, tabIndex, states, warnings, knownTabFirstSignatures) => {
         if (definition.key === "product-showcase") {
           await collectProductPages(root, tabLabel, tabIndex, states);
+          return;
+        }
+        if (definition.key === "athletes") {
+          await collectAthletePages(root, tabLabel, tabIndex, states);
           return;
         }
         if (tabLabel) {
@@ -1428,6 +1617,7 @@ async function activateShokzHomeRelatedState(client, definition, state) {
         .replace(/\\s+/g, " ")
         .trim()
         .slice(0, max);
+      const isTabbedCardSection = definition.key === "product-showcase" || definition.key === "athletes";
       const classText = (element) => String(element?.className?.baseVal || element?.className || "");
       const visible = (element) => {
         if (!element || !(element instanceof Element)) return false;
@@ -1522,6 +1712,97 @@ async function activateShokzHomeRelatedState(client, definition, state) {
         return cards.length ? JSON.stringify(cards.map((card) => ({
           key: card.key,
           href: card.href
+        }))) : "";
+      };
+      const imageSources = (element) => Array.from(element.querySelectorAll("img, source"))
+        .flatMap((node) => [
+          node.currentSrc,
+          node.src,
+          node.srcset,
+          node.getAttribute("data-src"),
+          node.getAttribute("data-srcset"),
+          node.getAttribute("data-original"),
+          node.getAttribute("data-lazy-src"),
+          node.getAttribute("data-lazy-srcset")
+        ])
+        .filter(Boolean)
+        .map((value) => String(value).split(",")[0].trim())
+        .filter(Boolean);
+      const activeTabbedPanel = () =>
+        Array.from(root.querySelectorAll("[class*='swiper-container-product-card'], [class*='swiper-container-athlete'], [class*='athlete'][class*='swiper'], .swiper"))
+          .filter((element) => visible(element))
+          .filter((element) => element.querySelector(".swiper-slide, [class*='swiper-slide']"))
+          .sort((a, b) =>
+            Number(/active/i.test(classText(b))) - Number(/active/i.test(classText(a))) ||
+            b.getBoundingClientRect().width * b.getBoundingClientRect().height -
+              a.getBoundingClientRect().width * a.getBoundingClientRect().height
+          )[0] || root;
+      const athleteTitle = (slide) => cleanText(
+        slide.querySelector(".athletes-content-title, [class*='athletes-content-title']")?.innerText ||
+        slide.querySelector("h1, h2, h3, h4, p")?.innerText ||
+        textOf(slide, 120),
+        100
+      );
+      const athleteSubheader = (slide) => cleanText(
+        slide.querySelector(".athletes-subheader, [class*='athletes-subheader']")?.innerText ||
+        "",
+        140
+      );
+      const athleteItems = () => {
+        const rootRect = root.getBoundingClientRect();
+        const panel = activeTabbedPanel();
+        const slides = Array.from(panel.querySelectorAll(".swiper-slide, [class*='swiper-slide']"))
+          .filter(visible)
+          .map((slide) => {
+            const rect = slide.getBoundingClientRect();
+            const area = Math.max(1, rect.width * rect.height);
+            const visibleArea = intersects(rect, rootRect);
+            const title = athleteTitle(slide);
+            const subheader = athleteSubheader(slide);
+            const text = textOf(slide, 220)
+              .replace(/\\b\\d+\\s*\\/\\s*\\d+\\b/g, "")
+              .replace(/\\s+/g, " ")
+              .trim();
+            const link = Array.from(slide.querySelectorAll("a[href]")).map(productHref).filter(Boolean)[0] || "";
+            const image = imageSources(slide)[0] || "";
+            const key = [title || text, subheader, link || image].filter(Boolean).join("|");
+            return {
+              key,
+              title,
+              subheader,
+              rect,
+              visibleArea,
+              visibleRatio: visibleArea / Math.max(1, rect.width * rect.height),
+              centerY: rect.top + rect.height / 2
+            };
+          })
+          .filter((item) =>
+            item.key &&
+            item.rect.width >= 160 &&
+            item.rect.height >= 160 &&
+            item.visibleArea > 800 &&
+            item.visibleRatio >= 0.45 &&
+            item.rect.left >= rootRect.left + 8 &&
+            item.rect.right <= rootRect.right - 8 &&
+            item.centerY >= rootRect.top &&
+            item.centerY <= rootRect.bottom
+          )
+          .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+        const deduped = [];
+        const seen = new Set();
+        for (const item of slides) {
+          if (seen.has(item.key)) continue;
+          seen.add(item.key);
+          deduped.push({ key: item.key, title: item.title, subheader: item.subheader });
+        }
+        return deduped;
+      };
+      const athleteWindowSignature = () => {
+        const items = athleteItems();
+        return items.length ? JSON.stringify(items.map((item) => ({
+          key: item.key,
+          title: item.title,
+          subheader: item.subheader
         }))) : "";
       };
       const clickElement = (element) => {
@@ -1718,7 +1999,7 @@ async function activateShokzHomeRelatedState(client, definition, state) {
       };
       const findNextControl = () => {
         const rootRect = root.getBoundingClientRect();
-        if (definition.key === "product-showcase") {
+        if (isTabbedCardSection) {
           const pointCandidates = [
             { x: rootRect.right - 18, y: rootRect.bottom - 18 },
             { x: rootRect.right - 54, y: rootRect.bottom - 18 },
@@ -1757,8 +2038,8 @@ async function activateShokzHomeRelatedState(client, definition, state) {
             const score = Number(explicit) * 18 +
               Number(rightSide) * 8 +
               Number(compact) * 5 +
-              Number(definition.key === "product-showcase" && farRight) * 18 +
-              Number(definition.key === "product-showcase" && nearBottom) * 12 -
+              Number(isTabbedCardSection && farRight) * 18 +
+              Number(isTabbedCardSection && nearBottom) * 12 -
               Number(disabled) * 100;
             return { element, score, disabled, rect };
           })
@@ -1770,7 +2051,7 @@ async function activateShokzHomeRelatedState(client, definition, state) {
           )[0]?.element || null;
       };
       const advance = async () => {
-        if (definition.key === "product-showcase") {
+        if (isTabbedCardSection) {
           const swipers = activeProductSwipers().filter((swiper) => typeof swiper.slideNext === "function");
           if (swipers.length) {
             for (const swiper of swipers) {
@@ -1807,20 +2088,23 @@ async function activateShokzHomeRelatedState(client, definition, state) {
       return (async () => {
         root.scrollIntoView({ block: "center", inline: "nearest" });
         await sleep(260);
-        if (definition.key === "product-showcase") {
+        if (isTabbedCardSection) {
           if (state.tabLabel) {
             const clicked = clickProductTab(state.tabLabel);
             await sleep(700);
             if (!clicked) {
-              return { ok: false, reason: "Could not activate product showcase tab " + state.tabLabel + "." };
+              return { ok: false, reason: "Could not activate " + definition.sectionLabel + " tab " + state.tabLabel + "." };
             }
           }
           resetCarousel();
           await sleep(450);
           const targetSignature = state.windowSignature || "";
+          const currentWindowSignature = () => definition.key === "athletes"
+            ? athleteWindowSignature()
+            : productWindowSignature();
           const maxAttempts = Math.max(12, Number(state.pageIndex || 1) + 4);
           for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-            const currentSignature = productWindowSignature();
+            const currentSignature = currentWindowSignature();
             if (targetSignature && currentSignature === targetSignature) {
               root.scrollIntoView({ block: "center", inline: "nearest" });
               await sleep(260);
@@ -1833,10 +2117,10 @@ async function activateShokzHomeRelatedState(client, definition, state) {
             }
             const before = currentSignature;
             const moved = await advance();
-            const after = productWindowSignature();
+            const after = currentWindowSignature();
             if (!moved || !after || after === before) break;
           }
-          return { ok: false, reason: "Could not activate product showcase window " + state.stateLabel + "." };
+          return { ok: false, reason: "Could not activate " + definition.sectionLabel + " window " + state.stateLabel + "." };
         }
         if (state.tabLabel) {
           const clicked = clickLabel(state.tabLabel);
@@ -1902,6 +2186,7 @@ async function readShokzHomeRelatedState(client, definition, state) {
         .replace(/\\s+/g, " ")
         .trim()
         .slice(0, max);
+      const classText = (element) => String(element?.className?.baseVal || element?.className || "");
       const visible = (element) => {
         if (!element || !(element instanceof Element)) return false;
         const rect = element.getBoundingClientRect();
@@ -2010,6 +2295,78 @@ async function readShokzHomeRelatedState(client, definition, state) {
         }
         return deduped.length ? JSON.stringify(deduped) : "";
       };
+      const activeTabbedPanel = (root) =>
+        Array.from(root.querySelectorAll("[class*='swiper-container-product-card'], [class*='swiper-container-athlete'], [class*='athlete'][class*='swiper'], .swiper"))
+          .filter((element) => visible(element))
+          .filter((element) => element.querySelector(".swiper-slide, [class*='swiper-slide']"))
+          .sort((a, b) =>
+            Number(/active/i.test(classText(b))) - Number(/active/i.test(classText(a))) ||
+            b.getBoundingClientRect().width * b.getBoundingClientRect().height -
+              a.getBoundingClientRect().width * a.getBoundingClientRect().height
+          )[0] || root;
+      const athleteWindowSignature = (root) => {
+        const rootRect = root.getBoundingClientRect();
+        const panel = activeTabbedPanel(root);
+        const slides = Array.from(panel.querySelectorAll(".swiper-slide, [class*='swiper-slide']"))
+          .filter(visible)
+          .map((slide) => {
+            const rect = slide.getBoundingClientRect();
+            const area = Math.max(1, rect.width * rect.height);
+            const visibleArea = intersects(rect, rootRect);
+            const title = cleanText(
+              slide.querySelector(".athletes-content-title, [class*='athletes-content-title']")?.innerText ||
+              slide.querySelector("h1, h2, h3, h4, p")?.innerText ||
+              [slide.innerText, slide.textContent].filter(Boolean).join(" "),
+              100
+            );
+            const subheader = cleanText(
+              slide.querySelector(".athletes-subheader, [class*='athletes-subheader']")?.innerText ||
+              "",
+              140
+            );
+            const text = cleanText([slide.innerText, slide.textContent].filter(Boolean).join(" "), 220)
+              .replace(/\\b\\d+\\s*\\/\\s*\\d+\\b/g, "")
+              .replace(/\\s+/g, " ")
+              .trim();
+            const link = Array.from(slide.querySelectorAll("a[href]")).map(productHref).filter(Boolean)[0] || "";
+            const imageNode = slide.querySelector("img, source");
+            const image = imageNode ? imageSourcesForNode(imageNode)[0] || "" : "";
+            const key = [title || text, subheader, link || image].filter(Boolean).join("|");
+            return {
+              key,
+              title,
+              subheader,
+              rect,
+              visibleArea,
+              visibleRatio: visibleArea / area,
+              centerY: rect.top + rect.height / 2
+            };
+          })
+          .filter((item) =>
+            item.key &&
+            item.rect.width >= 160 &&
+            item.rect.height >= 160 &&
+            item.visibleArea > 800 &&
+            item.visibleRatio >= 0.45 &&
+            item.rect.left >= rootRect.left + 8 &&
+            item.rect.right <= rootRect.right - 8 &&
+            item.centerY >= rootRect.top &&
+            item.centerY <= rootRect.bottom
+          )
+          .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+        const deduped = [];
+        const seen = new Set();
+        for (const item of slides) {
+          if (!item.key || seen.has(item.key)) continue;
+          seen.add(item.key);
+          deduped.push({
+            key: item.key,
+            title: item.title,
+            subheader: item.subheader
+          });
+        }
+        return deduped.length ? JSON.stringify(deduped) : "";
+      };
       const rootRect = root.getBoundingClientRect();
       const textNodes = Array.from(root.querySelectorAll("a, button, h1, h2, h3, h4, p, li, article, [class*='card'], [class*='slide']"))
         .filter(visible)
@@ -2041,10 +2398,17 @@ async function readShokzHomeRelatedState(client, definition, state) {
         height: rootRect.height
       };
       const productSignature = definition.key === "product-showcase" ? productCardSignature(root) : "";
+      const athleteSignature = definition.key === "athletes" ? athleteWindowSignature(root) : "";
       if (definition.key === "product-showcase" && state.windowSignature && productSignature !== state.windowSignature) {
         return {
           ok: false,
           reason: "Visible products did not match planned product showcase window " + state.stateLabel + "."
+        };
+      }
+      if (definition.key === "athletes" && state.windowSignature && athleteSignature !== state.windowSignature) {
+        return {
+          ok: false,
+          reason: "Visible athletes did not match planned athletes window " + state.stateLabel + "."
         };
       }
       return {
@@ -2055,7 +2419,7 @@ async function readShokzHomeRelatedState(client, definition, state) {
         images,
         logicalSignature: definition.key === "product-showcase"
           ? productSignature || state.logicalSignature
-          : state.logicalSignature,
+          : (definition.key === "athletes" ? athleteSignature || state.logicalSignature : state.logicalSignature),
         activeIndex: state.stateIndex
       };
     })()`,

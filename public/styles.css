@@ -667,6 +667,7 @@ select:focus {
   gap: 6px;
 }
 
+.related-section-tabbed,
 .related-section-product-showcase {
   gap: 8px;
 }

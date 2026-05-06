@@ -691,10 +691,15 @@ function relatedWarningMessage(warning) {
 }
 
 function renderRelatedSection(group) {
-  if (group.sectionKey === "product-showcase") {
+  if (groupHasTabbedPages(group)) {
     const tabGroups = groupRelatedShotsByTab(group.shots);
+    const sectionClass = [
+      "related-section",
+      "related-section-tabbed",
+      group.sectionKey === "product-showcase" ? "related-section-product-showcase" : ""
+    ].filter(Boolean).join(" ");
     return `
-      <section class="related-section related-section-product-showcase">
+      <section class="${sectionClass}">
         <p class="related-title">${escapeHtml(group.title)}</p>
         <div class="related-tab-groups">
           ${tabGroups.map((tabGroup) => `
@@ -714,6 +719,10 @@ function renderRelatedSection(group) {
       ${renderRelatedThumbGrid(group.shots)}
     </section>
   `;
+}
+
+function groupHasTabbedPages(group) {
+  return group.shots.some((shot) => shot.tabLabel && relatedShotPageIndex(shot));
 }
 
 function renderRelatedThumbGrid(shots) {
@@ -751,7 +760,7 @@ function groupRelatedShotsByTab(shots) {
 
 function relatedThumbLabel(shot) {
   const pageIndex = relatedShotPageIndex(shot);
-  if (shot.sectionKey === "product-showcase" && pageIndex) {
+  if (shot.tabLabel && pageIndex) {
     return `第 ${pageIndex} 张`;
   }
   return relatedShotDisplayLabel(shot);
@@ -779,7 +788,7 @@ function relatedWarnings(validation) {
 
 function relatedShotTitle(shot) {
   const pageIndex = relatedShotPageIndex(shot);
-  const detailLabel = shot.sectionKey === "product-showcase" && pageIndex
+  const detailLabel = shot.tabLabel && pageIndex
     ? `第 ${pageIndex} 张`
     : relatedShotDisplayLabel(shot);
   return [
@@ -849,6 +858,9 @@ function normalizeRelatedShot(shot) {
     tabLabel: shot.tabLabel || null,
     tabIndex: shot.tabIndex || null,
     pageIndex: shot.pageIndex || null,
+    itemCount: shot.itemCount || null,
+    visibleItemCount: shot.visibleItemCount || null,
+    visibleItems: shot.visibleItems || null,
     logicalSignature: shot.logicalSignature || shot.bannerSignature || null,
     visualHash: shot.visualHash || null,
     visualAudit: shot.visualAudit || null,
