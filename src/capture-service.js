@@ -187,8 +187,7 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
     const relativePath = archiveRelativePath(item.outputPath);
     const stat = await fs.stat(item.outputPath);
     relatedShots.push({
-      kind: "banner",
-      label: `\u8f6e\u64ad ${item.bannerIndex}`,
+      label: relatedShotLabelForCaptureItem(item),
       file: relativePath,
       imageUrl: publicSnapshotUrl(relativePath),
       bytes: stat.size,
@@ -232,6 +231,21 @@ function archiveRelativePath(absolutePath) {
   return path.relative(archiveDir, absolutePath).replaceAll(path.sep, "/");
 }
 
+export function relatedShotLabelForCaptureItem(item) {
+  const stateLabel = String(item?.stateLabel || "").trim();
+  if (stateLabel && !/undefined|null/i.test(stateLabel)) {
+    return stateLabel;
+  }
+
+  const label = String(item?.label || "").trim();
+  if (label && !/undefined|null/i.test(label)) {
+    return label;
+  }
+
+  const bannerIndex = Number(item?.bannerIndex || 0);
+  return bannerIndex ? `轮播 ${bannerIndex}` : "轮播";
+}
+
 function bannerDisplayLabel(label, bannerIndex) {
   if (/Banner\s*[)\uff09]\s*$/.test(label)) {
     return label.replace(/Banner\s*([)\uff09])\s*$/, `Banner ${bannerIndex}$1`);
@@ -249,6 +263,8 @@ function compareRelatedShots(a, b) {
   const orderA = sectionA === -1 ? 1000 : sectionA;
   const orderB = sectionB === -1 ? 1000 : sectionB;
   return orderA - orderB ||
+    Number(a.tabIndex || 0) - Number(b.tabIndex || 0) ||
+    Number(a.pageIndex || 0) - Number(b.pageIndex || 0) ||
     Number(a.stateIndex || a.bannerIndex || 0) - Number(b.stateIndex || b.bannerIndex || 0) ||
     String(a.label || "").localeCompare(String(b.label || ""), "zh-CN");
 }

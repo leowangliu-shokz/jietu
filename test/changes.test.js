@@ -47,6 +47,47 @@ test("matches the same section position when tab copy changes", async () => {
   assert.equal(changes[0].textChange.afterFragment, "Best Sell");
 });
 
+test("prefers tab and page identity when state index shifts", async () => {
+  const snapshots = [
+    snapshot("snap-1", "2026-05-02T10:00:00.000Z", [{
+      file: "missing-before.png",
+      sectionKey: "product-showcase",
+      sectionLabel: "产品橱窗",
+      stateIndex: 2,
+      tabIndex: 1,
+      tabLabel: "Best Selling",
+      pageIndex: 2,
+      label: "Best Selling 2",
+      sectionState: {
+        text: "OpenRun Pro 2",
+        textBlocks: [{ text: "OpenRun Pro 2", x: 20, y: 24, width: 160, height: 28 }]
+      }
+    }]),
+    snapshot("snap-2", "2026-05-03T10:00:00.000Z", [{
+      file: "missing-after.png",
+      sectionKey: "product-showcase",
+      sectionLabel: "产品橱窗",
+      stateIndex: 5,
+      tabIndex: 1,
+      tabLabel: "Best Selling",
+      pageIndex: 2,
+      label: "Best Selling 2",
+      sectionState: {
+        text: "OpenRun Pro 2 New",
+        textBlocks: [{ text: "OpenRun Pro 2 New", x: 20, y: 24, width: 188, height: 28 }]
+      }
+    }])
+  ];
+
+  const changes = await compareSnapshots(snapshots, { writeDiffImages: false });
+
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].location.tabLabel, "Best Selling");
+  assert.equal(changes[0].location.pageIndex, 2);
+  assert.equal(changes[0].textChange.beforeFragment, "OpenRun Pro 2");
+  assert.equal(changes[0].textChange.afterFragment, "OpenRun Pro 2 New");
+});
+
 test("detects visual regions and filters tiny noise", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-diff-"));
   const beforePath = path.join(tempDir, "before.png");

@@ -667,6 +667,27 @@ select:focus {
   gap: 6px;
 }
 
+.related-section-product-showcase {
+  gap: 8px;
+}
+
+.related-tab-groups {
+  display: grid;
+  gap: 8px;
+}
+
+.related-tab-group {
+  display: grid;
+  gap: 6px;
+}
+
+.related-tab-title {
+  margin: 0;
+  color: #dbe7df;
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .related-title {
   color: #fff;
   font-size: 12px;

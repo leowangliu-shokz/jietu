@@ -654,19 +654,7 @@ function renderRelatedShots(relatedShots, validation = null) {
         ${warnings.length ? `<button type="button" class="related-warning" title="${escapeHtml(warningTitle)}" aria-expanded="false">校验警告</button>` : ""}
       </p>
       ${warnings.length ? renderRelatedWarningDetails(warnings) : ""}
-      ${groups.map((group) => `
-        <section class="related-section">
-          <p class="related-title">${escapeHtml(group.title)}</p>
-          <div class="related-grid">
-            ${group.shots.map((shot) => `
-              <a class="related-thumb" href="${shot.imageUrl}" target="_blank" rel="noreferrer" title="${escapeHtml(relatedShotTitle(shot))}">
-                <img src="${shot.imageUrl}" alt="${escapeHtml(shot.label)}" loading="lazy">
-                <span>${escapeHtml(shot.label)}</span>
-              </a>
-            `).join("")}
-          </div>
-        </section>
-      `).join("")}
+      ${groups.map((group) => renderRelatedSection(group)).join("")}
     </div>
   `;
 }
@@ -702,6 +690,73 @@ function relatedWarningMessage(warning) {
   return message;
 }
 
+function renderRelatedSection(group) {
+  if (group.sectionKey === "product-showcase") {
+    const tabGroups = groupRelatedShotsByTab(group.shots);
+    return `
+      <section class="related-section related-section-product-showcase">
+        <p class="related-title">${escapeHtml(group.title)}</p>
+        <div class="related-tab-groups">
+          ${tabGroups.map((tabGroup) => `
+            <section class="related-tab-group">
+              <p class="related-tab-title">${escapeHtml(tabGroup.title)}</p>
+              ${renderRelatedThumbGrid(tabGroup.shots)}
+            </section>
+          `).join("")}
+        </div>
+      </section>
+    `;
+  }
+
+  return `
+    <section class="related-section">
+      <p class="related-title">${escapeHtml(group.title)}</p>
+      ${renderRelatedThumbGrid(group.shots)}
+    </section>
+  `;
+}
+
+function renderRelatedThumbGrid(shots) {
+  return `
+    <div class="related-grid">
+      ${shots.map((shot) => `
+        <a class="related-thumb" href="${shot.imageUrl}" target="_blank" rel="noreferrer" title="${escapeHtml(relatedShotTitle(shot))}">
+          <img src="${shot.imageUrl}" alt="${escapeHtml(relatedShotDisplayLabel(shot))}" loading="lazy">
+          <span>${escapeHtml(relatedThumbLabel(shot))}</span>
+        </a>
+      `).join("")}
+    </div>
+  `;
+}
+
+function groupRelatedShotsByTab(shots) {
+  const groups = new Map();
+  for (const shot of shots) {
+    const key = `${shot.tabIndex || ""}|${shot.tabLabel || ""}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        title: shot.tabLabel || "未命名 Tab",
+        tabIndex: Number(shot.tabIndex || 0),
+        shots: []
+      });
+    }
+    groups.get(key).shots.push(shot);
+  }
+  return [...groups.values()].sort((a, b) =>
+    Number(a.tabIndex || 0) - Number(b.tabIndex || 0) ||
+    String(a.title).localeCompare(String(b.title), "zh-CN")
+  );
+}
+
+function relatedThumbLabel(shot) {
+  const pageIndex = relatedShotPageIndex(shot);
+  if (shot.sectionKey === "product-showcase" && pageIndex) {
+    return `第 ${pageIndex} 张`;
+  }
+  return relatedShotDisplayLabel(shot);
+}
+
 function groupRelatedShots(relatedShots) {
   const groups = new Map();
   for (const shot of sortedRelatedShots(relatedShots)) {
@@ -723,10 +778,14 @@ function relatedWarnings(validation) {
 }
 
 function relatedShotTitle(shot) {
+  const pageIndex = relatedShotPageIndex(shot);
+  const detailLabel = shot.sectionKey === "product-showcase" && pageIndex
+    ? `第 ${pageIndex} 张`
+    : relatedShotDisplayLabel(shot);
   return [
     shot.sectionLabel,
     shot.tabLabel,
-    shot.label,
+    detailLabel,
     shot.visualAudit?.status === "warning" ? shot.visualAudit.message : ""
   ].filter(Boolean).join(" / ");
 }
@@ -772,12 +831,13 @@ function normalizeRelatedShot(shot) {
   }
   const bannerIndex = Number(shot.bannerIndex || 0) || null;
   const sectionKey = shot.sectionKey || (bannerIndex ? "banner" : "related");
+  const displayLabel = relatedShotDisplayLabel(shot, bannerIndex);
   return {
     kind: shot.kind || "banner",
     sectionKey,
     sectionLabel: shot.sectionLabel || (sectionKey === "banner" ? "Banner" : ""),
     sectionTitle: shot.sectionTitle || relatedSectionTitles[sectionKey] || "",
-    label: shot.label || (bannerIndex ? `轮播 ${bannerIndex}` : "轮播"),
+    label: displayLabel,
     file: shot.file || "",
     imageUrl: shot.imageUrl,
     bytes: shot.bytes || null,
@@ -785,7 +845,7 @@ function normalizeRelatedShot(shot) {
     height: shot.height || null,
     stateIndex: shot.stateIndex || bannerIndex || null,
     stateCount: shot.stateCount || shot.bannerCount || null,
-    stateLabel: shot.stateLabel || shot.label || null,
+    stateLabel: validRelatedLabel(shot.stateLabel) ? String(shot.stateLabel).trim() : displayLabel,
     tabLabel: shot.tabLabel || null,
     tabIndex: shot.tabIndex || null,
     pageIndex: shot.pageIndex || null,
@@ -805,6 +865,26 @@ function normalizeRelatedShot(shot) {
     requestedUrl: shot.requestedUrl || null,
     finalUrl: shot.finalUrl || null
   };
+}
+
+function relatedShotDisplayLabel(shot, bannerIndex = Number(shot?.bannerIndex || 0) || null) {
+  if (validRelatedLabel(shot?.stateLabel)) {
+    return String(shot.stateLabel).trim();
+  }
+  if (validRelatedLabel(shot?.label)) {
+    return String(shot.label).trim();
+  }
+  return bannerIndex ? `轮播 ${bannerIndex}` : "轮播";
+}
+
+function validRelatedLabel(value) {
+  const text = String(value || "").trim();
+  return Boolean(text) && !/undefined|null/i.test(text);
+}
+
+function relatedShotPageIndex(shot) {
+  const pageIndex = Number(shot?.pageIndex || 0);
+  return Number.isFinite(pageIndex) && pageIndex > 0 ? pageIndex : null;
 }
 
 function urlFilterOptions() {

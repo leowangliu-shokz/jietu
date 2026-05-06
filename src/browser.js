@@ -519,9 +519,9 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
 
   const captures = [];
   const warnings = [];
-  const seenLogical = new Set();
-  const seenVisual = new Set();
-  const seenHashes = [];
+  const seenLogicalByScope = new Map();
+  const seenVisualByScope = new Map();
+  const seenHashesByScope = new Map();
   let maxWidth = 0;
   let maxHeight = 0;
 
@@ -565,6 +565,10 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
     const visualSignature = hashBuffer(buffer);
     const visualHash = visualHashForBuffer(buffer);
     const logicalSignature = current.logicalSignature || state.logicalSignature || `${definition.key}:${state.stateIndex}`;
+    const captureScope = relatedCaptureScopeKey(definition, state);
+    const seenLogical = scopedSet(seenLogicalByScope, captureScope);
+    const seenVisual = scopedSet(seenVisualByScope, captureScope);
+    const seenHashes = scopedList(seenHashesByScope, captureScope);
 
     if (seenLogical.has(logicalSignature) || seenVisual.has(visualSignature)) {
       warnings.push({
@@ -612,7 +616,7 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
       sectionLabel: definition.sectionLabel,
       sectionTitle: definition.title,
       stateIndex: state.stateIndex,
-      stateCount: plan.states.length,
+      stateCount: state.pageCount || plan.states.length,
       stateLabel: state.stateLabel,
       label: state.stateLabel,
       tabLabel: state.tabLabel || null,
@@ -647,7 +651,7 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
     captures,
     warnings,
     expectedCount: plan.states.length,
-    capturedCount: plan.states.length
+    capturedCount: captures.length
   };
 }
 
@@ -732,6 +736,65 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
           images: visibleImages,
           backgrounds: backgroundSources(root).slice(0, 12)
         });
+      };
+      const productCardSignature = (root) => {
+        const rootRect = root.getBoundingClientRect();
+        const visibleLinks = Array.from(root.querySelectorAll("a[href*='/products/']"))
+          .filter(visible)
+          .map((element) => {
+            const card = element.closest("article, li, [class*='card'], [class*='slide'], a") || element;
+            const rect = card.getBoundingClientRect();
+            const area = Math.max(1, rect.width * rect.height);
+            const visibleArea = intersects(rect, rootRect);
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            let href = "";
+            try {
+              href = new URL(element.getAttribute("href") || element.href || "", window.location.href).pathname;
+            } catch {
+              href = element.getAttribute("href") || element.href || "";
+            }
+            return {
+              href,
+              text: textOf(card, 220),
+              rect,
+              visibleArea,
+              visibleRatio: visibleArea / area,
+              centerX,
+              centerY
+            };
+          })
+          .filter((item) =>
+            item.href &&
+            item.rect.width >= 120 &&
+            item.rect.height >= 120 &&
+            item.visibleArea > 800 &&
+            item.visibleRatio >= 0.55 &&
+            item.rect.left >= rootRect.left + 12 &&
+            item.rect.right <= rootRect.right - 12 &&
+            item.centerY >= rootRect.top &&
+            item.centerY <= rootRect.bottom
+          )
+          .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+        const deduped = [];
+        const seen = new Set();
+        for (const item of visibleLinks) {
+          const key = item.href + "|" + item.text;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          deduped.push({
+            href: item.href,
+            text: item.text
+          });
+          if (deduped.length >= 8) break;
+        }
+        return deduped.length ? JSON.stringify(deduped) : "";
+      };
+      const pageSignature = (root) => {
+        if (definition.key === "product-showcase") {
+          return productCardSignature(root) || visibleSignature(root);
+        }
+        return visibleSignature(root);
       };
       const findRoots = () => {
         const roots = new Set();
@@ -845,8 +908,54 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
         const firstBullet = root.querySelector(".swiper-pagination-bullet, .slick-dots button, [role='tab'][aria-label*='slide' i]");
         if (firstBullet) clickElement(firstBullet);
       };
+      const findPageBullets = (root) => {
+        const rootRect = root.getBoundingClientRect();
+        return Array.from(root.querySelectorAll(".swiper-pagination-bullet, .slick-dots button, [role='tab'][aria-label*='slide' i]"))
+          .filter(visible)
+          .map((element) => {
+            const rect = element.getBoundingClientRect();
+            return {
+              element,
+              rect,
+              visibleArea: intersects(rect, rootRect)
+            };
+          })
+          .filter((item) =>
+            item.rect.width <= 48 &&
+            item.rect.height <= 48 &&
+            item.visibleArea >= 12
+          )
+          .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left)
+          .map((item) => item.element);
+      };
+      const clickPageBullet = (root, pageIndex) => {
+        const bullets = findPageBullets(root);
+        const target = bullets[pageIndex - 1];
+        return target ? clickElement(target) : false;
+      };
       const findNextControl = (root) => {
         const rootRect = root.getBoundingClientRect();
+        if (definition.key === "product-showcase") {
+          const pointCandidates = [
+            { x: rootRect.right - 18, y: rootRect.bottom - 18 },
+            { x: rootRect.right - 54, y: rootRect.bottom - 18 },
+            { x: rootRect.right - 18, y: rootRect.bottom - 54 }
+          ]
+            .map((point) => ({
+              x: Math.max(12, Math.min(window.innerWidth - 12, point.x)),
+              y: Math.max(12, Math.min(window.innerHeight - 12, point.y))
+            }))
+            .map((point) => document.elementFromPoint(point.x, point.y))
+            .map((element) => element?.closest?.("button, [role='button'], a, .swiper-button-next, .slick-next") || element)
+            .filter(Boolean)
+            .filter((element, index, list) => list.indexOf(element) === index)
+            .filter((element) => visible(element) && !navigatesAway(element))
+            .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+            .sort((a, b) => b.rect.left - a.rect.left || b.rect.top - a.rect.top);
+          if (pointCandidates[0]?.element) {
+            return pointCandidates[0].element;
+          }
+        }
         return Array.from(root.querySelectorAll(".swiper-button-next, .slick-next, button, [role='button'], a, [aria-label], [title]"))
           .map((element) => element.closest("button, [role='button'], a, .swiper-button-next, .slick-next") || element)
           .filter((element, index, list) => list.indexOf(element) === index)
@@ -866,15 +975,33 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
               /disabled|lock/i.test(classText(element));
             const compact = rect.width <= 130 && rect.height <= 130;
             const rightSide = rect.left >= rootRect.left + rootRect.width * 0.45;
+            const nearBottom = rect.top >= rootRect.top + rootRect.height * 0.55;
+            const farRight = rect.left >= rootRect.right - Math.max(180, rootRect.width * 0.2);
             const explicit = /next|right|arrow|swiper-button-next|slick-next/i.test(text);
-            const score = Number(explicit) * 18 + Number(rightSide) * 8 + Number(compact) * 5 -
+            const score = Number(explicit) * 18 +
+              Number(rightSide) * 8 +
+              Number(compact) * 5 +
+              Number(definition.key === "product-showcase" && farRight) * 18 +
+              Number(definition.key === "product-showcase" && nearBottom) * 12 -
               Number(disabled) * 100;
-            return { element, score, disabled };
+            return { element, score, disabled, rect };
           })
           .filter((item) => item.score >= 10 && !item.disabled)
-          .sort((a, b) => b.score - a.score)[0]?.element || null;
+          .sort((a, b) =>
+            b.score - a.score ||
+            b.rect.left - a.rect.left ||
+            b.rect.top - a.rect.top
+          )[0]?.element || null;
       };
       const advance = async (root) => {
+        if (definition.key === "product-showcase") {
+          const next = findNextControl(root);
+          if (next) {
+            clickElement(next);
+            await sleep(900);
+            return true;
+          }
+        }
         const swipers = activeSwipers(root).filter((swiper) => typeof swiper.slideNext === "function");
         if (swipers.length) {
           for (const swiper of swipers) {
@@ -899,11 +1026,23 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
         resetCarousel(root);
         await sleep(300);
         const seen = new Set();
-        for (let pageIndex = 1; pageIndex <= 12; pageIndex += 1) {
-          const signature = visibleSignature(root);
+        const bulletCount = definition.key === "product-showcase" ? findPageBullets(root).length : 0;
+        const maxPages = bulletCount > 1 ? bulletCount : 12;
+        for (let pageIndex = 1; pageIndex <= maxPages; pageIndex += 1) {
+          if (pageIndex > 1) {
+            let moved = false;
+            if (definition.key === "product-showcase" && bulletCount > 1) {
+              moved = clickPageBullet(root, pageIndex);
+              await sleep(450);
+            } else {
+              moved = await advance(root);
+            }
+            if (!moved) break;
+          }
+          const signature = pageSignature(root);
           if (!signature || seen.has(signature)) break;
           seen.add(signature);
-          const isDefaultState = states.length === 0 && (!tabIndex || tabIndex === 0) && pageIndex === 1;
+          const isDefaultState = pageIndex === 1;
           const label = definition.labelMode === "tab" && tabLabel
             ? tabLabel + " " + pageIndex
             : (definition.labelPrefix || "轮播") + " " + pageIndex;
@@ -920,9 +1059,12 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
             fileId: (tabLabel || "state") + "-" + pageIndex,
             isDefaultState
           });
+          if (definition.key === "product-showcase" && bulletCount > 1) {
+            continue;
+          }
           const before = signature;
           const moved = await advance(root);
-          const after = visibleSignature(root);
+          const after = pageSignature(root);
           if (!moved || after === before || seen.has(after)) break;
         }
       };
@@ -939,10 +1081,20 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
         const states = [];
         if (definition.mode === "tabs-carousel") {
           for (const [tabIndex, tabLabel] of (definition.tabs || []).entries()) {
-            await collectPages(root, tabLabel, tabIndex, states);
+            const tabStates = [];
+            await collectPages(root, tabLabel, tabIndex, tabStates);
+            for (const state of tabStates) {
+              state.pageCount = tabStates.length;
+              states.push(state);
+            }
           }
         } else {
-          await collectPages(root, "", 0, states);
+          const pageStates = [];
+          await collectPages(root, "", 0, pageStates);
+          for (const state of pageStates) {
+            state.pageCount = pageStates.length;
+            states.push(state);
+          }
         }
         window.__pageShotRelatedSections[definition.key].states = states;
         return {
@@ -1054,8 +1206,55 @@ async function activateShokzHomeRelatedState(client, definition, state) {
         const firstBullet = root.querySelector(".swiper-pagination-bullet, .slick-dots button, [role='tab'][aria-label*='slide' i]");
         if (firstBullet) clickElement(firstBullet);
       };
+      const findPageBullets = () => {
+        const rootRect = root.getBoundingClientRect();
+        return Array.from(root.querySelectorAll(".swiper-pagination-bullet, .slick-dots button, [role='tab'][aria-label*='slide' i]"))
+          .filter(visible)
+          .map((element) => {
+            const rect = element.getBoundingClientRect();
+            return {
+              element,
+              rect,
+              visibleArea: Math.max(0, Math.min(rect.right, rootRect.right) - Math.max(rect.left, rootRect.left)) *
+                Math.max(0, Math.min(rect.bottom, rootRect.bottom) - Math.max(rect.top, rootRect.top))
+            };
+          })
+          .filter((item) =>
+            item.rect.width <= 48 &&
+            item.rect.height <= 48 &&
+            item.visibleArea >= 12
+          )
+          .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left)
+          .map((item) => item.element);
+      };
+      const clickPageBullet = (pageIndex) => {
+        const bullets = findPageBullets();
+        const target = bullets[pageIndex - 1];
+        return target ? clickElement(target) : false;
+      };
       const findNextControl = () => {
         const rootRect = root.getBoundingClientRect();
+        if (definition.key === "product-showcase") {
+          const pointCandidates = [
+            { x: rootRect.right - 18, y: rootRect.bottom - 18 },
+            { x: rootRect.right - 54, y: rootRect.bottom - 18 },
+            { x: rootRect.right - 18, y: rootRect.bottom - 54 }
+          ]
+            .map((point) => ({
+              x: Math.max(12, Math.min(window.innerWidth - 12, point.x)),
+              y: Math.max(12, Math.min(window.innerHeight - 12, point.y))
+            }))
+            .map((point) => document.elementFromPoint(point.x, point.y))
+            .map((element) => element?.closest?.("button, [role='button'], a, .swiper-button-next, .slick-next") || element)
+            .filter(Boolean)
+            .filter((element, index, list) => list.indexOf(element) === index)
+            .filter((element) => visible(element) && !navigatesAway(element))
+            .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+            .sort((a, b) => b.rect.left - a.rect.left || b.rect.top - a.rect.top);
+          if (pointCandidates[0]?.element) {
+            return pointCandidates[0].element;
+          }
+        }
         return Array.from(root.querySelectorAll(".swiper-button-next, .slick-next, button, [role='button'], a, [aria-label], [title]"))
           .map((element) => element.closest("button, [role='button'], a, .swiper-button-next, .slick-next") || element)
           .filter((element, index, list) => list.indexOf(element) === index)
@@ -1068,14 +1267,33 @@ async function activateShokzHomeRelatedState(client, definition, state) {
             const disabled = element.disabled || element.getAttribute?.("aria-disabled") === "true" || /disabled|lock/i.test(classText(element));
             const compact = rect.width <= 130 && rect.height <= 130;
             const rightSide = rect.left >= rootRect.left + rootRect.width * 0.45;
+            const nearBottom = rect.top >= rootRect.top + rootRect.height * 0.55;
+            const farRight = rect.left >= rootRect.right - Math.max(180, rootRect.width * 0.2);
             const explicit = /next|right|arrow|swiper-button-next|slick-next/i.test(text);
-            const score = Number(explicit) * 18 + Number(rightSide) * 8 + Number(compact) * 5 - Number(disabled) * 100;
-            return { element, score, disabled };
+            const score = Number(explicit) * 18 +
+              Number(rightSide) * 8 +
+              Number(compact) * 5 +
+              Number(definition.key === "product-showcase" && farRight) * 18 +
+              Number(definition.key === "product-showcase" && nearBottom) * 12 -
+              Number(disabled) * 100;
+            return { element, score, disabled, rect };
           })
           .filter((item) => item.score >= 10 && !item.disabled)
-          .sort((a, b) => b.score - a.score)[0]?.element || null;
+          .sort((a, b) =>
+            b.score - a.score ||
+            b.rect.left - a.rect.left ||
+            b.rect.top - a.rect.top
+          )[0]?.element || null;
       };
       const advance = async () => {
+        if (definition.key === "product-showcase") {
+          const next = findNextControl();
+          if (next) {
+            clickElement(next);
+            await sleep(900);
+            return true;
+          }
+        }
         const swipers = activeSwipers().filter((swiper) => typeof swiper.slideNext === "function");
         if (swipers.length) {
           for (const swiper of swipers) {
@@ -1101,9 +1319,13 @@ async function activateShokzHomeRelatedState(client, definition, state) {
         }
         resetCarousel();
         await sleep(260);
-        const clicks = Math.max(0, Number(state.pageIndex || 1) - 1);
-        for (let index = 0; index < clicks; index += 1) {
-          await advance();
+        if (definition.key === "product-showcase" && Number(state.pageIndex || 1) > 1 && clickPageBullet(Number(state.pageIndex || 1))) {
+          await sleep(450);
+        } else {
+          const clicks = Math.max(0, Number(state.pageIndex || 1) - 1);
+          for (let index = 0; index < clicks; index += 1) {
+            await advance();
+          }
         }
         root.scrollIntoView({ block: "center", inline: "nearest" });
         await sleep(260);
@@ -1179,6 +1401,59 @@ async function readShokzHomeRelatedState(client, definition, state) {
         .filter(Boolean)
         .map((value) => String(value).split(",")[0].trim())
         .filter(Boolean);
+      const productCardSignature = (root) => {
+        const rootRect = root.getBoundingClientRect();
+        const visibleLinks = Array.from(root.querySelectorAll("a[href*='/products/']"))
+          .filter(visible)
+          .map((element) => {
+            const card = element.closest("article, li, [class*='card'], [class*='slide'], a") || element;
+            const rect = card.getBoundingClientRect();
+            const area = Math.max(1, rect.width * rect.height);
+            const visibleArea = intersects(rect, rootRect);
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            let href = "";
+            try {
+              href = new URL(element.getAttribute("href") || element.href || "", window.location.href).pathname;
+            } catch {
+              href = element.getAttribute("href") || element.href || "";
+            }
+            return {
+              href,
+              text: cleanText([card.innerText, card.textContent].filter(Boolean).join(" "), 220),
+              rect,
+              visibleArea,
+              visibleRatio: visibleArea / area,
+              centerX,
+              centerY
+            };
+          })
+          .filter((item) =>
+            item.href &&
+            item.rect.width >= 120 &&
+            item.rect.height >= 120 &&
+            item.visibleArea > 800 &&
+            item.visibleRatio >= 0.55 &&
+            item.rect.left >= rootRect.left + 12 &&
+            item.rect.right <= rootRect.right - 12 &&
+            item.centerY >= rootRect.top &&
+            item.centerY <= rootRect.bottom
+          )
+          .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+        const deduped = [];
+        const seen = new Set();
+        for (const item of visibleLinks) {
+          const key = item.href + "|" + item.text;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          deduped.push({
+            href: item.href,
+            text: item.text
+          });
+          if (deduped.length >= 8) break;
+        }
+        return deduped.length ? JSON.stringify(deduped) : "";
+      };
       const rootRect = root.getBoundingClientRect();
       const textNodes = Array.from(root.querySelectorAll("a, button, h1, h2, h3, h4, p, li, article, [class*='card'], [class*='slide']"))
         .filter(visible)
@@ -1215,7 +1490,9 @@ async function readShokzHomeRelatedState(client, definition, state) {
         text: visibleText.join(" "),
         textBlocks,
         images,
-        logicalSignature: state.logicalSignature,
+        logicalSignature: definition.key === "product-showcase"
+          ? productCardSignature(root) || state.logicalSignature
+          : state.logicalSignature,
         activeIndex: state.stateIndex
       };
     })()`,
@@ -1805,6 +2082,27 @@ function relatedOutputPath(outputPath, sectionKey, stateId) {
   return outputPath.replace(/\.png$/i, `-${safeSection}-${safeState}.png`);
 }
 
+function relatedCaptureScopeKey(definition, state) {
+  if (definition.mode === "tabs-carousel") {
+    return `${definition.key}|${state.tabIndex || state.tabLabel || "tab"}`;
+  }
+  return definition.key;
+}
+
+function scopedSet(map, key) {
+  if (!map.has(key)) {
+    map.set(key, new Set());
+  }
+  return map.get(key);
+}
+
+function scopedList(map, key) {
+  if (!map.has(key)) {
+    map.set(key, []);
+  }
+  return map.get(key);
+}
+
 function hashBuffer(buffer) {
   return crypto.createHash("sha1").update(buffer).digest("hex");
 }
@@ -1888,6 +2186,8 @@ function compareRelatedCaptures(a, b) {
   const orderA = sectionA === -1 ? 1000 : sectionA;
   const orderB = sectionB === -1 ? 1000 : sectionB;
   return orderA - orderB ||
+    Number(a.tabIndex || 0) - Number(b.tabIndex || 0) ||
+    Number(a.pageIndex || 0) - Number(b.pageIndex || 0) ||
     Number(a.stateIndex || a.bannerIndex || 0) - Number(b.stateIndex || b.bannerIndex || 0) ||
     String(a.label || "").localeCompare(String(b.label || ""), "zh-CN");
 }

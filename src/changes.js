@@ -455,11 +455,11 @@ function positionKeyForSource({ itemKind, sectionKey, stateIndex, bannerIndex, p
   if (bannerIndex) {
     return `banner:${bannerIndex}`;
   }
-  if (stateIndex) {
-    return `state:${stateIndex}`;
-  }
   if (pageIndex || tabIndex !== null) {
-    return `tab:${tabIndex ?? ""}:page:${pageIndex ?? ""}`;
+    return `${sectionKey}:tab:${tabIndex ?? ""}:page:${pageIndex ?? ""}`;
+  }
+  if (stateIndex) {
+    return `${sectionKey}:state:${stateIndex}`;
   }
   return `related:${relatedIndex ?? 0}:${sectionKey}`;
 }
