@@ -10,7 +10,11 @@ const defaultDiffOptions = {
   minRegionPixels: 24,
   minRegionArea: 16,
   mergeGap: 8,
-  maxRegions: 40
+  maxRegions: 40,
+  alignmentDriftMaxShift: 2,
+  alignmentDriftSamplePixels: 20000,
+  alignmentDriftImprovementRatio: 0.25,
+  alignmentDriftMaxRatio: 0.12
 };
 
 const defaultVisualJudgmentOptions = {
@@ -19,7 +23,9 @@ const defaultVisualJudgmentOptions = {
   bannerMinRatio: 0.12,
   layoutMoveMinPixels: 48,
   layoutMoveMinRatio: 0.08,
-  layoutResizeRatio: 0.35
+  layoutResizeRatio: 0.35,
+  mediaRectMoveMinPixels: 8,
+  mediaRectResizeRatio: 0.08
 };
 
 export async function loadChanges() {
@@ -202,6 +208,12 @@ export async function diffPngImages(fromPath, toPath, options = {}) {
     height: toImage.height
   };
 
+  result.alignmentDrift = changed &&
+    !result.dimensionChanged &&
+    Number(result.ratio || 0) <= Number(settings.alignmentDriftMaxRatio || 0.12)
+    ? detectAlignmentDrift(fromImage, toImage, width, height, settings)
+    : { likely: false };
+
   if (changed && settings.outputPath) {
     await fs.mkdir(path.dirname(settings.outputPath), { recursive: true });
     await fs.writeFile(settings.outputPath, encodePng(toImage.width, toImage.height, markDiffImage(toImage, mask, width, regions)));
@@ -347,7 +359,7 @@ export function judgeHumanVisibleChange(fromItem, toItem, diff, options = {}) {
     });
   }
 
-  signals.push(...mediaItemChangeSignals(fromItem, toItem, diff));
+  signals.push(...mediaItemChangeSignals(fromItem, toItem, settings));
 
   const layoutChange = layoutChangeForTextBlocks(fromItem, toItem, settings);
   if (layoutChange.changed) {
@@ -377,6 +389,15 @@ export function judgeHumanVisibleChange(fromItem, toItem, diff, options = {}) {
   }
 
   const minRatio = minVisualRatioForItem(toItem, settings);
+  if (isLikelyAlignmentDrift(diff, minRatio)) {
+    return {
+      changed: false,
+      kind: "suppressed-drift",
+      signals: [],
+      summary: "only alignment drift; code metadata stayed the same"
+    };
+  }
+
   if (Number(diff.ratio || 0) >= minRatio) {
     const signal = {
       type: "large-visual",
@@ -578,7 +599,7 @@ function imageAssetKey(source) {
   }
 }
 
-function mediaItemChangeSignals(fromItem, toItem, diff) {
+function mediaItemChangeSignals(fromItem, toItem, settings) {
   if (toItem.sectionKey !== "media") {
     return [];
   }
@@ -590,9 +611,11 @@ function mediaItemChangeSignals(fromItem, toItem, diff) {
   }
 
   const beforeById = new Map(beforeItems.map((item) => [item.id, item]));
+  const beforeBySlot = new Map(beforeItems.map((item, index) => [mediaItemSlotKey(item, index), item]));
+  const matchedBefore = new Set();
   const signals = [];
   const signaled = new Set();
-  const addSignal = (item, reason) => {
+  const addSignal = (item, reason, before = null) => {
     const key = item.id || item.label || reason;
     if (!key || signaled.has(key)) {
       return;
@@ -604,31 +627,27 @@ function mediaItemChangeSignals(fromItem, toItem, diff) {
       reason,
       mediaItemId: item.id,
       mediaItemLabel: item.label,
+      beforeMediaItemId: before?.id || null,
+      beforeMediaItemLabel: before?.label || null,
       rect: item.rect || null
     });
   };
 
-  for (const item of afterItems) {
-    const before = beforeById.get(item.id);
+  for (const [index, item] of afterItems.entries()) {
+    const before = beforeById.get(item.id) || beforeBySlot.get(mediaItemSlotKey(item, index));
     if (!before) {
       addSignal(item, "added or moved into this window");
       continue;
     }
-    if (before.imageFamily && item.imageFamily && before.imageFamily !== item.imageFamily) {
-      addSignal(item, "image asset changed");
+    matchedBefore.add(before.id);
+    const codeChange = mediaItemCodeChange(before, item, settings);
+    if (codeChange.changed) {
+      addSignal(item, codeChange.reason, before);
     }
   }
-  const afterById = new Map(afterItems.map((item) => [item.id, item]));
   for (const item of beforeItems) {
-    if (!afterById.has(item.id)) {
+    if (!matchedBefore.has(item.id)) {
       addSignal(item, "removed from this window");
-    }
-  }
-
-  for (const region of diff.regions || []) {
-    const match = bestMediaItemForRegion(afterItems, region);
-    if (match && match.overlapRatio >= 0.12) {
-      addSignal(match.item, "pixel region overlaps item");
     }
   }
 
@@ -688,8 +707,12 @@ function mediaComparableItems(item) {
       const imageFamily = source?.imageFamily || mediaItemImageFamily(source?.image);
       return {
         id: id || `${item.sectionKey || "media"}:${item.tabIndex || ""}:${index}`,
+        key: String(source?.key || source?.mediaItemId || source?.id || ""),
         label: source?.label || source?.title || source?.text || imageFamily || `item ${index + 1}`,
+        text: source?.text || "",
         imageFamily,
+        position: numberOrNull(source?.position),
+        index,
         rect
       };
     })
@@ -701,32 +724,60 @@ function mediaItemImageFamily(source) {
   return key?.family || "";
 }
 
-function bestMediaItemForRegion(items, region) {
-  let best = null;
-  for (const item of items) {
-    if (!item.rect) {
-      continue;
-    }
-    const overlap = rectOverlapArea(item.rect, region);
-    if (overlap <= 0) {
-      continue;
-    }
-    const itemArea = Math.max(1, item.rect.width * item.rect.height);
-    const regionArea = Math.max(1, Number(region.width || 0) * Number(region.height || 0));
-    const overlapRatio = overlap / Math.min(itemArea, regionArea);
-    if (!best || overlapRatio > best.overlapRatio) {
-      best = { item, overlapRatio };
-    }
+function mediaItemSlotKey(item, index) {
+  if (Number.isFinite(Number(item.position))) {
+    return `position:${Number(item.position)}`;
   }
-  return best;
+  const rect = normalizeRect(item.rect);
+  if (rect) {
+    return `rect:${Math.round(rect.x / 8)}:${Math.round(rect.y / 8)}`;
+  }
+  return `index:${index}`;
 }
 
-function rectOverlapArea(left, right) {
-  const x1 = Math.max(Number(left.x || 0), Number(right.x || 0));
-  const y1 = Math.max(Number(left.y || 0), Number(right.y || 0));
-  const x2 = Math.min(Number(left.x || 0) + Number(left.width || 0), Number(right.x || 0) + Number(right.width || 0));
-  const y2 = Math.min(Number(left.y || 0) + Number(left.height || 0), Number(right.y || 0) + Number(right.height || 0));
-  return Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+function mediaItemCodeChange(before, after, settings) {
+  if (before.imageFamily && after.imageFamily && before.imageFamily !== after.imageFamily) {
+    return { changed: true, reason: "image asset changed" };
+  }
+  if (normalizeComparableText(before.label) !== normalizeComparableText(after.label)) {
+    return { changed: true, reason: "label changed" };
+  }
+  if (normalizeComparableText(before.text) !== normalizeComparableText(after.text)) {
+    return { changed: true, reason: "text changed" };
+  }
+  if (Number.isFinite(Number(before.position)) && Number.isFinite(Number(after.position)) && Number(before.position) !== Number(after.position)) {
+    return { changed: true, reason: "item position changed" };
+  }
+  if (Number.isFinite(Number(before.index)) && Number.isFinite(Number(after.index)) && Number(before.index) !== Number(after.index)) {
+    return { changed: true, reason: "item order changed" };
+  }
+  if (mediaItemRectChanged(before.rect, after.rect, settings)) {
+    return { changed: true, reason: "item rect changed" };
+  }
+  if (before.id && after.id && before.id !== after.id) {
+    return { changed: true, reason: "item identity changed" };
+  }
+  return { changed: false };
+}
+
+function mediaItemRectChanged(beforeRect, afterRect, settings) {
+  const before = normalizeRect(beforeRect);
+  const after = normalizeRect(afterRect);
+  if (!before && !after) {
+    return false;
+  }
+  if (!before || !after) {
+    return true;
+  }
+  const beforeCenter = rectCenter(before);
+  const afterCenter = rectCenter(after);
+  const deltaX = Math.abs(afterCenter.x - beforeCenter.x);
+  const deltaY = Math.abs(afterCenter.y - beforeCenter.y);
+  const moveThreshold = Math.max(1, Number(settings.mediaRectMoveMinPixels || 8));
+  if (deltaX >= moveThreshold || deltaY >= moveThreshold) {
+    return true;
+  }
+  return rectResizeRatio(before, after) >= Number(settings.mediaRectResizeRatio || 0.08);
 }
 
 function layoutChangeForTextBlocks(fromItem, toItem, settings) {
@@ -785,6 +836,17 @@ function minVisualRatioForItem(item, settings) {
   return settings.pageMinRatio;
 }
 
+function isLikelyAlignmentDrift(diff, minRatio) {
+  const drift = diff.alignmentDrift;
+  if (!drift?.likely || diff.dimensionChanged) {
+    return false;
+  }
+  if (Number(diff.ratio || 0) >= minRatio && Number(drift.bestRatio || 0) >= minRatio) {
+    return false;
+  }
+  return true;
+}
+
 function summarizeSignals(signals) {
   return signals.map((signal) => signal.label).filter(Boolean).join(", ");
 }
@@ -822,6 +884,79 @@ function rectResizeRatio(beforeRect, afterRect) {
   const beforeArea = Math.max(1, beforeRect.width * beforeRect.height);
   const afterArea = Math.max(1, afterRect.width * afterRect.height);
   return Math.abs(afterArea - beforeArea) / Math.max(beforeArea, afterArea);
+}
+
+function detectAlignmentDrift(fromImage, toImage, width, height, settings) {
+  if (fromImage.width !== toImage.width || fromImage.height !== toImage.height || width <= 0 || height <= 0) {
+    return { likely: false };
+  }
+
+  const maxShift = Math.max(0, Math.floor(Number(settings.alignmentDriftMaxShift || 0)));
+  if (maxShift <= 0) {
+    return { likely: false };
+  }
+
+  const maxSamples = Math.max(1000, Number(settings.alignmentDriftSamplePixels || 20000));
+  const stride = Math.max(1, Math.ceil(Math.sqrt((width * height) / maxSamples)));
+  const zero = shiftedSampleDifference(fromImage, toImage, width, height, 0, 0, stride, settings.pixelDeltaThreshold);
+  if (!zero.count || zero.ratio === 0) {
+    return { likely: false, zeroRatio: zero.ratio || 0 };
+  }
+
+  let best = zero;
+  for (let dy = -maxShift; dy <= maxShift; dy += 1) {
+    for (let dx = -maxShift; dx <= maxShift; dx += 1) {
+      if (dx === 0 && dy === 0) {
+        continue;
+      }
+      const candidate = shiftedSampleDifference(fromImage, toImage, width, height, dx, dy, stride, settings.pixelDeltaThreshold);
+      if (candidate.count && candidate.ratio < best.ratio) {
+        best = candidate;
+      }
+    }
+  }
+
+  const improvement = zero.ratio > 0 ? (zero.ratio - best.ratio) / zero.ratio : 0;
+  return {
+    likely: (best.dx !== 0 || best.dy !== 0) && improvement >= Number(settings.alignmentDriftImprovementRatio || 0.25),
+    dx: best.dx,
+    dy: best.dy,
+    zeroRatio: Number(zero.ratio.toFixed(6)),
+    bestRatio: Number(best.ratio.toFixed(6)),
+    improvement: Number(improvement.toFixed(6)),
+    stride
+  };
+}
+
+function shiftedSampleDifference(fromImage, toImage, width, height, dx, dy, stride, threshold) {
+  let changed = 0;
+  let count = 0;
+  const startX = Math.max(0, -dx);
+  const endX = Math.min(width, width - dx);
+  const startY = Math.max(0, -dy);
+  const endY = Math.min(height, height - dy);
+  for (let y = startY; y < endY; y += stride) {
+    for (let x = startX; x < endX; x += stride) {
+      const fromOffset = (y * fromImage.width + x) * 4;
+      const toOffset = ((y + dy) * toImage.width + x + dx) * 4;
+      const delta =
+        Math.abs(fromImage.rgba[fromOffset] - toImage.rgba[toOffset]) +
+        Math.abs(fromImage.rgba[fromOffset + 1] - toImage.rgba[toOffset + 1]) +
+        Math.abs(fromImage.rgba[fromOffset + 2] - toImage.rgba[toOffset + 2]) +
+        Math.abs(fromImage.rgba[fromOffset + 3] - toImage.rgba[toOffset + 3]);
+      if (delta >= threshold) {
+        changed += 1;
+      }
+      count += 1;
+    }
+  }
+  return {
+    dx,
+    dy,
+    changed,
+    count,
+    ratio: count ? changed / count : 0
+  };
 }
 
 function firstChangedTextBlock(beforeBlocks, afterBlocks) {

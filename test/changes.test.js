@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { compareSnapshots, diffPngImages } from "../src/changes.js";
+import { compareSnapshots, diffPngImages, judgeHumanVisibleChange } from "../src/changes.js";
 import { encodePng } from "../src/png.js";
 
 test("matches the same section position when tab copy changes", async () => {
@@ -202,7 +202,7 @@ test("keeps banner layout moves for stable copy", async () => {
   assert.ok(changes[0].visualChange.signals.some((signal) => signal.type === "layout"));
 });
 
-test("labels media visual diffs with the overlapping item", async () => {
+test("keeps large media visual diffs when stable code exceeds threshold", async () => {
   const archiveRoot = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-media-item-"));
   const beforeFile = "2026-05-03/example-com/media-before.png";
   const afterFile = "2026-05-03/example-com/media-after.png";
@@ -214,57 +214,160 @@ test("labels media visual diffs with the overlapping item", async () => {
   await writeArchiveImage(archiveRoot, beforeFile, 160, 100, beforeImage);
   await writeArchiveImage(archiveRoot, afterFile, 160, 100, afterImage);
 
-  const item = {
-    mediaItemId: "awards|pos:3|img:toms-guide",
-    key: "awards|pos:3|img:toms-guide",
-    label: "toms guide",
-    image: "https://cdn.example.com/toms-guide.webp",
-    imageFamily: "toms-guide",
-    rect: { x: 30, y: 30, width: 55, height: 35 }
-  };
-  const relatedShot = (file) => ({
-    file,
-    imageUrl: `/archive/${file}`,
-    width: 160,
-    height: 100,
-    kind: "tab-carousel",
-    sectionKey: "media",
-    sectionLabel: "媒体区",
-    tabLabel: "Sports partnership & Awards",
-    tabIndex: 2,
-    pageIndex: 1,
-    stateIndex: 1,
-    stateLabel: "Sports partnership & Awards 1",
-    label: "Sports partnership & Awards 1",
-    visibleItems: [item],
-    itemRects: [{ mediaItemId: item.mediaItemId, key: item.key, label: item.label, rect: item.rect }],
-    sectionState: {
-      text: "Sports partnership & Awards",
-      images: [item.image],
-      visibleItems: [item],
-      itemRects: [{ mediaItemId: item.mediaItemId, key: item.key, label: item.label, rect: item.rect }]
-    }
-  });
+  const item = mediaItem();
 
   const changes = await compareSnapshots([
-    snapshot("snap-1", "2026-05-03T08:00:00.000Z", [relatedShot(beforeFile)]),
-    snapshot("snap-2", "2026-05-03T09:00:00.000Z", [relatedShot(afterFile)])
+    snapshot("snap-1", "2026-05-03T08:00:00.000Z", [mediaShot(beforeFile, [item])]),
+    snapshot("snap-2", "2026-05-03T09:00:00.000Z", [mediaShot(afterFile, [item])])
   ], { archiveRoot, writeDiffImages: false });
 
   assert.equal(changes.length, 1);
   assert.equal(changes[0].location.sectionKey, "media");
   assert.equal(changes[0].location.tabLabel, "Sports partnership & Awards");
+  assert.ok(changes[0].visualChange.signals.some((signal) => signal.type === "large-visual"));
+  assert.ok(!changes[0].visualChange.signals.some((signal) => signal.type === "media-item"));
+});
+
+test("ignores media pixel overlap when code metadata is stable below visual threshold", async () => {
+  const archiveRoot = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-media-drift-"));
+  const beforeFile = "2026-05-03/example-com/media-before.png";
+  const afterFile = "2026-05-03/example-com/media-after.png";
+  const item = mediaItem();
+  const beforeImage = solidImage(160, 100, [255, 255, 255, 255]);
+  const afterImage = solidImage(160, 100, [255, 255, 255, 255]);
+  fillRect(afterImage, 160, 40, 40, 8, 8, [220, 40, 40, 255]);
+  await writeArchiveImage(archiveRoot, beforeFile, 160, 100, beforeImage);
+  await writeArchiveImage(archiveRoot, afterFile, 160, 100, afterImage);
+
+  const changes = await compareSnapshots([
+    snapshot("snap-1", "2026-05-03T08:00:00.000Z", [mediaShot(beforeFile, [item])]),
+    snapshot("snap-2", "2026-05-03T09:00:00.000Z", [mediaShot(afterFile, [item])])
+  ], { archiveRoot, writeDiffImages: false });
+
+  assert.equal(changes.length, 0);
+});
+
+test("keeps media image asset changes from code metadata", async () => {
+  const archiveRoot = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-media-image-"));
+  const beforeFile = "2026-05-03/example-com/media-before.png";
+  const afterFile = "2026-05-03/example-com/media-after.png";
+  const beforeItem = mediaItem({ imageFamily: "toms-guide" });
+  const afterItem = mediaItem({ imageFamily: "wired-award" });
+  const beforeImage = solidImage(160, 100, [255, 255, 255, 255]);
+  const afterImage = solidImage(160, 100, [255, 255, 255, 255]);
+  fillRect(afterImage, 160, 40, 40, 8, 8, [220, 40, 40, 255]);
+  await writeArchiveImage(archiveRoot, beforeFile, 160, 100, beforeImage);
+  await writeArchiveImage(archiveRoot, afterFile, 160, 100, afterImage);
+
+  const changes = await compareSnapshots([
+    snapshot("snap-1", "2026-05-03T08:00:00.000Z", [mediaShot(beforeFile, [beforeItem])]),
+    snapshot("snap-2", "2026-05-03T09:00:00.000Z", [mediaShot(afterFile, [afterItem])])
+  ], { archiveRoot, writeDiffImages: false });
+
+  assert.equal(changes.length, 1);
   assert.ok(changes[0].visualChange.signals.some((signal) =>
     signal.type === "media-item" &&
-    signal.mediaItemId === item.mediaItemId &&
-    signal.mediaItemLabel === "toms guide"
+    signal.reason === "image asset changed" &&
+    signal.mediaItemLabel === "wired award"
   ));
-  assert.ok(changes[0].visualChange.regions.some((region) =>
-    region.source === "media-item" &&
-    region.mediaItemId === item.mediaItemId &&
-    region.x === item.rect.x &&
-    region.y === item.rect.y
+});
+
+test("keeps media visible window membership changes", async () => {
+  const archiveRoot = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-media-window-"));
+  const beforeFile = "2026-05-03/example-com/media-before.png";
+  const afterFile = "2026-05-03/example-com/media-after.png";
+  const beforeItem = mediaItem({ position: 3, imageFamily: "toms-guide" });
+  const afterItem = mediaItem({ position: 4, imageFamily: "wired-award" });
+  const beforeImage = solidImage(160, 100, [255, 255, 255, 255]);
+  const afterImage = solidImage(160, 100, [255, 255, 255, 255]);
+  fillRect(afterImage, 160, 40, 40, 8, 8, [220, 40, 40, 255]);
+  await writeArchiveImage(archiveRoot, beforeFile, 160, 100, beforeImage);
+  await writeArchiveImage(archiveRoot, afterFile, 160, 100, afterImage);
+
+  const changes = await compareSnapshots([
+    snapshot("snap-1", "2026-05-03T08:00:00.000Z", [mediaShot(beforeFile, [beforeItem])]),
+    snapshot("snap-2", "2026-05-03T09:00:00.000Z", [mediaShot(afterFile, [afterItem])])
+  ], { archiveRoot, writeDiffImages: false });
+
+  assert.equal(changes.length, 1);
+  assert.ok(changes[0].visualChange.signals.some((signal) =>
+    signal.type === "media-item" &&
+    signal.reason === "added or moved into this window"
   ));
+});
+
+test("keeps media item order changes from code metadata", async () => {
+  const archiveRoot = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-media-order-"));
+  const beforeFile = "2026-05-03/example-com/media-before.png";
+  const afterFile = "2026-05-03/example-com/media-after.png";
+  const first = mediaItem({ position: null, imageFamily: "toms-guide" });
+  const second = mediaItem({ position: null, imageFamily: "wired-award" });
+  const beforeImage = solidImage(160, 100, [255, 255, 255, 255]);
+  const afterImage = solidImage(160, 100, [255, 255, 255, 255]);
+  fillRect(afterImage, 160, 40, 40, 8, 8, [220, 40, 40, 255]);
+  await writeArchiveImage(archiveRoot, beforeFile, 160, 100, beforeImage);
+  await writeArchiveImage(archiveRoot, afterFile, 160, 100, afterImage);
+
+  const changes = await compareSnapshots([
+    snapshot("snap-1", "2026-05-03T08:00:00.000Z", [mediaShot(beforeFile, [first, second])]),
+    snapshot("snap-2", "2026-05-03T09:00:00.000Z", [mediaShot(afterFile, [second, first])])
+  ], { archiveRoot, writeDiffImages: false });
+
+  assert.equal(changes.length, 1);
+  assert.ok(changes[0].visualChange.signals.some((signal) =>
+    signal.type === "media-item" &&
+    signal.reason === "item order changed"
+  ));
+});
+
+test("keeps media item rect moves from code metadata", async () => {
+  const archiveRoot = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-media-rect-"));
+  const beforeFile = "2026-05-03/example-com/media-before.png";
+  const afterFile = "2026-05-03/example-com/media-after.png";
+  const beforeItem = mediaItem({ rect: { x: 30, y: 30, width: 55, height: 35 } });
+  const afterItem = mediaItem({ rect: { x: 70, y: 30, width: 55, height: 35 } });
+  const beforeImage = solidImage(160, 100, [255, 255, 255, 255]);
+  const afterImage = solidImage(160, 100, [255, 255, 255, 255]);
+  fillRect(beforeImage, 160, 35, 35, 10, 10, [40, 80, 160, 255]);
+  fillRect(afterImage, 160, 75, 35, 10, 10, [40, 80, 160, 255]);
+  await writeArchiveImage(archiveRoot, beforeFile, 160, 100, beforeImage);
+  await writeArchiveImage(archiveRoot, afterFile, 160, 100, afterImage);
+
+  const changes = await compareSnapshots([
+    snapshot("snap-1", "2026-05-03T08:00:00.000Z", [mediaShot(beforeFile, [beforeItem])]),
+    snapshot("snap-2", "2026-05-03T09:00:00.000Z", [mediaShot(afterFile, [afterItem])])
+  ], { archiveRoot, writeDiffImages: false });
+
+  assert.equal(changes.length, 1);
+  assert.ok(changes[0].visualChange.signals.some((signal) =>
+    signal.type === "media-item" &&
+    signal.reason === "item rect changed"
+  ));
+});
+
+test("suppresses one pixel alignment drift when code metadata is stable", async () => {
+  const archiveRoot = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-media-align-"));
+  const beforeFile = "2026-05-03/example-com/media-before.png";
+  const afterFile = "2026-05-03/example-com/media-after.png";
+  const beforeImage = stripedImage(100, 80, 20, 10);
+  const afterImage = shiftImage(beforeImage, 100, 80, 1, 0, [255, 255, 255, 255]);
+  await writeArchiveImage(archiveRoot, beforeFile, 100, 80, beforeImage);
+  await writeArchiveImage(archiveRoot, afterFile, 100, 80, afterImage);
+
+  const diff = await diffPngImages(
+    path.join(archiveRoot, beforeFile),
+    path.join(archiveRoot, afterFile)
+  );
+  const item = mediaItem({ rect: { x: 0, y: 0, width: 100, height: 80 } });
+  const judgment = judgeHumanVisibleChange(
+    mediaShot(beforeFile, [item], { width: 100, height: 80 }),
+    mediaShot(afterFile, [item], { width: 100, height: 80 }),
+    diff
+  );
+
+  assert.equal(diff.alignmentDrift.likely, true);
+  assert.equal(judgment.changed, false);
+  assert.equal(judgment.kind, "suppressed-drift");
 });
 
 test("backfill writes diff artifacts without rewriting archived screenshots", async () => {
@@ -346,6 +449,59 @@ function bannerState(overrides = {}) {
   };
 }
 
+function mediaShot(file, items, overrides = {}) {
+  const itemRects = items.map((item) => ({
+    mediaItemId: item.mediaItemId,
+    key: item.key,
+    label: item.label,
+    rect: item.rect
+  }));
+  return {
+    kind: "tab-carousel",
+    sectionKey: "media",
+    sectionLabel: "Media",
+    tabLabel: "Sports partnership & Awards",
+    tabIndex: 2,
+    pageIndex: 1,
+    stateIndex: 1,
+    stateLabel: "Sports partnership & Awards 1",
+    label: "Sports partnership & Awards 1",
+    file,
+    imageUrl: `/archive/${file}`,
+    width: overrides.width || 160,
+    height: overrides.height || 100,
+    visibleItems: items,
+    itemRects,
+    sectionState: {
+      text: "Sports partnership & Awards",
+      images: items.map((item) => item.image),
+      visibleItems: items,
+      itemRects,
+      ...(overrides.sectionState || {})
+    },
+    ...overrides
+  };
+}
+
+function mediaItem(overrides = {}) {
+  const position = Object.hasOwn(overrides, "position") ? overrides.position : 3;
+  const imageFamily = overrides.imageFamily || "toms-guide";
+  const label = overrides.label || imageFamily.replace(/[-_]+/g, " ");
+  const rect = overrides.rect || { x: 30, y: 30, width: 55, height: 35 };
+  const key = overrides.key || `awards|pos:${position}|img:${imageFamily}|label:${label}`;
+  return {
+    mediaItemId: overrides.mediaItemId || key,
+    key,
+    label,
+    text: overrides.text || "",
+    image: overrides.image || `https://cdn.example.com/${imageFamily}.webp`,
+    imageFamily,
+    position,
+    positionTotal: overrides.positionTotal || 10,
+    rect
+  };
+}
+
 function solidImage(width, height, color) {
   const rgba = new Uint8Array(width * height * 4);
   for (let index = 0; index < rgba.length; index += 4) {
@@ -367,4 +523,32 @@ function fillRect(rgba, width, x, y, rectWidth, rectHeight, color) {
       rgba[offset + 3] = color[3];
     }
   }
+}
+
+function stripedImage(width, height, startX = 0, stripeWidth = width) {
+  const rgba = solidImage(width, height, [255, 255, 255, 255]);
+  for (let x = startX; x < Math.min(width, startX + stripeWidth); x += 2) {
+    fillRect(rgba, width, x, 0, 1, height, [0, 0, 0, 255]);
+  }
+  return rgba;
+}
+
+function shiftImage(source, width, height, dx, dy, fill) {
+  const shifted = solidImage(width, height, fill);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const targetX = x + dx;
+      const targetY = y + dy;
+      if (targetX < 0 || targetX >= width || targetY < 0 || targetY >= height) {
+        continue;
+      }
+      const fromOffset = (y * width + x) * 4;
+      const toOffset = (targetY * width + targetX) * 4;
+      shifted[toOffset] = source[fromOffset];
+      shifted[toOffset + 1] = source[fromOffset + 1];
+      shifted[toOffset + 2] = source[fromOffset + 2];
+      shifted[toOffset + 3] = source[fromOffset + 3];
+    }
+  }
+  return shifted;
 }
