@@ -144,8 +144,21 @@ function captureConfigForTarget(config, target) {
   return targetConfig;
 }
 
+function relatedCaptureModeForTarget(target, captureConfig) {
+  if (target.id === "shokz-home" && !target.captureMode) {
+    return "shokz-home-related";
+  }
+
+  if ((target.id === "shokz-products-nav" || target.captureMode === "shokz-products-nav") && !captureConfig.viewport?.mobile) {
+    return "shokz-products-nav-related";
+  }
+
+  return null;
+}
+
 async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPath, captureConfig) {
-  if (target.id !== "shokz-home" || target.captureMode) {
+  const relatedMode = relatedCaptureModeForTarget(target, captureConfig);
+  if (!relatedMode) {
     return { shots: [], validation: null };
   }
 
@@ -153,7 +166,7 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
   try {
     relatedCapture = await capturePage(normalizedUrl, baseOutputPath, {
       ...captureConfig,
-      captureMode: "shokz-home-related",
+      captureMode: relatedMode,
       fullPage: false,
       lazyLoadScroll: false
     });
@@ -164,7 +177,7 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
       validation: {
         status: "warning",
         warnings: [{
-          sectionKey: "home-related",
+          sectionKey: relatedMode === "shokz-products-nav-related" ? "navigation" : "home-related",
           sectionLabel: "更多截图",
           message: error.message
         }],
@@ -204,6 +217,9 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
       tabIndex: item.tabIndex || null,
       pageIndex: item.pageIndex || null,
       interactionState: item.interactionState || "default",
+      navigationLevel: item.navigationLevel || null,
+      topLevelLabel: item.topLevelLabel || null,
+      topLevelIndex: item.topLevelIndex || null,
       hoverItemKey: item.hoverItemKey || null,
       hoverItemLabel: item.hoverItemLabel || null,
       hoverItemRect: item.hoverItemRect || null,
@@ -273,7 +289,7 @@ function bannerDisplayLabel(label, bannerIndex) {
 }
 
 function compareRelatedShots(a, b) {
-  const sectionOrder = ["banner", "product-showcase", "scene-explore", "athletes", "media", "voices"];
+  const sectionOrder = ["banner", "navigation", "product-showcase", "scene-explore", "athletes", "media", "voices"];
   const sectionA = sectionOrder.indexOf(a.sectionKey);
   const sectionB = sectionOrder.indexOf(b.sectionKey);
   const orderA = sectionA === -1 ? 1000 : sectionA;

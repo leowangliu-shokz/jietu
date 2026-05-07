@@ -117,6 +117,51 @@ test("matches product showcase hover by product identity", async () => {
   assert.equal(changes[0].textChange.after, "OPENFIT PRO hover new");
 });
 
+test("keeps primary and secondary navigation hover positions separate", async () => {
+  const changes = await compareSnapshots([
+    navigationSnapshot("nav-1", "2026-05-03T08:00:00.000Z", [
+      navigationShot("nav-primary-before.png", {
+        navigationLevel: "primary",
+        hoverItemKey: "primary:1",
+        hoverItemLabel: "Products",
+        hoverIndex: 0,
+        sectionState: { text: "Products menu old" }
+      }),
+      navigationShot("nav-secondary-before.png", {
+        navigationLevel: "secondary",
+        hoverItemKey: "secondary:1:2",
+        hoverItemLabel: "Workout & Lifestyle Earbuds",
+        hoverIndex: 2,
+        sectionState: { text: "Workout earbuds old" }
+      })
+    ]),
+    navigationSnapshot("nav-2", "2026-05-03T09:00:00.000Z", [
+      navigationShot("nav-primary-after.png", {
+        navigationLevel: "primary",
+        hoverItemKey: "primary:1",
+        hoverItemLabel: "Products",
+        hoverIndex: 0,
+        sectionState: { text: "Products menu new" }
+      }),
+      navigationShot("nav-secondary-after.png", {
+        navigationLevel: "secondary",
+        hoverItemKey: "secondary:1:2",
+        hoverItemLabel: "Workout & Lifestyle Earbuds",
+        hoverIndex: 2,
+        sectionState: { text: "Workout earbuds new" }
+      })
+    ])
+  ], { writeDiffImages: false });
+
+  assert.equal(changes.length, 2);
+  assert.deepEqual(
+    changes.map((change) => change.location.navigationLevel).sort(),
+    ["primary", "secondary"]
+  );
+  assert.ok(changes.some((change) => /navigation:tab:1:hover:primary:1$/.test(change.comparisonKey)));
+  assert.ok(changes.some((change) => /navigation:tab:1:hover:secondary:1:2$/.test(change.comparisonKey)));
+});
+
 test("marks product showcase hover visual changes on the hovered card", async () => {
   const archiveRoot = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-product-hover-"));
   const beforeFile = "2026-05-03/example-com/product-hover-before.png";
@@ -476,6 +521,16 @@ function snapshot(id, capturedAt, relatedShots = [], file = `${id}.png`) {
   };
 }
 
+function navigationSnapshot(id, capturedAt, relatedShots = [], file = `${id}.png`) {
+  return {
+    ...snapshot(id, capturedAt, relatedShots, file),
+    url: "https://shokz.com/",
+    targetId: "shokz-products-nav",
+    targetLabel: "https://shokz.com/（导航栏）",
+    displayUrl: "https://shokz.com/（导航栏）"
+  };
+}
+
 async function writeArchiveImage(archiveRoot, relativeFile, width, height, rgba) {
   const filePath = path.join(archiveRoot, relativeFile);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
@@ -581,6 +636,51 @@ function productHoverShot(file, overrides = {}) {
     hoverItemKey,
     hoverItemLabel,
     hoverItemRect,
+    file,
+    imageUrl: `/archive/${file}`,
+    width: overrides.width || 120,
+    height: overrides.height || 80,
+    sectionState,
+    ...overrides,
+    sectionState
+  };
+}
+
+function navigationShot(file, overrides = {}) {
+  const navigationLevel = overrides.navigationLevel || "secondary";
+  const hoverItemKey = overrides.hoverItemKey || "secondary:1:1";
+  const hoverItemLabel = overrides.hoverItemLabel || "Sports Headphones";
+  const hoverIndex = Object.hasOwn(overrides, "hoverIndex") ? overrides.hoverIndex : 1;
+  const sectionState = {
+    text: "Navigation hover",
+    textBlocks: [{ text: "Navigation hover", x: 10, y: 10, width: 120, height: 20 }],
+    images: [],
+    interactionState: "hover",
+    navigationLevel,
+    topLevelLabel: "Products",
+    topLevelIndex: 1,
+    hoverItemKey,
+    hoverItemLabel,
+    hoverIndex,
+    ...(overrides.sectionState || {})
+  };
+  return {
+    kind: `navigation-${navigationLevel}`,
+    sectionKey: "navigation",
+    sectionLabel: "Navigation",
+    sectionTitle: "Navigation hierarchy",
+    tabLabel: "Products",
+    tabIndex: 1,
+    stateIndex: overrides.stateIndex || hoverIndex + 1,
+    stateLabel: hoverItemLabel,
+    label: hoverItemLabel,
+    interactionState: "hover",
+    navigationLevel,
+    topLevelLabel: "Products",
+    topLevelIndex: 1,
+    hoverItemKey,
+    hoverItemLabel,
+    hoverIndex,
     file,
     imageUrl: `/archive/${file}`,
     width: overrides.width || 120,

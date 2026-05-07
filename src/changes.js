@@ -255,6 +255,9 @@ async function compareItems(fromItem, toItem, options) {
       tabLabel: toItem.tabLabel,
       pageIndex: toItem.pageIndex,
       interactionState: toItem.interactionState,
+      navigationLevel: toItem.navigationLevel,
+      topLevelLabel: toItem.topLevelLabel,
+      topLevelIndex: toItem.topLevelIndex,
       hoverItemKey: toItem.hoverItemKey,
       hoverItemLabel: toItem.hoverItemLabel,
       hoverItemRect: toItem.hoverItemRect,
@@ -440,6 +443,9 @@ function createComparableItem(snapshot, shot, relatedIndex = null) {
   const pageIndex = numberOrNull(source.pageIndex);
   const tabIndex = numberOrNull(source.tabIndex);
   const interactionState = source.interactionState || source.sectionState?.interactionState || "default";
+  const navigationLevel = source.navigationLevel || source.sectionState?.navigationLevel || null;
+  const topLevelLabel = source.topLevelLabel || source.sectionState?.topLevelLabel || null;
+  const topLevelIndex = numberOrNull(source.topLevelIndex || source.sectionState?.topLevelIndex);
   const hoverItemKey = source.hoverItemKey || source.sectionState?.hoverItemKey || null;
   const hoverItemLabel = source.hoverItemLabel || source.sectionState?.hoverItemLabel || null;
   const hoverItemRect = source.hoverItemRect || source.sectionState?.hoverItemRect || null;
@@ -486,6 +492,9 @@ function createComparableItem(snapshot, shot, relatedIndex = null) {
     tabLabel: source.tabLabel || null,
     pageIndex,
     interactionState,
+    navigationLevel,
+    topLevelLabel,
+    topLevelIndex,
     hoverItemKey,
     hoverItemLabel,
     hoverItemRect,

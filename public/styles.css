@@ -703,7 +703,8 @@ select:focus {
 }
 
 .related-section-tabbed,
-.related-section-product-showcase {
+.related-section-product-showcase,
+.related-section-navigation {
   gap: 8px;
 }
 

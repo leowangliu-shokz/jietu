@@ -43,8 +43,9 @@ const elements = {
 };
 
 const homeBannerWindowMs = 5 * 60 * 1000;
-const relatedSectionOrder = ["banner", "product-showcase", "scene-explore", "athletes", "media", "voices"];
+const relatedSectionOrder = ["banner", "navigation", "product-showcase", "scene-explore", "athletes", "media", "voices"];
 const relatedSectionTitles = {
+  navigation: "导航栏分级截图",
   banner: "Banner 轮播图",
   "product-showcase": "产品橱窗轮播图",
   "scene-explore": "场景探索轮播图",
@@ -925,9 +926,10 @@ function buildGalleryCards(snapshots) {
 
     cards.push({
       snapshot,
-      relatedShots: [],
+      relatedShots: sortedRelatedShots(relatedShotsFromSnapshot(snapshot)),
       sortTime: timestamp(snapshot.capturedAt),
-      homeGroup: false
+      homeGroup: false,
+      relatedValidation: snapshot.relatedValidation || null
     });
   }
 
@@ -1131,7 +1133,8 @@ function renderRelatedSection(group) {
     const sectionClass = [
       "related-section",
       "related-section-tabbed",
-      group.sectionKey === "product-showcase" ? "related-section-product-showcase" : ""
+      group.sectionKey === "product-showcase" ? "related-section-product-showcase" : "",
+      group.sectionKey === "navigation" ? "related-section-navigation" : ""
     ].filter(Boolean).join(" ");
     return `
       <section class="${sectionClass}">
@@ -1140,9 +1143,7 @@ function renderRelatedSection(group) {
           ${tabGroups.map((tabGroup) => `
             <section class="related-tab-group">
               <p class="related-tab-title">${escapeHtml(tabGroup.title)}</p>
-              ${group.sectionKey === "product-showcase"
-                ? renderProductShowcaseTabShots(tabGroup.shots)
-                : renderRelatedThumbGrid(tabGroup.shots)}
+              ${renderTabbedRelatedShots(group.sectionKey, tabGroup.shots)}
             </section>
           `).join("")}
         </div>
@@ -1155,6 +1156,35 @@ function renderRelatedSection(group) {
       <p class="related-title">${escapeHtml(group.title)}</p>
       ${renderRelatedThumbGrid(group.shots)}
     </section>
+  `;
+}
+
+function renderTabbedRelatedShots(sectionKey, shots) {
+  if (sectionKey === "product-showcase") {
+    return renderProductShowcaseTabShots(shots);
+  }
+  if (sectionKey === "navigation") {
+    return renderNavigationTabShots(shots);
+  }
+  return renderRelatedThumbGrid(shots);
+}
+
+function renderNavigationTabShots(shots) {
+  const primaryShots = shots.filter((shot) => navigationLevelForShot(shot) === "primary");
+  const secondaryShots = shots.filter((shot) => navigationLevelForShot(shot) !== "primary");
+  return `
+    ${primaryShots.length ? `
+      <div class="related-tab-subgroup">
+        <p class="related-subtitle">一级分类</p>
+        ${renderRelatedThumbGrid(primaryShots)}
+      </div>
+    ` : ""}
+    ${secondaryShots.length ? `
+      <div class="related-tab-subgroup">
+        <p class="related-subtitle">二级分类</p>
+        ${renderRelatedThumbGrid(secondaryShots)}
+      </div>
+    ` : ""}
   `;
 }
 
@@ -1215,6 +1245,9 @@ function groupRelatedShotsByTab(shots) {
 }
 
 function relatedThumbLabel(shot) {
+  if (shot.sectionKey === "navigation") {
+    return shot.hoverItemLabel || relatedShotDisplayLabel(shot);
+  }
   if (shot.interactionState === "hover") {
     return `Hover ${shot.hoverItemLabel || relatedShotDisplayLabel(shot)}`;
   }
@@ -1223,6 +1256,10 @@ function relatedThumbLabel(shot) {
     return `第 ${pageIndex} 张`;
   }
   return relatedShotDisplayLabel(shot);
+}
+
+function navigationLevelForShot(shot) {
+  return shot?.navigationLevel || shot?.sectionState?.navigationLevel || "";
 }
 
 function groupRelatedShots(relatedShots) {
@@ -1235,6 +1272,9 @@ function groupRelatedShots(relatedShots) {
         title: shot.sectionTitle || relatedSectionTitles[sectionKey] || shot.sectionLabel || "更多截图",
         shots: []
       });
+      if (sectionKey === "navigation") {
+        groups.get(sectionKey).title = relatedSectionTitles.navigation;
+      }
     }
     groups.get(sectionKey).shots.push(shot);
   }
@@ -1247,6 +1287,16 @@ function relatedWarnings(validation) {
 
 function relatedShotTitle(shot) {
   const pageIndex = relatedShotPageIndex(shot);
+  if (shot.sectionKey === "navigation") {
+    const level = navigationLevelForShot(shot) === "primary" ? "一级分类" : "二级分类";
+    return [
+      shot.sectionLabel,
+      shot.tabLabel,
+      level,
+      shot.hoverItemLabel || relatedShotDisplayLabel(shot),
+      shot.visualAudit?.status === "warning" ? shot.visualAudit.message : ""
+    ].filter(Boolean).join(" · ");
+  }
   if (shot.interactionState === "hover") {
     return [
       shot.sectionLabel,
@@ -1326,6 +1376,9 @@ function normalizeRelatedShot(shot) {
     tabIndex: shot.tabIndex || null,
     pageIndex: shot.pageIndex || null,
     interactionState: shot.interactionState || shot.sectionState?.interactionState || "default",
+    navigationLevel: shot.navigationLevel || shot.sectionState?.navigationLevel || null,
+    topLevelLabel: shot.topLevelLabel || shot.sectionState?.topLevelLabel || null,
+    topLevelIndex: shot.topLevelIndex || shot.sectionState?.topLevelIndex || null,
     hoverItemKey: shot.hoverItemKey || shot.sectionState?.hoverItemKey || null,
     hoverItemLabel: shot.hoverItemLabel || shot.sectionState?.hoverItemLabel || null,
     hoverItemRect: shot.hoverItemRect || shot.sectionState?.hoverItemRect || null,
