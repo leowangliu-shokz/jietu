@@ -19,7 +19,11 @@ const elements = {
   gallery: document.querySelector("#gallery"),
   empty: document.querySelector("#empty"),
   changesList: document.querySelector("#changesList"),
-  changesEmpty: document.querySelector("#changesEmpty")
+  changesEmpty: document.querySelector("#changesEmpty"),
+  imagePreview: document.querySelector("#imagePreview"),
+  imagePreviewImage: document.querySelector("#imagePreviewImage"),
+  imagePreviewCaption: document.querySelector("#imagePreviewCaption"),
+  imagePreviewClose: document.querySelector("#imagePreviewClose")
 };
 
 const homeBannerWindowMs = 5 * 60 * 1000;
@@ -35,6 +39,8 @@ const relatedSectionTitles = {
 
 let state = null;
 let activeTab = "archive";
+let imagePreviewReturnFocus = null;
+let imagePreviewPreviousOverflow = "";
 const selectedDeviceFilters = {
   devices: new Set()
 };
@@ -55,8 +61,12 @@ elements.deviceFilterButton.addEventListener("click", toggleDeviceFilterMenu);
 elements.deviceFilterMenu.addEventListener("change", handleDeviceFilterChange);
 elements.deviceFilterMenu.addEventListener("click", handleDeviceFilterClick);
 elements.gallery.addEventListener("click", handleGalleryClick);
+elements.changesList.addEventListener("click", handleImagePreviewClick);
+elements.imagePreview.addEventListener("click", handleImagePreviewBackdropClick);
+elements.imagePreviewClose.addEventListener("click", closeImagePreview);
 document.addEventListener("click", closeDeviceFilterOnOutsideClick);
 document.addEventListener("keydown", closeDeviceFilterOnEscape);
+document.addEventListener("keydown", closeImagePreviewOnEscape);
 
 function setActiveTab(tabName) {
   activeTab = tabName === "changes" ? "changes" : "archive";
@@ -212,6 +222,70 @@ function closeDeviceFilterOnEscape(event) {
   }
 }
 
+function handleImagePreviewClick(event) {
+  if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+    return;
+  }
+
+  const link = event.target.closest(".shot-main-image, .related-thumb, .change-image");
+  if (!link || !link.href) {
+    return;
+  }
+
+  event.preventDefault();
+  openImagePreview({
+    src: link.href,
+    caption: imagePreviewCaptionForLink(link),
+    trigger: link
+  });
+}
+
+function imagePreviewCaptionForLink(link) {
+  const image = link.querySelector("img");
+  return image?.getAttribute("alt") || link.getAttribute("title") || link.href;
+}
+
+function openImagePreview({ src, caption, trigger }) {
+  imagePreviewReturnFocus = trigger instanceof HTMLElement ? trigger : null;
+  imagePreviewPreviousOverflow = document.body.style.overflow || "";
+  elements.imagePreviewImage.src = src;
+  elements.imagePreviewImage.alt = caption || "图片预览";
+  elements.imagePreviewCaption.textContent = caption || "";
+  elements.imagePreview.hidden = false;
+  elements.imagePreview.setAttribute("aria-hidden", "false");
+  document.body.style.overflow = "hidden";
+  elements.imagePreviewClose.focus();
+}
+
+function closeImagePreview() {
+  if (elements.imagePreview.hidden) {
+    return;
+  }
+
+  elements.imagePreview.hidden = true;
+  elements.imagePreview.setAttribute("aria-hidden", "true");
+  elements.imagePreviewImage.removeAttribute("src");
+  elements.imagePreviewCaption.textContent = "";
+  document.body.style.overflow = imagePreviewPreviousOverflow;
+  const returnFocus = imagePreviewReturnFocus;
+  imagePreviewReturnFocus = null;
+  if (returnFocus?.isConnected) {
+    returnFocus.focus();
+  }
+}
+
+function handleImagePreviewBackdropClick(event) {
+  if (event.target === elements.imagePreview) {
+    closeImagePreview();
+  }
+}
+
+function closeImagePreviewOnEscape(event) {
+  if (event.key === "Escape") {
+    closeImagePreview();
+  }
+}
+
 function handleDeviceFilterClick(event) {
   const action = event.target.closest("[data-filter-action]")?.dataset.filterAction;
   if (action !== "clear") {
@@ -249,6 +323,11 @@ function handleDeviceFilterChange(event) {
 }
 
 function handleGalleryClick(event) {
+  handleImagePreviewClick(event);
+  if (event.defaultPrevented) {
+    return;
+  }
+
   const warning = event.target.closest(".related-warning");
   if (!warning || !elements.gallery.contains(warning)) {
     return;
