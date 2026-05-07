@@ -212,11 +212,27 @@ async function driveCapture(client, url, outputPath, options) {
       viewportHeight: viewport.height,
       stepDelay: options.scrollStepMs ?? 350,
       hideFixedElementsAfterFirstSegment: options.hideFixedElementsAfterFirstSegment !== false,
+      beforeSegmentCapture: () => prepareForScreenshotCapture(client, {
+        rounds: 2,
+        shokzMarketing: shouldCleanShokzMarketing(url, options),
+        guardSearchOverlay: guardShokzSearchOverlay,
+        stage: "before stitched segment screenshot capture"
+      }),
       beforeFirstSegmentCapture: guardShokzSearchOverlay
         ? () => ensureShokzSearchOverlayClosed(client, "before first segment screenshot capture")
         : null
     });
   } else {
+    if (options.captureMode === "shokz-products-nav") {
+      await prepareShokzNavigationMainScreenshot(client, viewport);
+    } else {
+      await prepareForScreenshotCapture(client, {
+        rounds: 2,
+        shokzMarketing: shouldCleanShokzMarketing(url, options),
+        guardSearchOverlay: shouldGuardShokzSearchOverlay(url, viewport, options),
+        stage: "before screenshot capture"
+      });
+    }
     const screenshot = await client.send("Page.captureScreenshot", {
       format: "png",
       fromSurface: true
@@ -254,6 +270,17 @@ async function readPageTitle(client) {
 function shouldGuardShokzSearchOverlay(url, viewport, options = {}) {
   if (viewport.mobile || options.captureMode) {
     return false;
+  }
+  try {
+    return new URL(url).hostname.replace(/^www\./, "") === "shokz.com";
+  } catch {
+    return false;
+  }
+}
+
+function shouldCleanShokzMarketing(url, options = {}) {
+  if (String(options.captureMode || "").startsWith("shokz-")) {
+    return true;
   }
   try {
     return new URL(url).hostname.replace(/^www\./, "") === "shokz.com";
@@ -492,6 +519,7 @@ async function captureShokzProductsNavigationRelated(client, outputPath, viewpor
         hoverItemKey: `secondary:${productsTopItem.index}:${secondaryItem.index}`,
         hoverItemLabel: secondaryItem.label,
         hoverItemRect: secondaryItem.rect || null,
+        hoverPoint: secondaryItem.hoverPoint || null,
         hoverIndex: secondaryItem.index,
         stateLabel: `${productsTopItem.label} / ${secondaryItem.label}`,
         fileId: `top-${productsTopItem.index}-secondary-${secondaryItem.index}-${secondaryItem.label}`,
@@ -527,6 +555,7 @@ async function captureShokzProductsNavigationRelated(client, outputPath, viewpor
       hoverItemKey: `primary:${topItem.index}`,
       hoverItemLabel: topItem.label,
       hoverItemRect: topItem.rect || null,
+      hoverPoint: topItem.hoverPoint || null,
       hoverIndex: 0,
       stateLabel: `Primary ${topItem.label}`,
       fileId: `top-${topItem.index}-${topItem.label}`,
@@ -562,6 +591,7 @@ async function captureShokzProductsNavigationRelated(client, outputPath, viewpor
 }
 
 async function saveShokzNavigationCapture(client, outputPath, viewport, state, context) {
+  await prepareShokzNavigationRelatedScreenshot(client, state);
   const current = await readShokzNavigationSnapshotState(client, state);
   if (!current.ok) {
     context.warnings.push({
@@ -669,6 +699,57 @@ async function saveShokzNavigationCapture(client, outputPath, viewport, state, c
   };
   context.captures.push(capture);
   return true;
+}
+
+async function prepareForScreenshotCapture(client, options = {}) {
+  if (options.shokzMarketing) {
+    await hideShokzMarketingOverlays(client, {
+      rounds: Math.max(3, options.rounds || 2),
+      hideOnly: Boolean(options.hideOnly)
+    });
+  }
+  if (options.dismissObstructions !== false && !options.hideOnly) {
+    await dismissObstructions(client, { rounds: options.rounds || 2 });
+  }
+  if (options.guardSearchOverlay) {
+    await ensureShokzSearchOverlayClosed(client, options.stage || "before screenshot capture");
+  }
+}
+
+async function prepareShokzNavigationMainScreenshot(client, viewport) {
+  await hideShokzMarketingOverlays(client, { rounds: 4, hideOnly: true });
+  const state = await waitForShokzProductsNavigation(client, Boolean(viewport.mobile));
+  if (!state.ok) {
+    await openShokzProductsNavigation(client, viewport);
+  }
+  await sleep(250);
+}
+
+async function prepareShokzNavigationRelatedScreenshot(client, state) {
+  await hideShokzMarketingOverlays(client, { rounds: 4, hideOnly: true });
+  const hoverPoint = state.hoverPoint || pointFromRect(state.hoverItemRect);
+  if (hoverPoint) {
+    await hoverShokzNavigationPoint(client, hoverPoint);
+    await sleep(650);
+    await primeLazyImages(client);
+  }
+}
+
+function pointFromRect(rect) {
+  if (!rect) {
+    return null;
+  }
+  const left = Number(rect.left ?? rect.x);
+  const top = Number(rect.top ?? rect.y);
+  const width = Number(rect.width);
+  const height = Number(rect.height);
+  if (![left, top, width, height].every(Number.isFinite)) {
+    return null;
+  }
+  return {
+    x: Math.round(left + width / 2),
+    y: Math.round(top + height / 2)
+  };
 }
 
 async function readShokzNavigationTopLevelItems(client) {
@@ -1449,6 +1530,11 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
     }
     await dismissObstructions(client, { rounds: 2 });
     await hideFixedElements(client);
+    await prepareForScreenshotCapture(client, {
+      rounds: 2,
+      shokzMarketing: true,
+      stage: `before Shokz banner ${index + 1} screenshot capture`
+    });
     await sleep(150);
 
     const screenshot = await client.send("Page.captureScreenshot", {
@@ -1596,6 +1682,16 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
       continue;
     }
 
+    await prepareForScreenshotCapture(client, {
+      rounds: 2,
+      shokzMarketing: true,
+      stage: `before Shokz ${definition.sectionLabel} screenshot capture`
+    });
+    if (activation?.hoverPoint) {
+      await moveMouseToPoint(client, activation.hoverPoint);
+      await waitForRelatedHoverSettled(client, definition, state);
+      await sleep(120);
+    }
     const screenshot = await client.send("Page.captureScreenshot", {
       format: "png",
       fromSurface: true,
@@ -6060,10 +6156,12 @@ async function hoverShokzProductsMenu(client) {
   await sleep(900);
 }
 
-async function hideShokzMarketingOverlays(client) {
-  for (let round = 0; round < 3; round += 1) {
+async function hideShokzMarketingOverlays(client, options = {}) {
+  const rounds = Math.max(1, Math.min(6, options.rounds ?? 3));
+  for (let round = 0; round < rounds; round += 1) {
     const result = await client.send("Runtime.evaluate", {
       expression: `(() => {
+        const hideOnly = ${options.hideOnly ? "true" : "false"};
         const hidden = [];
         const clicked = [];
         const viewportArea = Math.max(1, window.innerWidth * window.innerHeight);
@@ -6088,10 +6186,15 @@ async function hideShokzMarketingOverlays(client) {
           element.id,
           String(element.className || "")
         ].filter(Boolean).join(" ").replace(/\\s+/g, " ").trim() : "";
-        const marketing = /privacy|cookie|newsletter|subscribe|don't miss|dont miss|great deals|email|phone number|sms|offer|discount|coupon/i;
+        const marketing = /privacy|cookie|newsletter|subscribe|don't miss|dont miss|great deals|email|phone number|sms|offer|discount|coupon|gift|gifts|mom|mother|sale|\\boff\\b|save/i;
         const closeText = /close|dismiss|no thanks|not now|icon-close|\\u00d7|^x$/i;
+        const navPanelSelector = "#menu-drawer, .menu-drawer, .mega-menu__content, .product_mega_menu, .product_mega_menu-wrapper, [class*='mega-menu'], header, nav";
+        const protectsNavigation = (element) => Boolean(
+          element?.closest?.(navPanelSelector) ||
+          element?.querySelector?.(navPanelSelector)
+        );
         const hideElement = (element, reason) => {
-          if (!visible(element) || element.closest?.("#menu-drawer, .menu-drawer")) return false;
+          if (!visible(element) || protectsNavigation(element)) return false;
           element.dataset.pageShotHidden = "true";
           element.style.setProperty("display", "none", "important");
           element.style.setProperty("visibility", "hidden", "important");
@@ -6101,7 +6204,8 @@ async function hideShokzMarketingOverlays(client) {
         };
         const clickElement = (element, reason) => {
           const target = element?.closest?.("button, [role='button'], a, [tabindex]") || element;
-          if (!visible(target) || target.closest?.("#menu-drawer, .menu-drawer")) return false;
+          if (!visible(target) || protectsNavigation(target)) return false;
+          if (hideOnly) return false;
           const link = target.closest?.("a[href]");
           const href = link?.getAttribute("href") || "";
           if (href && href !== "#" && !href.startsWith("#") && !/^javascript:/i.test(href)) return false;
@@ -6115,15 +6219,30 @@ async function hideShokzMarketingOverlays(client) {
         };
         const layers = Array.from(document.querySelectorAll("body *"))
           .filter((element) => {
-            if (!visible(element) || element.closest?.("#menu-drawer, .menu-drawer")) return false;
+            if (!visible(element) || protectsNavigation(element)) return false;
             const rect = element.getBoundingClientRect();
             const style = getComputedStyle(element);
             const area = rect.width * rect.height;
             const zIndex = Number.parseInt(style.zIndex, 10);
             const positioned = ["fixed", "sticky", "absolute"].includes(style.position) || (Number.isFinite(zIndex) && zIndex >= 20);
+            const text = textOf(element);
+            const floatingPromo =
+              positioned &&
+              marketing.test(text) &&
+              area >= 500 &&
+              area <= viewportArea * 0.25 &&
+              rect.width < window.innerWidth * 0.85 &&
+              (
+                rect.bottom >= window.innerHeight - 260 ||
+                rect.top <= 260 ||
+                rect.left <= 320 ||
+                rect.right >= window.innerWidth - 320
+              );
             return positioned &&
-              area >= Math.min(viewportArea * 0.03, 60000) &&
-              marketing.test(textOf(element));
+              (
+                (area >= Math.min(viewportArea * 0.03, 60000) && marketing.test(text)) ||
+                floatingPromo
+              );
           })
           .sort((a, b) => {
             const ar = a.getBoundingClientRect();
@@ -6132,22 +6251,25 @@ async function hideShokzMarketingOverlays(client) {
           });
         for (const layer of layers) {
           const layerRect = layer.getBoundingClientRect();
+          const layerText = textOf(layer);
           const controls = Array.from(layer.querySelectorAll("button, [role='button'], a, [aria-label], [title], svg, [class], [id]"));
           let closed = false;
-          for (const control of controls) {
-            if (!visible(control)) continue;
-            const rect = control.getBoundingClientRect();
-            const text = textOf(control);
-            const nearTopRight = rect.width <= 80 &&
-              rect.height <= 80 &&
-              rect.left >= layerRect.right - Math.max(120, layerRect.width * 0.35) &&
-              rect.top <= layerRect.top + Math.max(120, layerRect.height * 0.35);
-            if (closeText.test(text) || nearTopRight) {
-              closed = clickElement(control, text || "marketing close");
-              if (closed) break;
+          if (!hideOnly) {
+            for (const control of controls) {
+              if (!visible(control)) continue;
+              const rect = control.getBoundingClientRect();
+              const text = textOf(control);
+              const nearTopRight = rect.width <= 80 &&
+                rect.height <= 80 &&
+                rect.left >= layerRect.right - Math.max(120, layerRect.width * 0.35) &&
+                rect.top <= layerRect.top + Math.max(120, layerRect.height * 0.35);
+              if (closeText.test(text) || nearTopRight) {
+                closed = clickElement(control, text || "marketing close");
+                if (closed) break;
+              }
             }
           }
-          if (!closed) {
+          if (!closed && marketing.test(layerText)) {
             hideElement(layer, "marketing overlay");
           }
         }
@@ -6899,6 +7021,9 @@ async function captureStitchedScreenshot(client, outputPath, options) {
     await sleep(160);
     if (index === 0 && typeof options.beforeFirstSegmentCapture === "function") {
       await options.beforeFirstSegmentCapture();
+    }
+    if (typeof options.beforeSegmentCapture === "function") {
+      await options.beforeSegmentCapture(index);
     }
     const segmentHeight = Math.min(viewportHeight, height - y);
     const screenshot = await client.send("Page.captureScreenshot", {
