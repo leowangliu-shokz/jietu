@@ -931,6 +931,155 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
           subheader: item.subheader
         }))) : "";
       };
+      const scenePanel = (root) =>
+        [root, ...root.querySelectorAll(".swiper, [class*='swiper']")]
+          .filter((element) => visible(element) && element.querySelector(".swiper-slide, [class*='swiper-slide']"))
+          .map((element) => {
+            const rect = element.getBoundingClientRect();
+            const text = textOf(element, 2400);
+            const hits = (definition.anchors || []).filter((anchor) => text.includes(anchor)).length;
+            const className = classText(element);
+            const score = hits * 1000 +
+              Number(/scene|swiper|carousel|slider/i.test(className)) * 80 +
+              Math.min(rect.width * rect.height / 1000, 500);
+            return { element, rect, score };
+          })
+          .sort((a, b) => b.score - a.score || b.rect.width * b.rect.height - a.rect.width * a.rect.height)[0]?.element || root;
+      const sceneImageFamily = (source) => {
+        const first = String(source || "").split(",")[0].trim().split(/\s+/)[0];
+        if (!first) return "";
+        try {
+          const url = new URL(first, window.location.href);
+          return decodeURIComponent(url.pathname.split("/").filter(Boolean).pop() || "")
+            .toLowerCase()
+            .replace(/\.(avif|webp|png|jpe?g|gif|svg)$/i, "")
+            .replace(/@[\dx]+$/i, "")
+            .replace(/[-_]\d{2,5}w$/i, "")
+            .replace(/[-_]\d+x\d+$/i, "")
+            .replace(/^m[-_]/i, "")
+            .replace(/[-_](mb|mobile|desktop|pc)$/i, "");
+        } catch {
+          return first.toLowerCase();
+        }
+      };
+      const sceneTitle = (slide) => {
+        const text = textOf(slide, 500);
+        const anchor = (definition.anchors || []).find((item) => text.includes(item));
+        return anchor || cleanText(slide.querySelector("h1, h2, h3, h4, [class*='title']")?.innerText || text, 120);
+      };
+      const sceneDescription = (slide, title) => {
+        const text = textOf(slide, 500).replace(title || "", "").replace(/\bLearn More\b/ig, "").trim();
+        return cleanText(slide.querySelector("p, [class*='desc'], [class*='content']")?.innerText || text, 160);
+      };
+      const sceneItems = (root, options = {}) => {
+        const panel = scenePanel(root);
+        const rootRect = root.getBoundingClientRect();
+        const panelRect = panel.getBoundingClientRect();
+        const rootCenterX = rootRect.left + rootRect.width / 2;
+        const slides = Array.from(panel.querySelectorAll(".swiper-slide, [class*='swiper-slide']"))
+          .filter(visible)
+          .map((slide, domIndex) => {
+            const rect = slide.getBoundingClientRect();
+            const area = Math.max(1, rect.width * rect.height);
+            const visibleArea = intersects(rect, rootRect);
+            const title = sceneTitle(slide);
+            const description = sceneDescription(slide, title);
+            const href = Array.from(slide.querySelectorAll("a[href]")).map(productHref).filter(Boolean)[0] || "";
+            const image = imageSources(slide)[0] || "";
+            const imageFamily = sceneImageFamily(image);
+            const rawSlideIndex = Number(slide.getAttribute("data-swiper-slide-index"));
+            const slideIndex = Number.isFinite(rawSlideIndex) ? rawSlideIndex : null;
+            const anchorIndex = (definition.anchors || []).indexOf(title);
+            const position = slidePosition(slide);
+            const order = anchorIndex >= 0
+              ? anchorIndex
+              : (Number.isFinite(slideIndex) ? slideIndex : (Number(position.index) || domIndex));
+            const key = [
+              title || "",
+              href ? "href:" + href : "",
+              imageFamily ? "img:" + imageFamily : "",
+              !title && !href && !imageFamily ? "dom:" + order : ""
+            ].filter(Boolean).join("|");
+            const clippedLeft = Math.max(rect.left, rootRect.left);
+            const clippedTop = Math.max(rect.top, rootRect.top);
+            const clippedRight = Math.min(rect.right, rootRect.right);
+            const clippedBottom = Math.min(rect.bottom, rootRect.bottom);
+            const centerX = rect.left + rect.width / 2;
+            const activeScore = Number(/swiper-slide-active|active|current/i.test(classText(slide))) * 10000 +
+              visibleArea -
+              Math.abs(centerX - rootCenterX) * 3;
+            return {
+              sceneItemId: key,
+              key,
+              label: title || "场景 " + (order + 1),
+              title,
+              description,
+              href,
+              image,
+              imageFamily,
+              slideIndex,
+              order,
+              rect,
+              visibleArea,
+              visibleRatio: visibleArea / area,
+              centerY: rect.top + rect.height / 2,
+              activeScore,
+              rectRelative: {
+                x: Math.round(Math.max(0, clippedLeft - rootRect.left)),
+                y: Math.round(Math.max(0, clippedTop - rootRect.top)),
+                width: Math.round(Math.max(0, clippedRight - clippedLeft)),
+                height: Math.round(Math.max(0, clippedBottom - clippedTop))
+              }
+            };
+          })
+          .filter((item) =>
+            item.key &&
+            item.rect.width >= 180 &&
+            item.rect.height >= 120 &&
+            item.centerY >= panelRect.top - 40 &&
+            item.centerY <= panelRect.bottom + 40 &&
+            (!options.visibleOnly || (
+              item.visibleArea > 600 &&
+              item.visibleRatio >= 0.2 &&
+              item.rect.right > rootRect.left + 12 &&
+              item.rect.left < rootRect.right - 12
+            ))
+          );
+        const bestByKey = new Map();
+        for (const item of slides) {
+          const existing = bestByKey.get(item.key);
+          if (!existing || item.activeScore > existing.activeScore || item.visibleArea > existing.visibleArea) {
+            bestByKey.set(item.key, item);
+          }
+        }
+        return [...bestByKey.values()]
+          .sort((a, b) => a.order - b.order || a.rect.left - b.rect.left)
+          .map((item) => ({
+            sceneItemId: item.sceneItemId,
+            key: item.key,
+            label: item.label,
+            title: item.title,
+            description: item.description,
+            href: item.href,
+            image: item.image,
+            imageFamily: item.imageFamily,
+            slideIndex: item.slideIndex,
+            order: item.order,
+            rect: item.rectRelative,
+            activeScore: item.activeScore
+          }));
+      };
+      const sceneActiveItem = (root) =>
+        sceneItems(root, { visibleOnly: true })
+          .sort((a, b) => b.activeScore - a.activeScore || a.order - b.order)[0] || null;
+      const sceneWindowSignature = (root) => {
+        const active = sceneActiveItem(root);
+        const items = sceneItems(root, { visibleOnly: true });
+        return active && items.length ? JSON.stringify({
+          active: active.key,
+          visible: items.map((item) => item.key)
+        }) : "";
+      };
       const mediaTrackDefinitions = [
         {
           key: "pioneer",
@@ -1136,6 +1285,9 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
       const pageSignature = (root) => {
         if (definition.key === "product-showcase") {
           return productCardSignature(root) || visibleSignature(root);
+        }
+        if (definition.key === "scene-explore") {
+          return sceneWindowSignature(root) || visibleSignature(root);
         }
         if (definition.key === "athletes") {
           return athleteWindowSignature(root) || visibleSignature(root);
@@ -1510,6 +1662,130 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
         await sleep(420);
         return true;
       };
+      const activeSceneSwiper = (root) => {
+        const panel = scenePanel(root);
+        const panelSwiper = panel?.swiper;
+        if (panelSwiper) return panelSwiper;
+        return activeSwipers(root).find((swiper) => {
+          const element = swiper.el || swiper.wrapperEl?.parentElement;
+          return !element || element === panel || panel.contains(element) || element.contains(panel);
+        }) || null;
+      };
+      const activateSceneItem = async (root, item, fallbackIndex) => {
+        const swiper = activeSceneSwiper(root);
+        const targetIndex = Number.isFinite(Number(item?.slideIndex))
+          ? Number(item.slideIndex)
+          : Number(fallbackIndex || 0);
+        if (swiper) {
+          if (swiper.autoplay?.stop) swiper.autoplay.stop();
+          if (typeof swiper.slideToLoop === "function") {
+            swiper.slideToLoop(targetIndex, 0, false);
+          } else if (typeof swiper.slideTo === "function") {
+            swiper.slideTo(targetIndex, 0, false);
+          } else {
+            return false;
+          }
+          if (typeof swiper.update === "function") swiper.update();
+          await sleep(420);
+          return true;
+        }
+        if (fallbackIndex === 0) {
+          resetCarousel(root);
+          await sleep(420);
+          return true;
+        }
+        if (clickPageBullet(root, fallbackIndex + 1)) {
+          await sleep(450);
+          return true;
+        }
+        return false;
+      };
+      const collectScenePages = async (root, states) => {
+        resetCarousel(root);
+        await sleep(500);
+
+        const allItems = sceneItems(root);
+        const firstWindowItems = sceneItems(root, { visibleOnly: true });
+        const firstWindowSignature = sceneWindowSignature(root);
+        if (!allItems.length || !firstWindowItems.length || !firstWindowSignature) {
+          warnings.push({
+            sectionKey: definition.key,
+            sectionLabel: definition.sectionLabel,
+            stateLabel: definition.labelPrefix || "场景",
+            message: "Could not read visible scene exploration slides."
+          });
+          return;
+        }
+
+        const seen = new Set();
+        for (const [index, item] of allItems.entries()) {
+          const activated = await activateSceneItem(root, item, index);
+          if (!activated && index > 0) {
+            const before = sceneWindowSignature(root);
+            const moved = await advance(root);
+            const after = sceneWindowSignature(root);
+            if (!moved || !after || after === before) {
+              warnings.push({
+                sectionKey: definition.key,
+                sectionLabel: definition.sectionLabel,
+                stateLabel: (definition.labelPrefix || "场景") + " " + (index + 1),
+                message: "Could not activate scene exploration slide " + (item.label || index + 1) + "."
+              });
+              continue;
+            }
+          }
+
+          const visibleItems = sceneItems(root, { visibleOnly: true });
+          const activeItem = sceneActiveItem(root);
+          const signature = sceneWindowSignature(root);
+          if (!signature || !activeItem) {
+            warnings.push({
+              sectionKey: definition.key,
+              sectionLabel: definition.sectionLabel,
+              stateLabel: (definition.labelPrefix || "场景") + " " + (index + 1),
+              message: "Could not verify scene exploration slide " + (item.label || index + 1) + "."
+            });
+            continue;
+          }
+          if (seen.has(signature)) {
+            warnings.push({
+              sectionKey: definition.key,
+              sectionLabel: definition.sectionLabel,
+              stateLabel: (definition.labelPrefix || "场景") + " " + (index + 1),
+              message: "Scene exploration slide " + (item.label || index + 1) + " looked duplicated and was skipped."
+            });
+            continue;
+          }
+          seen.add(signature);
+
+          const pageIndex = states.length + 1;
+          const label = (definition.labelPrefix || "场景") + " " + pageIndex;
+          states.push({
+            kind: "carousel",
+            sectionKey: definition.key,
+            sectionLabel: definition.sectionLabel,
+            tabLabel: "",
+            tabIndex: null,
+            pageIndex,
+            stateIndex: states.length + 1,
+            stateLabel: label,
+            logicalSignature: definition.key + "|" + activeItem.key + "|" + signature,
+            windowSignature: signature,
+            itemCount: allItems.length,
+            visibleItemCount: visibleItems.length,
+            visibleItems,
+            itemRects: visibleItems.map((visibleItem) => ({
+              sceneItemId: visibleItem.sceneItemId,
+              key: visibleItem.key,
+              label: visibleItem.label,
+              rect: visibleItem.rect
+            })),
+            activeItemKey: activeItem.key,
+            fileId: "state-" + pageIndex,
+            isDefaultState: pageIndex === 1
+          });
+        }
+      };
       const collectProductPages = async (root, tabLabel, tabIndex, states) => {
         const clicked = clickProductTab(root, tabLabel);
         await sleep(700);
@@ -1740,6 +2016,10 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
         }
       };
       const collectPages = async (root, tabLabel, tabIndex, states, warnings, knownTabFirstSignatures) => {
+        if (definition.key === "scene-explore") {
+          await collectScenePages(root, states);
+          return;
+        }
         if (definition.key === "product-showcase") {
           await collectProductPages(root, tabLabel, tabIndex, states);
           return;
@@ -2096,6 +2376,129 @@ async function activateShokzHomeRelatedState(client, definition, state) {
           title: item.title,
           subheader: item.subheader
         }))) : "";
+      };
+      const scenePanel = () =>
+        [root, ...root.querySelectorAll(".swiper, [class*='swiper']")]
+          .filter((element) => visible(element) && element.querySelector(".swiper-slide, [class*='swiper-slide']"))
+          .map((element) => {
+            const rect = element.getBoundingClientRect();
+            const text = textOf(element, 1600);
+            const hits = (definition.anchors || []).filter((anchor) => text.includes(anchor)).length;
+            const score = hits * 1000 + Math.min(rect.width * rect.height / 1000, 500);
+            return { element, rect, score };
+          })
+          .sort((a, b) => b.score - a.score || b.rect.width * b.rect.height - a.rect.width * a.rect.height)[0]?.element || root;
+      const sceneImageFamily = (source) => {
+        const first = String(source || "").split(",")[0].trim().split(/\s+/)[0];
+        if (!first) return "";
+        try {
+          const url = new URL(first, window.location.href);
+          return decodeURIComponent(url.pathname.split("/").filter(Boolean).pop() || "")
+            .toLowerCase()
+            .replace(/\.(avif|webp|png|jpe?g|gif|svg)$/i, "")
+            .replace(/@[\dx]+$/i, "")
+            .replace(/[-_]\d{2,5}w$/i, "")
+            .replace(/[-_]\d+x\d+$/i, "")
+            .replace(/^m[-_]/i, "")
+            .replace(/[-_](mb|mobile|desktop|pc)$/i, "");
+        } catch {
+          return first.toLowerCase();
+        }
+      };
+      const sceneTitle = (slide) => {
+        const text = textOf(slide, 500);
+        return (definition.anchors || []).find((item) => text.includes(item)) ||
+          cleanText(slide.querySelector("h1, h2, h3, h4, [class*='title']")?.innerText || text, 120);
+      };
+      const sceneItems = () => {
+        const panel = scenePanel();
+        const rootRect = root.getBoundingClientRect();
+        const panelRect = panel.getBoundingClientRect();
+        const rootCenterX = rootRect.left + rootRect.width / 2;
+        const slides = Array.from(panel.querySelectorAll(".swiper-slide, [class*='swiper-slide']"))
+          .filter(visible)
+          .map((slide, domIndex) => {
+            const rect = slide.getBoundingClientRect();
+            const area = Math.max(1, rect.width * rect.height);
+            const visibleArea = intersects(rect, rootRect);
+            const title = sceneTitle(slide);
+            const href = Array.from(slide.querySelectorAll("a[href]")).map(productHref).filter(Boolean)[0] || "";
+            const image = imageSources(slide)[0] || "";
+            const imageFamily = sceneImageFamily(image);
+            const rawSlideIndex = Number(slide.getAttribute("data-swiper-slide-index"));
+            const slideIndex = Number.isFinite(rawSlideIndex) ? rawSlideIndex : null;
+            const anchorIndex = (definition.anchors || []).indexOf(title);
+            const position = slidePosition(slide);
+            const order = anchorIndex >= 0
+              ? anchorIndex
+              : (Number.isFinite(slideIndex) ? slideIndex : (Number(position.index) || domIndex));
+            const key = [
+              title || "",
+              href ? "href:" + href : "",
+              imageFamily ? "img:" + imageFamily : "",
+              !title && !href && !imageFamily ? "dom:" + order : ""
+            ].filter(Boolean).join("|");
+            const centerX = rect.left + rect.width / 2;
+            const activeScore = Number(/swiper-slide-active|active|current/i.test(classText(slide))) * 10000 +
+              visibleArea -
+              Math.abs(centerX - rootCenterX) * 3;
+            return {
+              key,
+              label: title || "场景 " + (order + 1),
+              title,
+              href,
+              image,
+              imageFamily,
+              slideIndex,
+              order,
+              rect,
+              visibleArea,
+              visibleRatio: visibleArea / area,
+              centerY: rect.top + rect.height / 2,
+              activeScore
+            };
+          })
+          .filter((item) =>
+            item.key &&
+            item.rect.width >= 180 &&
+            item.rect.height >= 120 &&
+            item.visibleArea > 600 &&
+            item.visibleRatio >= 0.2 &&
+            item.rect.right > rootRect.left + 12 &&
+            item.rect.left < rootRect.right - 12 &&
+            item.centerY >= panelRect.top - 40 &&
+            item.centerY <= panelRect.bottom + 40
+          );
+        const bestByKey = new Map();
+        for (const item of slides) {
+          const existing = bestByKey.get(item.key);
+          if (!existing || item.activeScore > existing.activeScore || item.visibleArea > existing.visibleArea) {
+            bestByKey.set(item.key, item);
+          }
+        }
+        return [...bestByKey.values()]
+          .sort((a, b) => a.order - b.order || a.rect.left - b.rect.left)
+          .map((item) => ({
+            key: item.key,
+            label: item.label,
+            title: item.title,
+            href: item.href,
+            image: item.image,
+            imageFamily: item.imageFamily,
+            slideIndex: item.slideIndex,
+            order: item.order,
+            activeScore: item.activeScore
+          }));
+      };
+      const sceneActiveItem = () =>
+        sceneItems().sort((a, b) => b.activeScore - a.activeScore || a.order - b.order)[0] || null;
+      const sceneWindowSignature = () => {
+        const active = sceneActiveItem();
+        const items = sceneItems();
+        return active && items.length ? JSON.stringify({
+          active: active.key,
+          visible: items.map((item) => item.key)
+        }) : "";
       };
       const mediaTrackDefinitions = [
         { key: "pioneer", label: "Shokz | Open-Ear Audio Pioneer", selector: ".co-number-swiper", rootSelector: ".co-number-box-banner, section, .shopify-section" },
@@ -2522,6 +2925,34 @@ async function activateShokzHomeRelatedState(client, definition, state) {
         await sleep(420);
         return true;
       };
+      const activeSceneSwiper = () => {
+        const panel = scenePanel();
+        if (panel?.swiper) return panel.swiper;
+        return activeSwipers().find((swiper) => {
+          const element = swiper.el || swiper.wrapperEl?.parentElement;
+          return !element || element === panel || panel.contains(element) || element.contains(panel);
+        }) || null;
+      };
+      const activateSceneItem = async (item, fallbackIndex) => {
+        const swiper = activeSceneSwiper();
+        const targetIndex = Number.isFinite(Number(item?.slideIndex))
+          ? Number(item.slideIndex)
+          : Number(fallbackIndex || 0);
+        if (!swiper) {
+          return false;
+        }
+        if (swiper.autoplay?.stop) swiper.autoplay.stop();
+        if (typeof swiper.slideToLoop === "function") {
+          swiper.slideToLoop(targetIndex, 0, false);
+        } else if (typeof swiper.slideTo === "function") {
+          swiper.slideTo(targetIndex, 0, false);
+        } else {
+          return false;
+        }
+        if (typeof swiper.update === "function") swiper.update();
+        await sleep(420);
+        return true;
+      };
       return (async () => {
         root.scrollIntoView({ block: "center", inline: "nearest" });
         await sleep(260);
@@ -2554,6 +2985,37 @@ async function activateShokzHomeRelatedState(client, definition, state) {
             if (!moved || !after || after === before) break;
           }
           return { ok: false, reason: "Could not activate media window " + state.stateLabel + "." };
+        }
+        if (definition.key === "scene-explore") {
+          resetCarousel();
+          await sleep(450);
+          const targetSignature = state.windowSignature || "";
+          const allItems = sceneItems();
+          const targetItem = allItems.find((item) => item.key === state.activeItemKey) ||
+            allItems[Math.max(0, Number(state.pageIndex || 1) - 1)] ||
+            null;
+          if (targetItem) {
+            await activateSceneItem(targetItem, Number(state.pageIndex || 1) - 1);
+          }
+          const maxAttempts = Math.max(8, Number(state.itemCount || allItems.length || 0) + 3);
+          for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+            const currentSignature = sceneWindowSignature();
+            if (targetSignature && currentSignature === targetSignature) {
+              root.scrollIntoView({ block: "center", inline: "nearest" });
+              await sleep(260);
+              return { ok: true };
+            }
+            if (!targetSignature && attempt >= Math.max(0, Number(state.pageIndex || 1) - 1)) {
+              root.scrollIntoView({ block: "center", inline: "nearest" });
+              await sleep(260);
+              return { ok: true };
+            }
+            const before = currentSignature;
+            const moved = await advance();
+            const after = sceneWindowSignature();
+            if (!moved || !after || after === before) break;
+          }
+          return { ok: false, reason: "Could not activate scene exploration window " + state.stateLabel + "." };
         }
         if (isTabbedCardSection) {
           if (state.tabLabel) {
@@ -2834,6 +3296,152 @@ async function readShokzHomeRelatedState(client, definition, state) {
         }
         return deduped.length ? JSON.stringify(deduped) : "";
       };
+      const scenePanel = (root) =>
+        [root, ...root.querySelectorAll(".swiper, [class*='swiper']")]
+          .filter((element) => visible(element) && element.querySelector(".swiper-slide, [class*='swiper-slide']"))
+          .map((element) => {
+            const rect = element.getBoundingClientRect();
+            const text = cleanText([element.innerText, element.textContent].filter(Boolean).join(" "), 1600);
+            const hits = (definition.anchors || []).filter((anchor) => text.includes(anchor)).length;
+            const score = hits * 1000 + Math.min(rect.width * rect.height / 1000, 500);
+            return { element, rect, score };
+          })
+          .sort((a, b) => b.score - a.score || b.rect.width * b.rect.height - a.rect.width * a.rect.height)[0]?.element || root;
+      const sceneImageFamily = (source) => {
+        const first = String(source || "").split(",")[0].trim().split(/\s+/)[0];
+        if (!first) return "";
+        try {
+          const url = new URL(first, window.location.href);
+          return decodeURIComponent(url.pathname.split("/").filter(Boolean).pop() || "")
+            .toLowerCase()
+            .replace(/\.(avif|webp|png|jpe?g|gif|svg)$/i, "")
+            .replace(/@[\dx]+$/i, "")
+            .replace(/[-_]\d{2,5}w$/i, "")
+            .replace(/[-_]\d+x\d+$/i, "")
+            .replace(/^m[-_]/i, "")
+            .replace(/[-_](mb|mobile|desktop|pc)$/i, "");
+        } catch {
+          return first.toLowerCase();
+        }
+      };
+      const sceneTitle = (slide) => {
+        const text = cleanText([slide.innerText, slide.textContent].filter(Boolean).join(" "), 500);
+        return (definition.anchors || []).find((item) => text.includes(item)) ||
+          cleanText(slide.querySelector("h1, h2, h3, h4, [class*='title']")?.innerText || text, 120);
+      };
+      const sceneDescription = (slide, title) => {
+        const text = cleanText([slide.innerText, slide.textContent].filter(Boolean).join(" "), 500)
+          .replace(title || "", "")
+          .replace(/\bLearn More\b/ig, "")
+          .trim();
+        return cleanText(slide.querySelector("p, [class*='desc'], [class*='content']")?.innerText || text, 160);
+      };
+      const sceneItems = (root) => {
+        const panel = scenePanel(root);
+        const rootRect = root.getBoundingClientRect();
+        const panelRect = panel.getBoundingClientRect();
+        const rootCenterX = rootRect.left + rootRect.width / 2;
+        const slides = Array.from(panel.querySelectorAll(".swiper-slide, [class*='swiper-slide']"))
+          .filter(visible)
+          .map((slide, domIndex) => {
+            const rect = slide.getBoundingClientRect();
+            const area = Math.max(1, rect.width * rect.height);
+            const visibleArea = intersects(rect, rootRect);
+            const title = sceneTitle(slide);
+            const description = sceneDescription(slide, title);
+            const link = Array.from(slide.querySelectorAll("a[href]")).map(productHref).filter(Boolean)[0] || "";
+            const image = imageSourcesForElement(slide)[0] || "";
+            const imageFamily = sceneImageFamily(image);
+            const rawSlideIndex = Number(slide.getAttribute("data-swiper-slide-index"));
+            const slideIndex = Number.isFinite(rawSlideIndex) ? rawSlideIndex : null;
+            const anchorIndex = (definition.anchors || []).indexOf(title);
+            const position = slidePosition(slide);
+            const order = anchorIndex >= 0
+              ? anchorIndex
+              : (Number.isFinite(slideIndex) ? slideIndex : (Number(position.index) || domIndex));
+            const key = [
+              title || "",
+              link ? "href:" + link : "",
+              imageFamily ? "img:" + imageFamily : "",
+              !title && !link && !imageFamily ? "dom:" + order : ""
+            ].filter(Boolean).join("|");
+            const clippedLeft = Math.max(rect.left, rootRect.left);
+            const clippedTop = Math.max(rect.top, rootRect.top);
+            const clippedRight = Math.min(rect.right, rootRect.right);
+            const clippedBottom = Math.min(rect.bottom, rootRect.bottom);
+            const centerX = rect.left + rect.width / 2;
+            const activeScore = Number(/swiper-slide-active|active|current/i.test(classText(slide))) * 10000 +
+              visibleArea -
+              Math.abs(centerX - rootCenterX) * 3;
+            return {
+              sceneItemId: key,
+              key,
+              label: title || "场景 " + (order + 1),
+              title,
+              description,
+              href: link,
+              image,
+              imageFamily,
+              slideIndex,
+              order,
+              rect,
+              visibleArea,
+              visibleRatio: visibleArea / area,
+              centerY: rect.top + rect.height / 2,
+              activeScore,
+              rectRelative: {
+                x: Math.round(Math.max(0, clippedLeft - rootRect.left)),
+                y: Math.round(Math.max(0, clippedTop - rootRect.top)),
+                width: Math.round(Math.max(0, clippedRight - clippedLeft)),
+                height: Math.round(Math.max(0, clippedBottom - clippedTop))
+              }
+            };
+          })
+          .filter((item) =>
+            item.key &&
+            item.rect.width >= 180 &&
+            item.rect.height >= 120 &&
+            item.visibleArea > 600 &&
+            item.visibleRatio >= 0.2 &&
+            item.rect.right > rootRect.left + 12 &&
+            item.rect.left < rootRect.right - 12 &&
+            item.centerY >= panelRect.top - 40 &&
+            item.centerY <= panelRect.bottom + 40
+          );
+        const bestByKey = new Map();
+        for (const item of slides) {
+          const existing = bestByKey.get(item.key);
+          if (!existing || item.activeScore > existing.activeScore || item.visibleArea > existing.visibleArea) {
+            bestByKey.set(item.key, item);
+          }
+        }
+        return [...bestByKey.values()]
+          .sort((a, b) => a.order - b.order || a.rect.left - b.rect.left)
+          .map((item) => ({
+            sceneItemId: item.sceneItemId,
+            key: item.key,
+            label: item.label,
+            title: item.title,
+            description: item.description,
+            href: item.href,
+            image: item.image,
+            imageFamily: item.imageFamily,
+            slideIndex: item.slideIndex,
+            order: item.order,
+            rect: item.rectRelative,
+            activeScore: item.activeScore
+          }));
+      };
+      const sceneActiveItem = (root) =>
+        sceneItems(root).sort((a, b) => b.activeScore - a.activeScore || a.order - b.order)[0] || null;
+      const sceneWindowSignature = (root) => {
+        const active = sceneActiveItem(root);
+        const items = sceneItems(root);
+        return active && items.length ? JSON.stringify({
+          active: active.key,
+          visible: items.map((item) => item.key)
+        }) : "";
+      };
       const mediaTrackDefinitions = [
         { key: "pioneer", label: "Shokz | Open-Ear Audio Pioneer", selector: ".co-number-swiper", rootSelector: ".co-number-box-banner, section, .shopify-section" },
         { key: "awards", label: "Sports partnership & Awards", selector: ".co-brand-swiper-left", rootSelector: ".co-brand-box" },
@@ -3078,11 +3686,19 @@ async function readShokzHomeRelatedState(client, definition, state) {
         height: rootRect.height
       };
       const productSignature = definition.key === "product-showcase" ? productCardSignature(root) : "";
+      const sceneSignature = definition.key === "scene-explore" ? sceneWindowSignature(root) : "";
+      const sceneVisibleItems = definition.key === "scene-explore" ? sceneItems(root) : [];
       const athleteSignature = definition.key === "athletes" ? athleteWindowSignature(root) : "";
       if (definition.key === "product-showcase" && state.windowSignature && productSignature !== state.windowSignature) {
         return {
           ok: false,
           reason: "Visible products did not match planned product showcase window " + state.stateLabel + "."
+        };
+      }
+      if (definition.key === "scene-explore" && state.windowSignature && sceneSignature !== state.windowSignature) {
+        return {
+          ok: false,
+          reason: "Visible scene exploration slides did not match planned scene window " + state.stateLabel + "."
         };
       }
       if (definition.key === "athletes" && state.windowSignature && athleteSignature !== state.windowSignature) {
@@ -3099,8 +3715,18 @@ async function readShokzHomeRelatedState(client, definition, state) {
         images,
         logicalSignature: definition.key === "product-showcase"
           ? productSignature || state.logicalSignature
-          : (definition.key === "athletes" ? athleteSignature || state.logicalSignature : state.logicalSignature),
-        activeIndex: state.stateIndex
+          : (definition.key === "scene-explore"
+            ? sceneSignature || state.logicalSignature
+            : (definition.key === "athletes" ? athleteSignature || state.logicalSignature : state.logicalSignature)),
+        activeIndex: state.stateIndex,
+        visibleItemCount: sceneVisibleItems.length || null,
+        visibleItems: sceneVisibleItems.length ? sceneVisibleItems : null,
+        itemRects: sceneVisibleItems.length ? sceneVisibleItems.map((item) => ({
+          sceneItemId: item.sceneItemId,
+          key: item.key,
+          label: item.label,
+          rect: item.rect
+        })) : null
       };
     })()`,
     returnByValue: true
