@@ -93,6 +93,7 @@ async function driveCapture(client, url, outputPath, options) {
     ok: false,
     checks: []
   };
+  const cleanShokzKnownPopups = shouldCleanShokzKnownPopups(url, options);
   const deferShokzMobileNavDismiss = options.captureMode === "shokz-products-nav" && Boolean(viewport.mobile);
   let stage = "initializing";
   try {
@@ -122,7 +123,11 @@ async function driveCapture(client, url, outputPath, options) {
   await sleep(options.waitAfterLoadMs ?? 2500);
   await verifyCurrentUrl(client, url, "after navigation", urlCheck);
   if (options.dismissPopups !== false && !deferShokzMobileNavDismiss) {
-    await dismissObstructions(client);
+    if (cleanShokzKnownPopups) {
+      await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 3 });
+    } else {
+      await dismissObstructions(client);
+    }
     if (shouldGuardShokzSearchOverlay(url, viewport, options)) {
       await ensureShokzSearchOverlayClosed(client, "after dismissing popups");
     }
@@ -133,7 +138,7 @@ async function driveCapture(client, url, outputPath, options) {
     stage = "opening Shokz products navigation";
     await openShokzProductsNavigation(client, viewport);
     if (deferShokzMobileNavDismiss) {
-      await hideShokzMarketingOverlays(client);
+      await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 3, hideOnly: true });
     }
     await verifyCurrentUrl(client, url, "after opening Shokz products navigation", urlCheck);
   }
@@ -180,7 +185,11 @@ async function driveCapture(client, url, outputPath, options) {
       await ensureShokzSearchOverlayClosed(client, "after lazy-load scrolling");
     }
     if (options.dismissPopups !== false) {
-      await dismissObstructions(client);
+      if (cleanShokzKnownPopups) {
+        await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 3 });
+      } else {
+        await dismissObstructions(client);
+      }
       if (shouldGuardShokzSearchOverlay(url, viewport, options)) {
         await ensureShokzSearchOverlayClosed(client, "after post-scroll popup cleanup");
       }
@@ -211,10 +220,11 @@ async function driveCapture(client, url, outputPath, options) {
       height: clipHeight,
       viewportHeight: viewport.height,
       stepDelay: options.scrollStepMs ?? 350,
+      dismissObstructionsBeforeSegment: !cleanShokzKnownPopups,
       hideFixedElementsAfterFirstSegment: options.hideFixedElementsAfterFirstSegment !== false,
       beforeSegmentCapture: () => prepareForScreenshotCapture(client, {
         rounds: 2,
-        shokzMarketing: shouldCleanShokzMarketing(url, options),
+        shokzKnownPopups: cleanShokzKnownPopups,
         guardSearchOverlay: guardShokzSearchOverlay,
         stage: "before stitched segment screenshot capture"
       }),
@@ -228,7 +238,7 @@ async function driveCapture(client, url, outputPath, options) {
     } else {
       await prepareForScreenshotCapture(client, {
         rounds: 2,
-        shokzMarketing: shouldCleanShokzMarketing(url, options),
+        shokzKnownPopups: cleanShokzKnownPopups,
         guardSearchOverlay: shouldGuardShokzSearchOverlay(url, viewport, options),
         stage: "before screenshot capture"
       });
@@ -278,7 +288,7 @@ function shouldGuardShokzSearchOverlay(url, viewport, options = {}) {
   }
 }
 
-function shouldCleanShokzMarketing(url, options = {}) {
+function shouldCleanShokzKnownPopups(url, options = {}) {
   if (String(options.captureMode || "").startsWith("shokz-")) {
     return true;
   }
@@ -427,7 +437,7 @@ async function captureShokzHomeRelated(client, outputPath, viewport) {
 async function captureShokzProductsNavigationRelated(client, outputPath, viewport) {
   await scrollTo(client, 0);
   await sleep(700);
-  await hideShokzMarketingOverlays(client);
+  await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 3, hideOnly: true });
 
   if (viewport.mobile) {
     return {
@@ -591,8 +601,13 @@ async function captureShokzProductsNavigationRelated(client, outputPath, viewpor
 }
 
 async function saveShokzNavigationCapture(client, outputPath, viewport, state, context) {
-  await prepareShokzNavigationRelatedScreenshot(client, state);
-  const current = await readShokzNavigationSnapshotState(client, state);
+  await prepareShokzNavigationRelatedScreenshot(client, state, viewport);
+  let current = await readShokzNavigationSnapshotState(client, state);
+  if (!current.ok) {
+    await restoreShokzNavigationHover(client, state, viewport);
+    await sleep(700);
+    current = await readShokzNavigationSnapshotState(client, state);
+  }
   if (!current.ok) {
     context.warnings.push({
       sectionKey: "navigation",
@@ -601,6 +616,47 @@ async function saveShokzNavigationCapture(client, outputPath, viewport, state, c
       message: current.reason || `Could not read navigation state ${state.stateLabel}.`
     });
     return false;
+  }
+
+  const cleanup = await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 4, hideOnly: true });
+  if (!cleanup.ok) {
+    context.warnings.push({
+      sectionKey: "navigation",
+      sectionLabel: "Navigation",
+      stateLabel: state.stateLabel,
+      message: `Known popup remained before screenshot: ${formatKnownPopupRemaining(cleanup)}.`
+    });
+    return false;
+  }
+  await restoreShokzNavigationHover(client, state, viewport);
+  current = await readShokzNavigationSnapshotState(client, state);
+  if (!current.ok) {
+    await restoreShokzNavigationHover(client, state, viewport);
+    await sleep(700);
+    current = await readShokzNavigationSnapshotState(client, state);
+  }
+  if (!current.ok) {
+    context.warnings.push({
+      sectionKey: "navigation",
+      sectionLabel: "Navigation",
+      stateLabel: state.stateLabel,
+      message: current.reason || `Could not read navigation state ${state.stateLabel} after popup cleanup.`
+    });
+    return false;
+  }
+
+  const finalCleanup = await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 5, hideOnly: true });
+  if (!finalCleanup.ok) {
+    context.warnings.push({
+      sectionKey: "navigation",
+      sectionLabel: "Navigation",
+      stateLabel: state.stateLabel,
+      message: `Known popup remained immediately before screenshot: ${formatKnownPopupRemaining(finalCleanup)}.`
+    });
+    return false;
+  }
+  if ((finalCleanup.hidden.length || finalCleanup.clicked.length) && (state.hoverPoint || state.hoverItemRect)) {
+    await restoreShokzNavigationHover(client, state, viewport);
   }
 
   const screenshot = await client.send("Page.captureScreenshot", {
@@ -702,13 +758,17 @@ async function saveShokzNavigationCapture(client, outputPath, viewport, state, c
 }
 
 async function prepareForScreenshotCapture(client, options = {}) {
-  if (options.shokzMarketing) {
-    await hideShokzMarketingOverlays(client, {
+  const cleanShokzKnownPopups = Boolean(options.shokzKnownPopups || options.shokzMarketing);
+  if (cleanShokzKnownPopups) {
+    const cleanup = await dismissShokzKnownPopupsBeforeScreenshot(client, {
       rounds: Math.max(3, options.rounds || 2),
       hideOnly: Boolean(options.hideOnly)
     });
+    if (!cleanup.ok) {
+      throw new Error(`Known popup remained ${options.stage || "before screenshot capture"}: ${formatKnownPopupRemaining(cleanup)}.`);
+    }
   }
-  if (options.dismissObstructions !== false && !options.hideOnly) {
+  if (options.dismissObstructions !== false && !options.hideOnly && !cleanShokzKnownPopups) {
     await dismissObstructions(client, { rounds: options.rounds || 2 });
   }
   if (options.guardSearchOverlay) {
@@ -716,23 +776,270 @@ async function prepareForScreenshotCapture(client, options = {}) {
   }
 }
 
+function formatKnownPopupRemaining(cleanup) {
+  const remaining = Array.isArray(cleanup?.remaining) ? cleanup.remaining : [];
+  if (!remaining.length) {
+    return (cleanup?.remainingKinds || []).join(", ") || "unknown";
+  }
+  return remaining
+    .slice(0, 4)
+    .map((item) => {
+      const rect = item.rect
+        ? `@${item.rect.left},${item.rect.top} ${item.rect.width}x${item.rect.height}`
+        : "";
+      const text = item.text ? ` "${String(item.text).slice(0, 80)}"` : "";
+      return `${item.kind || "unknown"}${rect}${text}`;
+    })
+    .join("; ");
+}
+
 async function prepareShokzNavigationMainScreenshot(client, viewport) {
-  await hideShokzMarketingOverlays(client, { rounds: 4, hideOnly: true });
+  let cleanup = await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 4, hideOnly: true });
+  if (!cleanup.ok) {
+    throw new Error(`Known popup remained before Shokz navigation screenshot: ${formatKnownPopupRemaining(cleanup)}.`);
+  }
   const state = await waitForShokzProductsNavigation(client, Boolean(viewport.mobile));
   if (!state.ok) {
     await openShokzProductsNavigation(client, viewport);
   }
+  cleanup = await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 4, hideOnly: true });
+  if (!cleanup.ok) {
+    throw new Error(`Known popup remained before Shokz navigation screenshot: ${formatKnownPopupRemaining(cleanup)}.`);
+  }
+  const finalState = await waitForShokzProductsNavigation(client, Boolean(viewport.mobile));
+  if (!finalState.ok) {
+    await openShokzProductsNavigation(client, viewport);
+  }
   await sleep(250);
+  cleanup = await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 5, hideOnly: true });
+  if (!cleanup.ok) {
+    throw new Error(`Known popup remained immediately before Shokz navigation screenshot: ${formatKnownPopupRemaining(cleanup)}.`);
+  }
 }
 
-async function prepareShokzNavigationRelatedScreenshot(client, state) {
-  await hideShokzMarketingOverlays(client, { rounds: 4, hideOnly: true });
+async function prepareShokzNavigationRelatedScreenshot(client, state, viewport) {
+  await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 4, hideOnly: true });
+  await restoreShokzNavigationHover(client, state, viewport);
+}
+
+async function restoreShokzNavigationHover(client, state, viewport = null) {
+  if (state.navigationLevel === "secondary" && isProductsNavigationLabel(state.topLevelLabel || state.tabLabel) && state.hoverItemLabel) {
+    await hoverShokzTopNavigationLabel(client, "Products");
+    const activated = await hoverShokzProductsSecondaryLabel(client, state.hoverItemLabel);
+    if (activated?.ok) {
+      return;
+    }
+    if (viewport) {
+      await openShokzProductsNavigation(client, viewport);
+      const openedActivation = await hoverShokzProductsSecondaryLabel(client, state.hoverItemLabel);
+      if (openedActivation?.ok) {
+        return;
+      }
+    }
+  }
+  if (state.navigationLevel === "primary" && state.hoverItemLabel) {
+    const activated = await hoverShokzTopNavigationLabel(client, state.hoverItemLabel);
+    if (activated?.ok) {
+      return;
+    }
+  }
   const hoverPoint = state.hoverPoint || pointFromRect(state.hoverItemRect);
   if (hoverPoint) {
     await hoverShokzNavigationPoint(client, hoverPoint);
     await sleep(650);
     await primeLazyImages(client);
   }
+}
+
+async function hoverShokzTopNavigationLabel(client, label) {
+  await client.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: 4,
+    y: 4,
+    button: "none"
+  }).catch(() => null);
+  await sleep(160);
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const targetLabel = ${JSON.stringify(label)};
+      const comparable = (value) => String(value || "")
+        .toLowerCase()
+        .replace(/&/g, "and")
+        .replace(/[^a-z0-9]+/g, "");
+      const targetKey = comparable(targetLabel);
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          rect.bottom > 0 &&
+          rect.top < window.innerHeight &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const textOf = (element) => [
+        element.innerText,
+        element.textContent,
+        element.getAttribute?.("aria-label"),
+        element.getAttribute?.("title"),
+        element.id,
+        String(element.className || "")
+      ].filter(Boolean).join(" ").replace(/\\s+/g, " ").trim();
+      const compactRepeatedLabel = (value) => {
+        const clean = String(value || "").replace(/\\s+/g, " ").trim();
+        const words = clean.split(" ").filter(Boolean);
+        if (words.length && words.length % 2 === 0) {
+          const midpoint = words.length / 2;
+          const left = words.slice(0, midpoint).join(" ");
+          const right = words.slice(midpoint).join(" ");
+          if (left === right) return left;
+        }
+        return clean;
+      };
+      const candidates = Array.from(document.querySelectorAll("header a, header button, header summary, nav a, nav button, nav summary, a, button, summary"))
+        .filter(visible)
+        .map((element) => ({ element, text: compactRepeatedLabel(textOf(element)), rect: element.getBoundingClientRect() }))
+        .filter((item) =>
+          comparable(item.text) === targetKey &&
+          item.rect.top >= 32 &&
+          item.rect.top < Math.max(150, window.innerHeight * 0.22) &&
+          item.rect.left > 80 &&
+          item.rect.left < window.innerWidth - 180 &&
+          item.rect.width >= 36 &&
+          item.rect.width <= 240 &&
+          item.rect.height >= 14 &&
+          item.rect.height <= 110
+        )
+        .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+      const target = candidates[0]?.element;
+      if (!target) {
+        return { ok: false, reason: "top navigation label not found" };
+      }
+      const rect = target.getBoundingClientRect();
+      const x = Math.round(rect.left + rect.width / 2);
+      const y = Math.round(rect.top + rect.height / 2);
+      const targets = [target, target.parentElement, target.closest("li"), target.closest("nav"), target.closest("header")].filter(Boolean);
+      for (const element of targets) {
+        for (const type of ["pointerover", "pointerenter", "mouseover", "mouseenter", "mousemove"]) {
+          element.dispatchEvent(new MouseEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            clientX: x,
+            clientY: y,
+            view: window
+          }));
+        }
+      }
+      return { ok: true, x, y, text: textOf(target) };
+    })()`,
+    returnByValue: true
+  }).catch(() => ({ result: { value: { ok: false } } }));
+  const value = result.result?.value || {};
+  if (!value.ok) {
+    return value;
+  }
+  await client.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: value.x,
+    y: value.y,
+    button: "none"
+  });
+  await sleep(900);
+  await primeLazyImages(client);
+  return value;
+}
+
+async function hoverShokzProductsSecondaryLabel(client, label) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const targetLabel = ${JSON.stringify(label)};
+      const comparable = (value) => String(value || "")
+        .toLowerCase()
+        .replace(/&/g, "and")
+        .replace(/[^a-z0-9]+/g, "");
+      const targetKey = comparable(targetLabel);
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          rect.bottom > 0 &&
+          rect.right > 0 &&
+          rect.top < window.innerHeight &&
+          rect.left < window.innerWidth &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const directText = (element) => Array.from(element.childNodes || [])
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent || "")
+        .join(" ")
+        .replace(/\\s+/g, " ")
+        .trim();
+      const textOf = (element) => element ? [
+        directText(element),
+        element.innerText || element.textContent,
+        element.getAttribute?.("aria-label"),
+        element.getAttribute?.("title")
+      ].filter(Boolean).join(" ").replace(/\\s+/g, " ").trim() : "";
+      const roots = Array.from(document.querySelectorAll([
+        ".mega-menu__content .left-wrapper",
+        ".product_mega_menu .left-wrapper",
+        ".product_mega_menu-wrapper .left-wrapper",
+        "[class*='mega'] [class*='left']"
+      ].join(","))).filter(visible);
+      const candidates = [];
+      for (const root of roots) {
+        for (const element of Array.from(root.querySelectorAll(".ga4-pc-nav-title, a, button, [role='button'], div, span"))) {
+          if (!visible(element)) continue;
+          const text = directText(element) || (element.children.length <= 1 ? textOf(element) : "");
+          if (comparable(text) !== targetKey) continue;
+          const rect = element.getBoundingClientRect();
+          if (rect.width < 36 || rect.height < 14 || rect.height > 90) continue;
+          candidates.push({ element, rect, text });
+        }
+      }
+      candidates.sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+      const target = candidates[0]?.element;
+      if (!target) {
+        return { ok: false, reason: "secondary label not found" };
+      }
+      const rect = target.getBoundingClientRect();
+      const x = Math.round(rect.left + rect.width / 2);
+      const y = Math.round(rect.top + rect.height / 2);
+      const targets = [target, target.parentElement, target.closest("a, button, [role='button'], li, div"), target.closest(".left-wrapper")].filter(Boolean);
+      for (const element of targets) {
+        for (const type of ["pointerover", "pointerenter", "mouseover", "mouseenter", "mousemove"]) {
+          element.dispatchEvent(new MouseEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            clientX: x,
+            clientY: y,
+            view: window
+          }));
+        }
+      }
+      return { ok: true, x, y, text: textOf(target) };
+    })()`,
+    returnByValue: true
+  }).catch(() => ({ result: { value: { ok: false } } }));
+  const value = result.result?.value || {};
+  if (!value.ok) {
+    return value;
+  }
+  await client.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: value.x,
+    y: value.y,
+    button: "none"
+  });
+  await sleep(650);
+  await primeLazyImages(client);
+  return value;
 }
 
 function pointFromRect(rect) {
@@ -1304,7 +1611,7 @@ async function readShokzNavigationSnapshotState(client, state) {
             (item.rect.top >= 70 || item.explicitPanel) &&
             item.rect.top < Math.max(280, window.innerHeight * 0.35) &&
             item.rect.height >= 80 &&
-            item.rect.width >= Math.min(360, window.innerWidth * 0.35) &&
+            item.rect.width >= Math.min(220, window.innerWidth * 0.2) &&
             item.rect.left < window.innerWidth * 0.8 &&
             item.rect.right > window.innerWidth * 0.2 &&
             !/^Mother.?s Day Sale/i.test(item.text) &&
@@ -1315,24 +1622,7 @@ async function readShokzNavigationSnapshotState(client, state) {
         if (candidates[0]) {
           return candidates[0];
         }
-        const bodyText = textOf(document.body).slice(0, 12000);
-        if (!bodyText) {
-          return null;
-        }
-        return {
-          element: document.body,
-          text: bodyText,
-          rect: {
-            x: 0,
-            y: 0,
-            top: 0,
-            left: 0,
-            right: window.innerWidth,
-            bottom: window.innerHeight,
-            width: window.innerWidth,
-            height: window.innerHeight
-          }
-        };
+        return null;
       };
       const panel = findPanel();
       if (!panel) {
@@ -1516,7 +1806,7 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
     await activateShokzHomeBanner(client, slide, index);
     await sleep(900);
     await waitForBannerImages(client);
-    await dismissObstructions(client, { rounds: 5 });
+    await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 5 });
     await sleep(500);
 
     const state = await readShokzHomeBannerState(client, index);
@@ -1528,14 +1818,12 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
     if (!clip) {
       throw new Error(`Could not compute a valid crop for Shokz banner ${index + 1}.`);
     }
-    await dismissObstructions(client, { rounds: 2 });
-    await hideFixedElements(client);
+    await sleep(150);
     await prepareForScreenshotCapture(client, {
       rounds: 2,
-      shokzMarketing: true,
+      shokzKnownPopups: true,
       stage: `before Shokz banner ${index + 1} screenshot capture`
     });
-    await sleep(150);
 
     const screenshot = await client.send("Page.captureScreenshot", {
       format: "png",
@@ -1648,8 +1936,7 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
     const activation = await activateShokzHomeRelatedState(client, definition, state);
     await sleep(650);
     await waitForRelatedSectionImages(client, definition.key);
-    await dismissObstructions(client, { rounds: 2 });
-    await hideFixedElements(client);
+    await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2 });
     if (activation?.hoverPoint) {
       await moveMouseToPoint(client, activation.hoverPoint);
       await waitForRelatedHoverSettled(client, definition, state);
@@ -1684,10 +1971,26 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
 
     await prepareForScreenshotCapture(client, {
       rounds: 2,
-      shokzMarketing: true,
+      shokzKnownPopups: true,
       stage: `before Shokz ${definition.sectionLabel} screenshot capture`
     });
     if (activation?.hoverPoint) {
+      await moveMouseToPoint(client, activation.hoverPoint);
+      await waitForRelatedHoverSettled(client, definition, state);
+      await sleep(120);
+    }
+    const finalCleanup = await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 5, hideOnly: Boolean(activation?.hoverPoint) });
+    if (!finalCleanup.ok) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: state.stateLabel,
+        message: `Known popup remained immediately before ${definition.sectionLabel} screenshot: ${formatKnownPopupRemaining(finalCleanup)}.`
+      });
+      await clearRelatedHover(client);
+      continue;
+    }
+    if ((finalCleanup.hidden.length || finalCleanup.clicked.length) && activation?.hoverPoint) {
       await moveMouseToPoint(client, activation.hoverPoint);
       await waitForRelatedHoverSettled(client, definition, state);
       await sleep(120);
@@ -6062,8 +6365,23 @@ async function openShokzProductsNavigation(client, viewport) {
     await returnShokzMobileMenuToTopLevel(client);
     state = await ensureShokzMobileMenuVisible(client);
   } else {
-    await hoverShokzProductsMenu(client);
+    const hover = await hoverShokzTopNavigationLabel(client, "Products");
+    if (!hover?.ok) {
+      await hoverShokzProductsMenu(client);
+    }
     state = await waitForShokzProductsNavigation(client, false);
+  }
+
+  if (!state.ok) {
+    if (!viewport.mobile) {
+      for (let attempt = 0; attempt < 2 && !state.ok; attempt += 1) {
+        await hoverShokzTopNavigationLabel(client, "Products");
+        state = await waitForShokzProductsNavigation(client, false);
+        if (state.ok) break;
+        await hoverShokzProductsMenu(client);
+        state = await waitForShokzProductsNavigation(client, false);
+      }
+    }
   }
 
   if (!state.ok) {
@@ -6156,14 +6474,18 @@ async function hoverShokzProductsMenu(client) {
   await sleep(900);
 }
 
-async function hideShokzMarketingOverlays(client, options = {}) {
+async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
   const rounds = Math.max(1, Math.min(6, options.rounds ?? 3));
+  const totals = { clicked: [], hidden: [] };
+  let remaining = [];
+  let clearRounds = 0;
   for (let round = 0; round < rounds; round += 1) {
     const result = await client.send("Runtime.evaluate", {
       expression: `(() => {
         const hideOnly = ${options.hideOnly ? "true" : "false"};
         const hidden = [];
         const clicked = [];
+        const remaining = [];
         const viewportArea = Math.max(1, window.innerWidth * window.innerHeight);
         const visible = (element) => {
           if (!element || !(element instanceof Element)) return false;
@@ -6180,21 +6502,62 @@ async function hideShokzMarketingOverlays(client, options = {}) {
             Number(style.opacity || 1) > 0.01;
         };
         const textOf = (element) => element ? [
-          element.innerText || element.textContent,
+          element.innerText,
+          element.textContent,
           element.getAttribute?.("aria-label"),
           element.getAttribute?.("title"),
+          element.getAttribute?.("name"),
+          element.value,
           element.id,
           String(element.className || "")
         ].filter(Boolean).join(" ").replace(/\\s+/g, " ").trim() : "";
-        const marketing = /privacy|cookie|newsletter|subscribe|don't miss|dont miss|great deals|email|phone number|sms|offer|discount|coupon|gift|gifts|mom|mother|sale|\\boff\\b|save/i;
-        const closeText = /close|dismiss|no thanks|not now|icon-close|\\u00d7|^x$/i;
         const navPanelSelector = "#menu-drawer, .menu-drawer, .mega-menu__content, .product_mega_menu, .product_mega_menu-wrapper, [class*='mega-menu'], header, nav";
-        const protectsNavigation = (element) => Boolean(
-          element?.closest?.(navPanelSelector) ||
-          element?.querySelector?.(navPanelSelector)
+        const isNavigationElement = (element) => Boolean(
+          element?.matches?.(navPanelSelector) || element?.closest?.(navPanelSelector)
         );
+        const containsNavigation = (element) => Boolean(element?.querySelector?.(navPanelSelector));
+        const classifyKnownPopup = (text) => {
+          const value = String(text || "");
+          const cookie = /\\bcookies?\\b/i.test(value) &&
+            /(privacy|accept all|necessary cookies|preferences|consent|personalized features)/i.test(value);
+          if (cookie) return "cookie";
+
+          const email = /(don.?t miss out|dont miss out|subscribe now|enter your email|email address|newsletter|sign up|primary use case)/i.test(value) &&
+            /(email|subscribe|newsletter|great deals|primary use case)/i.test(value);
+          if (email) return "email";
+
+          const region = /(redirect|wrong site|ip address|your ip|detected.{0,80}(region|country|location)|shopping from|looks like.{0,80}(country|region|location)|stay on.{0,40}site|continue to.{0,80}(site|store|shokz))/i.test(value);
+          if (region) return "region";
+
+          return null;
+        };
+        const interactiveSelector = "button, [role='button'], input[type='button'], input[type='submit'], a, [aria-label], [title], [tabindex]";
+        const navigatesAway = (target) => {
+          const link = target.closest?.("a[href]");
+          if (!link) return false;
+          const rawHref = String(link.getAttribute("href") || "").trim();
+          if (!rawHref || rawHref === "#" || rawHref.startsWith("#") || /^javascript:/i.test(rawHref)) {
+            return false;
+          }
+          try {
+            const current = new URL(window.location.href);
+            const destination = new URL(rawHref, current);
+            if (!["http:", "https:"].includes(destination.protocol)) {
+              return true;
+            }
+            return destination.origin !== current.origin ||
+              destination.pathname !== current.pathname ||
+              destination.search !== current.search;
+          } catch {
+            return true;
+          }
+        };
         const hideElement = (element, reason) => {
-          if (!visible(element) || protectsNavigation(element)) return false;
+          if (!visible(element) ||
+              element === document.body ||
+              element === document.documentElement ||
+              isNavigationElement(element) ||
+              containsNavigation(element)) return false;
           element.dataset.pageShotHidden = "true";
           element.style.setProperty("display", "none", "important");
           element.style.setProperty("visibility", "hidden", "important");
@@ -6203,12 +6566,10 @@ async function hideShokzMarketingOverlays(client, options = {}) {
           return true;
         };
         const clickElement = (element, reason) => {
-          const target = element?.closest?.("button, [role='button'], a, [tabindex]") || element;
-          if (!visible(target) || protectsNavigation(target)) return false;
-          if (hideOnly) return false;
-          const link = target.closest?.("a[href]");
-          const href = link?.getAttribute("href") || "";
-          if (href && href !== "#" && !href.startsWith("#") && !/^javascript:/i.test(href)) return false;
+          const target = element?.closest?.(interactiveSelector) || element;
+          if (!visible(target) || isNavigationElement(target)) return false;
+          if (!target.matches?.(interactiveSelector)) return false;
+          if (navigatesAway(target)) return false;
           if (typeof target.click === "function") {
             target.click();
           } else {
@@ -6217,74 +6578,190 @@ async function hideShokzMarketingOverlays(client, options = {}) {
           clicked.push(reason || textOf(target).slice(0, 80) || target.tagName);
           return true;
         };
-        const layers = Array.from(document.querySelectorAll("body *"))
-          .filter((element) => {
-            if (!visible(element) || protectsNavigation(element)) return false;
+        const layerRootFor = (element) => {
+          let current = element;
+          while (current && current !== document.body && current !== document.documentElement) {
+            if (!visible(current) || isNavigationElement(current) || containsNavigation(current)) {
+              current = current.parentElement;
+              continue;
+            }
+            const rect = current.getBoundingClientRect();
+            const style = getComputedStyle(current);
+            const zIndex = Number.parseInt(style.zIndex, 10);
+            const roleDialog = /dialog|alertdialog/i.test(current.getAttribute("role") || "");
+            const positioned = ["fixed", "sticky", "absolute"].includes(style.position) ||
+              (Number.isFinite(zIndex) && zIndex >= 20);
+            const bottomBanner = rect.bottom >= window.innerHeight - 4 &&
+              rect.width >= window.innerWidth * 0.45 &&
+              rect.height >= 70;
+            if (roleDialog || positioned || bottomBanner) {
+              return current;
+            }
+            current = current.parentElement;
+          }
+          return element;
+        };
+        const candidates = [];
+        const seen = new Set();
+        for (const element of Array.from(document.querySelectorAll("body *"))) {
+          if (!visible(element) || element.dataset.pageShotHidden === "true" || isNavigationElement(element)) continue;
+          const kind = classifyKnownPopup(textOf(element));
+          if (!kind) continue;
+          const layer = layerRootFor(element);
+          if (!visible(layer) || isNavigationElement(layer) || containsNavigation(layer) || seen.has(layer)) continue;
+          const rect = layer.getBoundingClientRect();
+          const style = getComputedStyle(layer);
+          const area = rect.width * rect.height;
+          const zIndex = Number.parseInt(style.zIndex, 10);
+          const roleDialog = /dialog|alertdialog/i.test(layer.getAttribute("role") || "");
+          const positioned = ["fixed", "sticky", "absolute"].includes(style.position) ||
+            (Number.isFinite(zIndex) && zIndex >= 20);
+          const bottomCookie = kind === "cookie" &&
+            rect.bottom >= window.innerHeight - 4 &&
+            rect.width >= window.innerWidth * 0.45 &&
+            rect.height >= 70;
+          const pageContainer = rect.top <= 80 &&
+            rect.height > window.innerHeight * 1.35 &&
+            rect.width >= window.innerWidth * 0.85;
+          const largeOverlay = area >= Math.min(viewportArea * 0.08, 120000);
+          if (pageContainer && !roleDialog && !bottomCookie) continue;
+          if (!roleDialog && !positioned && !bottomCookie && !largeOverlay) continue;
+          seen.add(layer);
+          candidates.push({ layer, kind, area, zIndex: Number.isFinite(zIndex) ? zIndex : 0 });
+        }
+        const priority = { cookie: 0, email: 1, region: 2 };
+        const layers = candidates.sort((a, b) =>
+          (priority[a.kind] - priority[b.kind]) ||
+          (b.zIndex - a.zIndex) ||
+          (b.area - a.area)
+        );
+        const closeMatches = /close|dismiss|no thanks|not now|icon-close|\\u00d7|^x$/i;
+        const safeRegionControl = /close|dismiss|stay|stay on|not now|no thanks|cancel|keep/i;
+        const unsafeRegionControl = /continue to|go to|visit|redirect|switch|shop|change/i;
+        const controlText = (control) => textOf(control).slice(0, 240);
+        const findControls = (layer) => Array.from(layer.querySelectorAll(interactiveSelector + ", svg, [class], [id]"))
+          .filter((control) => visible(control) && !isNavigationElement(control));
+        const nearTopRight = (control, layerRect) => {
+          const rect = control.getBoundingClientRect();
+          return rect.width <= 96 &&
+            rect.height <= 96 &&
+            rect.left >= layerRect.right - Math.max(140, layerRect.width * 0.3) &&
+            rect.top <= layerRect.top + Math.max(140, layerRect.height * 0.3);
+        };
+        const hideRelatedBackdrop = (layer, kind) => {
+          const layerRect = layer.getBoundingClientRect();
+          for (const element of Array.from(document.querySelectorAll("body *"))) {
+            if (!visible(element) || element.dataset.pageShotHidden === "true" || isNavigationElement(element) || containsNavigation(element)) continue;
             const rect = element.getBoundingClientRect();
             const style = getComputedStyle(element);
-            const area = rect.width * rect.height;
             const zIndex = Number.parseInt(style.zIndex, 10);
-            const positioned = ["fixed", "sticky", "absolute"].includes(style.position) || (Number.isFinite(zIndex) && zIndex >= 20);
-            const text = textOf(element);
-            const floatingPromo =
-              positioned &&
-              marketing.test(text) &&
-              area >= 500 &&
-              area <= viewportArea * 0.25 &&
-              rect.width < window.innerWidth * 0.85 &&
-              (
-                rect.bottom >= window.innerHeight - 260 ||
-                rect.top <= 260 ||
-                rect.left <= 320 ||
-                rect.right >= window.innerWidth - 320
-              );
-            return positioned &&
-              (
-                (area >= Math.min(viewportArea * 0.03, 60000) && marketing.test(text)) ||
-                floatingPromo
-              );
-          })
-          .sort((a, b) => {
-            const ar = a.getBoundingClientRect();
-            const br = b.getBoundingClientRect();
-            return (br.width * br.height) - (ar.width * ar.height);
-          });
-        for (const layer of layers) {
+            const area = rect.width * rect.height;
+            const coversViewport = area >= viewportArea * 0.45 &&
+              rect.left <= 8 &&
+              rect.top <= 8 &&
+              rect.right >= window.innerWidth - 8 &&
+              rect.bottom >= window.innerHeight - 8;
+            const overlapsLayer = Math.max(0, Math.min(rect.right, layerRect.right) - Math.max(rect.left, layerRect.left)) *
+              Math.max(0, Math.min(rect.bottom, layerRect.bottom) - Math.max(rect.top, layerRect.top)) > 400;
+            const overlayLike = ["fixed", "absolute"].includes(style.position) ||
+              (Number.isFinite(zIndex) && zIndex >= 20);
+            if (element !== layer && overlayLike && (coversViewport || (kind !== "cookie" && overlapsLayer && area >= layerRect.width * layerRect.height))) {
+              hideElement(element, kind + " backdrop");
+            }
+          }
+        };
+
+        for (const item of layers) {
+          const { layer, kind } = item;
           const layerRect = layer.getBoundingClientRect();
-          const layerText = textOf(layer);
-          const controls = Array.from(layer.querySelectorAll("button, [role='button'], a, [aria-label], [title], svg, [class], [id]"));
+          const controls = findControls(layer);
           let closed = false;
-          if (!hideOnly) {
+          if (kind === "cookie") {
+            for (const pattern of [/^accept all$/i, /accept all/i, /use necessary cookies only/i]) {
+              const control = controls.find((candidate) => pattern.test(controlText(candidate)));
+              if (control) {
+                closed = clickElement(control, "cookie consent");
+                if (closed) break;
+              }
+            }
+          } else if (kind === "email") {
             for (const control of controls) {
-              if (!visible(control)) continue;
-              const rect = control.getBoundingClientRect();
-              const text = textOf(control);
-              const nearTopRight = rect.width <= 80 &&
-                rect.height <= 80 &&
-                rect.left >= layerRect.right - Math.max(120, layerRect.width * 0.35) &&
-                rect.top <= layerRect.top + Math.max(120, layerRect.height * 0.35);
-              if (closeText.test(text) || nearTopRight) {
-                closed = clickElement(control, text || "marketing close");
+              const text = controlText(control);
+              if (closeMatches.test(text) || nearTopRight(control, layerRect)) {
+                closed = clickElement(control, text || "email popup close");
+                if (closed) break;
+              }
+            }
+          } else if (kind === "region") {
+            for (const control of controls) {
+              const text = controlText(control);
+              if (unsafeRegionControl.test(text)) continue;
+              if (safeRegionControl.test(text) || nearTopRight(control, layerRect)) {
+                closed = clickElement(control, text || "region popup close");
                 if (closed) break;
               }
             }
           }
-          if (!closed && marketing.test(layerText)) {
-            hideElement(layer, "marketing overlay");
+          if (!closed) {
+            hideRelatedBackdrop(layer, kind);
+            hideElement(layer, kind + " popup");
+          }
+        }
+
+        for (const element of Array.from(document.querySelectorAll("body *"))) {
+          if (!visible(element) || element.dataset.pageShotHidden === "true" || isNavigationElement(element) || containsNavigation(element)) continue;
+          const kind = classifyKnownPopup(textOf(element));
+          if (!kind) continue;
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            const area = rect.width * rect.height;
+            const zIndex = Number.parseInt(style.zIndex, 10);
+          const positioned = ["fixed", "sticky", "absolute"].includes(style.position) ||
+            (Number.isFinite(zIndex) && zIndex >= 20);
+          const bottomCookie = kind === "cookie" &&
+            rect.bottom >= window.innerHeight - 4 &&
+            rect.width >= window.innerWidth * 0.45 &&
+            rect.height >= 70;
+          const pageContainer = rect.top <= 80 &&
+            rect.height > window.innerHeight * 1.35 &&
+            rect.width >= window.innerWidth * 0.85;
+          if (pageContainer && !bottomCookie) continue;
+          if (positioned || bottomCookie || area >= Math.min(viewportArea * 0.08, 120000)) {
+            remaining.push({
+              kind,
+              text: textOf(element).slice(0, 120),
+              rect: { left: Math.round(rect.left), top: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height) }
+            });
           }
         }
         document.body.classList.remove("overflow-hidden");
-        return { hidden, clicked };
+        return { hidden, clicked, remaining: remaining.slice(0, 8) };
       })()`,
       returnByValue: true
     }).catch(() => null);
     const value = result?.result?.value || {};
+    totals.clicked.push(...(value.clicked || []));
+    totals.hidden.push(...(value.hidden || []));
+    remaining = value.remaining || [];
     const changed = (value.hidden?.length || 0) + (value.clicked?.length || 0);
-    await sleep(changed ? 450 : 150);
-    if (!changed) {
-      return;
+    if (!remaining.length) {
+      clearRounds += 1;
+      if (clearRounds >= 2) {
+        await sleep(changed ? 450 : 100);
+        return { ok: true, ...totals, remaining: [], remainingKinds: [] };
+      }
+      await sleep(changed ? 650 : 450);
+      continue;
     }
+    clearRounds = 0;
+    await sleep(changed ? 500 : 180);
   }
+  return {
+    ok: remaining.length === 0,
+    ...totals,
+    remaining,
+    remainingKinds: [...new Set(remaining.map((item) => item.kind).filter(Boolean))]
+  };
 }
 
 async function closeShokzSearchOverlay(client) {
@@ -6912,17 +7389,27 @@ async function readShokzProductsNavigationState(client, mobile) {
       const drawerCategoryHits = categories.filter((value) => includesLabel(drawerFullText, value)).length;
       const drawerTaxonomyHits = desktopTaxonomy.filter((value) => includesLabel(drawerFullText, value)).length;
       const drawerUtilityHits = utilityLinks.filter((value) => includesLabel(drawerFullText, value)).length;
+      const drawerTopLevelHits = mobileTopLevel.filter((value) => includesLabel(drawerFullText, value)).length;
       const desktopDrawerOk = drawerVisible &&
         includesLabel(drawerFullText, "Products") &&
         drawerCategoryHits >= 1 &&
         (drawerTaxonomyHits >= 1 || drawerUtilityHits >= 1 || /OPENRUN|OPENSWIM|OPENMOVE|OPENFIT/i.test(drawerFullText));
+      const mobileDrawerOk = drawerVisible &&
+        includesLabel(drawerFullText, "Products") &&
+        drawerCategoryHits >= 3 &&
+        drawerTopLevelHits >= 1;
       const mobileOk = !searchOpen &&
         !cartOpen &&
         window.scrollY < 20 &&
-        includesLabel(best.text, "Products") &&
-        best.categoryHits >= 3 &&
-        best.topLevelHits >= 1 &&
-        best.mobilePanelLike;
+        (
+          (
+            includesLabel(best.text, "Products") &&
+            best.categoryHits >= 3 &&
+            best.topLevelHits >= 1 &&
+            best.mobilePanelLike
+          ) ||
+          mobileDrawerOk
+        );
       const desktopOk = !searchOpen &&
         !cartOpen &&
         window.scrollY < 20 &&
@@ -6936,7 +7423,7 @@ async function readShokzProductsNavigationState(client, mobile) {
         categoryHits: Math.max(best.categoryHits, drawerCategoryHits),
         taxonomyHits: Math.max(best.taxonomyHits, drawerTaxonomyHits),
         utilityHits: Math.max(best.utilityHits, drawerUtilityHits),
-        topLevelHits: best.topLevelHits,
+        topLevelHits: Math.max(best.topLevelHits, drawerTopLevelHits),
         panelLike: best.panelLike,
         mobilePanelLike: best.mobilePanelLike,
         searchOpen,
@@ -7017,7 +7504,9 @@ async function captureStitchedScreenshot(client, outputPath, options) {
     }
     await scrollTo(client, y);
     await sleep(Math.max(120, Math.min(700, options.stepDelay)));
-    await dismissObstructions(client, { rounds: index === 0 ? 4 : 2 });
+    if (options.dismissObstructionsBeforeSegment !== false) {
+      await dismissObstructions(client, { rounds: index === 0 ? 4 : 2 });
+    }
     await sleep(160);
     if (index === 0 && typeof options.beforeFirstSegmentCapture === "function") {
       await options.beforeFirstSegmentCapture();
