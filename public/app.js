@@ -16,6 +16,14 @@ const elements = {
   dateEndFilter: document.querySelector("#dateEndFilter"),
   dateClearFilter: document.querySelector("#dateClearFilter"),
   urlFilter: document.querySelector("#urlFilter"),
+  changesDeviceFilter: document.querySelector("#changesDeviceFilter"),
+  changesDeviceFilterButton: document.querySelector("#changesDeviceFilterButton"),
+  changesDeviceFilterLabel: document.querySelector("#changesDeviceFilterLabel"),
+  changesDeviceFilterMenu: document.querySelector("#changesDeviceFilterMenu"),
+  changesDateStartFilter: document.querySelector("#changesDateStartFilter"),
+  changesDateEndFilter: document.querySelector("#changesDateEndFilter"),
+  changesDateClearFilter: document.querySelector("#changesDateClearFilter"),
+  changesUrlFilter: document.querySelector("#changesUrlFilter"),
   gallery: document.querySelector("#gallery"),
   empty: document.querySelector("#empty"),
   changesList: document.querySelector("#changesList"),
@@ -42,12 +50,16 @@ const relatedSectionTitles = {
 };
 
 let state = null;
+let changes = [];
 let activeTab = "archive";
 let imagePreviewReturnFocus = null;
 let imagePreviewPreviousOverflow = "";
 let warningPreviewReturnFocus = null;
 let warningPreviewPreviousOverflow = "";
 const selectedDeviceFilters = {
+  devices: new Set()
+};
+const selectedChangesDeviceFilters = {
   devices: new Set()
 };
 
@@ -66,6 +78,13 @@ elements.dateClearFilter.addEventListener("click", clearDateFilter);
 elements.deviceFilterButton.addEventListener("click", toggleDeviceFilterMenu);
 elements.deviceFilterMenu.addEventListener("change", handleDeviceFilterChange);
 elements.deviceFilterMenu.addEventListener("click", handleDeviceFilterClick);
+elements.changesUrlFilter.addEventListener("change", renderChangesSummary);
+elements.changesDateStartFilter.addEventListener("change", renderChangesSummary);
+elements.changesDateEndFilter.addEventListener("change", renderChangesSummary);
+elements.changesDateClearFilter.addEventListener("click", clearChangesDateFilter);
+elements.changesDeviceFilterButton.addEventListener("click", toggleChangesDeviceFilterMenu);
+elements.changesDeviceFilterMenu.addEventListener("change", handleChangesDeviceFilterChange);
+elements.changesDeviceFilterMenu.addEventListener("click", handleChangesDeviceFilterClick);
 elements.gallery.addEventListener("click", handleGalleryClick);
 elements.changesList.addEventListener("click", handleImagePreviewClick);
 elements.imagePreview.addEventListener("click", handleImagePreviewBackdropClick);
@@ -96,6 +115,9 @@ function setActiveTab(tabName) {
   if (activeTab !== "archive") {
     setDeviceFilterMenuOpen(false);
   }
+  if (activeTab !== "changes") {
+    setChangesDeviceFilterMenuOpen(false);
+  }
 }
 
 function handleTabKeydown(event) {
@@ -124,14 +146,19 @@ function handleTabKeydown(event) {
 }
 
 async function refreshState(options = {}) {
-  const response = await fetch("/api/state");
-  state = await response.json();
+  const [stateResponse, changesResponse] = await Promise.all([
+    fetch("/api/state"),
+    fetch("/api/changes")
+  ]);
+  state = await stateResponse.json();
+  const loadedChanges = await changesResponse.json();
+  changes = Array.isArray(loadedChanges) ? loadedChanges : [];
   render(options);
 }
 
 function render(options = {}) {
   elements.shotCount.textContent = state.snapshots.length;
-  elements.changeCount.textContent = state.changesSummary?.count || 0;
+  elements.changeCount.textContent = changes.length;
   elements.captureState.textContent = state.capture.running ? "截图中" : "空闲";
   elements.browserState.textContent = state.browser.ok ? browserName(state.browser.path) : "未找到";
   elements.scheduleState.textContent = "整点（所有设备）";
@@ -140,7 +167,9 @@ function render(options = {}) {
     ? `最近一次截图时间：${formatDate(latestCapturedAt)}`
     : "最近一次截图时间：暂无";
   renderFilterOptions();
+  renderChangesFilterOptions();
   renderDeviceFilterOptions();
+  renderChangesDeviceFilterOptions();
   renderChangesSummary();
   renderGallery({ preserveScroll: options.preserveScroll !== false });
 }
@@ -151,27 +180,55 @@ function latestSnapshotCapturedAt() {
 }
 
 function renderFilterOptions() {
-  const current = elements.urlFilter.value;
-  const urls = urlFilterOptions();
-  elements.urlFilter.innerHTML = "<option value=\"\">全部 URL</option>";
+  renderUrlFilterOptions(elements.urlFilter, urlFilterOptions());
+}
+
+function renderChangesFilterOptions() {
+  renderUrlFilterOptions(elements.changesUrlFilter, urlFilterOptions());
+}
+
+function renderUrlFilterOptions(select, urls) {
+  const current = select.value;
+  select.innerHTML = "<option value=\"\">全部 URL</option>";
   for (const url of urls) {
     const option = document.createElement("option");
     option.value = url;
     option.textContent = url;
-    elements.urlFilter.append(option);
+    select.append(option);
   }
-  elements.urlFilter.value = urls.includes(current) ? current : "";
+  select.value = urls.includes(current) ? current : "";
 }
 
 function renderDeviceFilterOptions() {
-  const devices = uniqueDevicesFromSnapshots();
+  renderDeviceFilterOptionsFor({
+    devices: uniqueDevicesFromSnapshots(),
+    selectedFilters: selectedDeviceFilters,
+    menu: elements.deviceFilterMenu,
+    label: elements.deviceFilterLabel,
+    button: elements.deviceFilterButton,
+    allLabel: "全部截图设备"
+  });
+}
+
+function renderChangesDeviceFilterOptions() {
+  renderDeviceFilterOptionsFor({
+    devices: uniqueDevicesFromChanges(),
+    selectedFilters: selectedChangesDeviceFilters,
+    menu: elements.changesDeviceFilterMenu,
+    label: elements.changesDeviceFilterLabel,
+    button: elements.changesDeviceFilterButton,
+    allLabel: "全部截图设备"
+  });
+}
+
+function renderDeviceFilterOptionsFor({ devices, selectedFilters, menu, label, button, allLabel }) {
   const availableDeviceIds = new Set(devices.map((device) => device.id));
-  selectedDeviceFilters.devices = new Set(
-    [...selectedDeviceFilters.devices].filter((id) => availableDeviceIds.has(id))
+  selectedFilters.devices = new Set(
+    [...selectedFilters.devices].filter((id) => availableDeviceIds.has(id))
   );
 
   const groups = deviceFilterGroups(devices);
-  elements.deviceFilterMenu.innerHTML = "";
+  menu.innerHTML = "";
 
   for (const group of groups) {
     const section = document.createElement("section");
@@ -185,7 +242,7 @@ function renderDeviceFilterOptions() {
     `;
 
     const categoryInput = section.querySelector("input");
-    categoryInput.checked = group.devices.every((device) => selectedDeviceFilters.devices.has(device.id));
+    categoryInput.checked = group.devices.every((device) => selectedFilters.devices.has(device.id));
 
     const options = section.querySelector(".device-filter-options");
     for (const device of group.devices) {
@@ -195,39 +252,59 @@ function renderDeviceFilterOptions() {
         <input type="checkbox" data-filter-type="device" value="${escapeHtml(device.id)}">
         <span>${escapeHtml(device.name)}</span>
       `;
-      label.querySelector("input").checked = selectedDeviceFilters.devices.has(device.id);
+      label.querySelector("input").checked = selectedFilters.devices.has(device.id);
       options.append(label);
     }
 
-    elements.deviceFilterMenu.append(section);
+    menu.append(section);
   }
 
   const actions = document.createElement("div");
   actions.className = "device-filter-actions";
   actions.innerHTML = "<button type=\"button\" data-filter-action=\"clear\">清除</button>";
-  elements.deviceFilterMenu.append(actions);
-  renderDeviceFilterLabel(devices);
+  menu.append(actions);
+  renderDeviceFilterLabel(devices, selectedFilters, label, button, allLabel);
 }
 
 function toggleDeviceFilterMenu() {
-  const isOpen = elements.deviceFilter.dataset.open === "true";
-  setDeviceFilterMenuOpen(!isOpen);
+  toggleDeviceFilterMenuFor(elements.deviceFilter, elements.deviceFilterButton);
+}
+
+function toggleChangesDeviceFilterMenu() {
+  toggleDeviceFilterMenuFor(elements.changesDeviceFilter, elements.changesDeviceFilterButton);
+}
+
+function toggleDeviceFilterMenuFor(filter, button) {
+  const isOpen = filter.dataset.open === "true";
+  setDeviceFilterMenuOpenFor(filter, button, !isOpen);
 }
 
 function setDeviceFilterMenuOpen(isOpen) {
-  elements.deviceFilter.dataset.open = isOpen ? "true" : "false";
-  elements.deviceFilterButton.setAttribute("aria-expanded", String(isOpen));
+  setDeviceFilterMenuOpenFor(elements.deviceFilter, elements.deviceFilterButton, isOpen);
+}
+
+function setChangesDeviceFilterMenuOpen(isOpen) {
+  setDeviceFilterMenuOpenFor(elements.changesDeviceFilter, elements.changesDeviceFilterButton, isOpen);
+}
+
+function setDeviceFilterMenuOpenFor(filter, button, isOpen) {
+  filter.dataset.open = isOpen ? "true" : "false";
+  button.setAttribute("aria-expanded", String(isOpen));
 }
 
 function closeDeviceFilterOnOutsideClick(event) {
   if (!elements.deviceFilter.contains(event.target)) {
     setDeviceFilterMenuOpen(false);
   }
+  if (!elements.changesDeviceFilter.contains(event.target)) {
+    setChangesDeviceFilterMenuOpen(false);
+  }
 }
 
 function closeDeviceFilterOnEscape(event) {
   if (event.key === "Escape") {
     setDeviceFilterMenuOpen(false);
+    setChangesDeviceFilterMenuOpen(false);
   }
 }
 
@@ -358,39 +435,73 @@ function parseWarningPayload(value) {
 }
 
 function handleDeviceFilterClick(event) {
+  handleDeviceFilterClickFor(event, {
+    selectedFilters: selectedDeviceFilters,
+    renderOptions: renderDeviceFilterOptions,
+    renderResults: () => renderGallery({ preserveScroll: false })
+  });
+}
+
+function handleChangesDeviceFilterClick(event) {
+  handleDeviceFilterClickFor(event, {
+    selectedFilters: selectedChangesDeviceFilters,
+    renderOptions: renderChangesDeviceFilterOptions,
+    renderResults: renderChangesSummary
+  });
+}
+
+function handleDeviceFilterClickFor(event, { selectedFilters, renderOptions, renderResults }) {
   const action = event.target.closest("[data-filter-action]")?.dataset.filterAction;
   if (action !== "clear") {
     return;
   }
-  selectedDeviceFilters.devices.clear();
-  renderDeviceFilterOptions();
-  renderGallery({ preserveScroll: false });
+  selectedFilters.devices.clear();
+  renderOptions();
+  renderResults();
 }
 
 function handleDeviceFilterChange(event) {
+  handleDeviceFilterChangeFor(event, {
+    selectedFilters: selectedDeviceFilters,
+    devices: uniqueDevicesFromSnapshots,
+    renderOptions: renderDeviceFilterOptions,
+    renderResults: () => renderGallery({ preserveScroll: false })
+  });
+}
+
+function handleChangesDeviceFilterChange(event) {
+  handleDeviceFilterChangeFor(event, {
+    selectedFilters: selectedChangesDeviceFilters,
+    devices: uniqueDevicesFromChanges,
+    renderOptions: renderChangesDeviceFilterOptions,
+    renderResults: renderChangesSummary
+  });
+}
+
+function handleDeviceFilterChangeFor(event, { selectedFilters, devices, renderOptions, renderResults }) {
   const input = event.target.closest("input[type='checkbox']");
   if (!input) {
     return;
   }
 
   if (input.dataset.filterType === "category") {
-    const group = deviceFilterGroups(uniqueDevicesFromSnapshots()).find((item) => item.id === input.value);
+    const group = deviceFilterGroups(devices()).find((item) => item.id === input.value);
     const deviceIds = group?.devices.map((device) => device.id) || [];
     for (const deviceId of deviceIds) {
       if (input.checked) {
-        selectedDeviceFilters.devices.add(deviceId);
+        selectedFilters.devices.add(deviceId);
       } else {
-        selectedDeviceFilters.devices.delete(deviceId);
+        selectedFilters.devices.delete(deviceId);
       }
     }
   } else if (input.checked) {
-    selectedDeviceFilters.devices.add(input.value);
+    selectedFilters.devices.add(input.value);
   } else {
-    selectedDeviceFilters.devices.delete(input.value);
+    selectedFilters.devices.delete(input.value);
   }
 
-  renderDeviceFilterOptions();
-  renderGallery({ preserveScroll: false });
+  renderOptions();
+  renderResults();
 }
 
 function handleGalleryClick(event) {
@@ -411,13 +522,13 @@ function handleGalleryClick(event) {
   });
 }
 
-function renderDeviceFilterLabel(devices) {
-  const selectedDevices = devices.filter((device) => selectedDeviceFilters.devices.has(device.id));
+function renderDeviceFilterLabel(devices, selectedFilters, labelElement, button, allLabel) {
+  const selectedDevices = devices.filter((device) => selectedFilters.devices.has(device.id));
   const label = selectedDevices.length === 0
-    ? "全部截图设备"
+    ? allLabel
     : `已选 ${selectedDevices.length} 项`;
-  elements.deviceFilterLabel.textContent = label;
-  elements.deviceFilterButton.title = selectedDevices.map((device) => device.name).join("、");
+  labelElement.textContent = label;
+  button.title = selectedDevices.map((device) => device.name).join("、");
 }
 
 function deviceFilterGroups(devices) {
@@ -433,21 +544,38 @@ function deviceFilterGroups(devices) {
 }
 
 function matchesDeviceFilters(snapshot) {
-  if (selectedDeviceFilters.devices.size === 0) {
+  return matchesDeviceFilterSet(deviceInfoForSnapshot(snapshot), selectedDeviceFilters);
+}
+
+function matchesChangesDeviceFilters(change) {
+  return matchesDeviceFilterSet(deviceInfoForChange(change), selectedChangesDeviceFilters);
+}
+
+function matchesDeviceFilterSet(device, selectedFilters) {
+  if (selectedFilters.devices.size === 0) {
     return true;
   }
-
-  const device = deviceInfoForSnapshot(snapshot);
-  return selectedDeviceFilters.devices.has(device.id);
+  return selectedFilters.devices.has(device.id);
 }
 
 function matchesTimeFilter(snapshot) {
-  const range = selectedDateRange();
+  return matchesDateRange(snapshot.capturedAt, selectedDateRange(elements.dateStartFilter, elements.dateEndFilter));
+}
+
+function matchesChangesTimeFilter(change) {
+  return matchesDateRange(changeTimeValue(change), selectedDateRange(elements.changesDateStartFilter, elements.changesDateEndFilter));
+}
+
+function changeTimeValue(change) {
+  return change.to?.capturedAt || change.createdAt || change.occurredBetween?.to;
+}
+
+function matchesDateRange(value, range) {
   if (!range) {
     return true;
   }
 
-  const capturedAt = timestamp(snapshot.capturedAt);
+  const capturedAt = timestamp(value);
   if (!capturedAt) {
     return false;
   }
@@ -455,9 +583,9 @@ function matchesTimeFilter(snapshot) {
   return capturedAt >= range.start && capturedAt <= range.end;
 }
 
-function selectedDateRange() {
-  const start = startOfDay(elements.dateStartFilter.value);
-  const end = endOfDay(elements.dateEndFilter.value);
+function selectedDateRange(startInput, endInput) {
+  const start = startOfDay(startInput.value);
+  const end = endOfDay(endInput.value);
 
   if (!Number.isFinite(start) && !Number.isFinite(end)) {
     return null;
@@ -471,9 +599,17 @@ function selectedDateRange() {
 }
 
 function clearDateFilter() {
-  elements.dateStartFilter.value = "";
-  elements.dateEndFilter.value = "";
-  renderGallery({ preserveScroll: false });
+  clearDateFilterFor(elements.dateStartFilter, elements.dateEndFilter, () => renderGallery({ preserveScroll: false }));
+}
+
+function clearChangesDateFilter() {
+  clearDateFilterFor(elements.changesDateStartFilter, elements.changesDateEndFilter, renderChangesSummary);
+}
+
+function clearDateFilterFor(startInput, endInput, renderResults) {
+  startInput.value = "";
+  endInput.value = "";
+  renderResults();
 }
 
 function startOfDay(value) {
@@ -493,11 +629,11 @@ function endOfDay(value) {
 }
 
 function renderChangesSummary() {
-  const changes = state.changesSummary?.recent || [];
+  const filteredChanges = changes.filter(matchesChangeFilters);
   elements.changesList.innerHTML = "";
-  elements.changesEmpty.classList.toggle("visible", changes.length === 0);
+  elements.changesEmpty.classList.toggle("visible", filteredChanges.length === 0);
 
-  for (const change of changes) {
+  for (const change of filteredChanges) {
     const item = document.createElement("article");
     item.className = "change-card";
     item.innerHTML = `
@@ -517,6 +653,14 @@ function renderChangesSummary() {
     `;
     elements.changesList.append(item);
   }
+}
+
+function matchesChangeFilters(change) {
+  const selectedUrl = elements.changesUrlFilter.value;
+  const matchesUrl = selectedUrl ? canonicalDisplayUrlForChange(change) === selectedUrl : true;
+  const matchesTime = matchesChangesTimeFilter(change);
+  const matchesDevice = matchesChangesDeviceFilters(change);
+  return matchesUrl && matchesTime && matchesDevice;
 }
 
 function renderChangeComparisonImages(change) {
@@ -1154,6 +1298,15 @@ function canonicalDisplayUrlForSnapshot(snapshot) {
   return displayUrlForSnapshot(snapshot);
 }
 
+function canonicalDisplayUrlForChange(change) {
+  const location = change.location || {};
+  return canonicalDisplayUrlForSnapshot({
+    targetId: location.targetId,
+    url: location.url,
+    displayUrl: location.displayUrl || location.targetLabel || location.url
+  });
+}
+
 function isHomeSnapshot(snapshot) {
   return !isHomeBannerSnapshot(snapshot) && !isProductsNavSnapshot(snapshot) && isHomeLikeSnapshot(snapshot);
 }
@@ -1214,12 +1367,7 @@ function deviceIdForSnapshot(snapshot) {
 
 function deviceInfoForSnapshot(snapshot) {
   if (snapshot.devicePresetId) {
-    const byId = (state?.devicePresets || []).find((preset) => preset.id === snapshot.devicePresetId);
-    return {
-      id: snapshot.devicePresetId,
-      name: byId?.name || snapshot.deviceName || snapshot.devicePresetId,
-      group: byId?.mobile ? "mobile" : "pc"
-    };
+    return deviceInfoForPreset(snapshot.devicePresetId, snapshot.deviceName || snapshot.deviceLabel);
   }
 
   const viewportHeight = snapshot.scrollInfo?.viewportHeight;
@@ -1238,10 +1386,42 @@ function deviceInfoForSnapshot(snapshot) {
   };
 }
 
+function deviceInfoForChange(change) {
+  const location = change.location || {};
+  if (location.devicePresetId) {
+    return deviceInfoForPreset(location.devicePresetId, location.deviceName);
+  }
+
+  const name = location.deviceName || "未知设备";
+  return {
+    id: location.deviceName || "unknown-device",
+    name,
+    group: "pc"
+  };
+}
+
+function deviceInfoForPreset(devicePresetId, fallbackName) {
+  const byId = (state?.devicePresets || []).find((preset) => preset.id === devicePresetId);
+  return {
+    id: devicePresetId,
+    name: byId?.name || fallbackName || devicePresetId,
+    group: byId?.mobile ? "mobile" : "pc"
+  };
+}
+
 function uniqueDevicesFromSnapshots() {
   const devices = new Map();
   for (const snapshot of state.snapshots) {
     const device = deviceInfoForSnapshot(snapshot);
+    devices.set(device.id, device);
+  }
+  return [...devices.values()].sort(compareDevices);
+}
+
+function uniqueDevicesFromChanges() {
+  const devices = new Map();
+  for (const change of changes) {
+    const device = deviceInfoForChange(change);
     devices.set(device.id, device);
   }
   return [...devices.values()].sort(compareDevices);

@@ -128,6 +128,31 @@
                 <h2>变更汇总</h2>
                 <p>按同 URL、设备和页面位置，与上一张图对比</p>
               </div>
+              <div class="timeline-filters">
+                <div class="multi-filter" id="changesDeviceFilter" data-open="false">
+                  <button
+                    id="changesDeviceFilterButton"
+                    class="multi-filter-button"
+                    type="button"
+                    aria-haspopup="true"
+                    aria-expanded="false"
+                  >
+                    <span id="changesDeviceFilterLabel">全部截图设备</span>
+                  </button>
+                  <div id="changesDeviceFilterMenu" class="multi-filter-menu" role="group" aria-label="按变更设备过滤"></div>
+                </div>
+                <div class="date-range-filter" aria-label="按变更日期过滤">
+                  <input id="changesDateStartFilter" type="date" aria-label="开始日期">
+                  <span aria-hidden="true">→</span>
+                  <input id="changesDateEndFilter" type="date" aria-label="结束日期">
+                  <button id="changesDateClearFilter" class="icon-button" type="button" aria-label="清除日期筛选" title="清除日期筛选">
+                    ×
+                  </button>
+                </div>
+                <select id="changesUrlFilter" aria-label="按 URL 过滤">
+                  <option value="">全部 URL</option>
+                </select>
+              </div>
             </div>
             <div id="changesList" class="changes-list"></div>
             <p id="changesEmpty" class="empty">暂无变更记录。</p>
