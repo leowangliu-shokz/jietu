@@ -40,16 +40,16 @@ const selectedDeviceFilters = {
 };
 
 await refreshState();
-setInterval(refreshState, 10000);
+setInterval(() => refreshState({ preserveScroll: true }), 10000);
 
-elements.refresh.addEventListener("click", refreshState);
+elements.refresh.addEventListener("click", () => refreshState({ preserveScroll: true }));
 for (const tab of elements.tabs) {
   tab.addEventListener("click", () => setActiveTab(tab.dataset.tab));
   tab.addEventListener("keydown", handleTabKeydown);
 }
-elements.urlFilter.addEventListener("change", renderGallery);
-elements.dateStartFilter.addEventListener("change", renderGallery);
-elements.dateEndFilter.addEventListener("change", renderGallery);
+elements.urlFilter.addEventListener("change", () => renderGallery({ preserveScroll: false }));
+elements.dateStartFilter.addEventListener("change", () => renderGallery({ preserveScroll: false }));
+elements.dateEndFilter.addEventListener("change", () => renderGallery({ preserveScroll: false }));
 elements.dateClearFilter.addEventListener("click", clearDateFilter);
 elements.deviceFilterButton.addEventListener("click", toggleDeviceFilterMenu);
 elements.deviceFilterMenu.addEventListener("change", handleDeviceFilterChange);
@@ -104,13 +104,13 @@ function handleTabKeydown(event) {
   nextTab.focus();
 }
 
-async function refreshState() {
+async function refreshState(options = {}) {
   const response = await fetch("/api/state");
   state = await response.json();
-  render();
+  render(options);
 }
 
-function render() {
+function render(options = {}) {
   elements.shotCount.textContent = state.snapshots.length;
   elements.changeCount.textContent = state.changesSummary?.count || 0;
   elements.captureState.textContent = state.capture.running ? "截图中" : "空闲";
@@ -123,7 +123,7 @@ function render() {
   renderFilterOptions();
   renderDeviceFilterOptions();
   renderChangesSummary();
-  renderGallery();
+  renderGallery({ preserveScroll: options.preserveScroll !== false });
 }
 
 function latestSnapshotCapturedAt() {
@@ -219,7 +219,7 @@ function handleDeviceFilterClick(event) {
   }
   selectedDeviceFilters.devices.clear();
   renderDeviceFilterOptions();
-  renderGallery();
+  renderGallery({ preserveScroll: false });
 }
 
 function handleDeviceFilterChange(event) {
@@ -245,7 +245,7 @@ function handleDeviceFilterChange(event) {
   }
 
   renderDeviceFilterOptions();
-  renderGallery();
+  renderGallery({ preserveScroll: false });
 }
 
 function handleGalleryClick(event) {
@@ -326,7 +326,7 @@ function selectedDateRange() {
 function clearDateFilter() {
   elements.dateStartFilter.value = "";
   elements.dateEndFilter.value = "";
-  renderGallery();
+  renderGallery({ preserveScroll: false });
 }
 
 function startOfDay(value) {
@@ -466,7 +466,9 @@ function changeTypeLabel(change) {
   return "视觉";
 }
 
-function renderGallery() {
+function renderGallery(options = {}) {
+  const preserveScroll = options.preserveScroll !== false;
+  const scrollState = preserveScroll ? captureGalleryScrollState() : null;
   const selectedUrl = elements.urlFilter.value;
   const snapshots = state.snapshots.filter((snapshot) => {
     const matchesUrl = selectedUrl ? canonicalDisplayUrlForSnapshot(snapshot) === selectedUrl : true;
@@ -482,6 +484,85 @@ function renderGallery() {
   for (const card of cards) {
     elements.gallery.append(renderShotCard(card));
   }
+
+  restoreGalleryScrollState(scrollState);
+}
+
+function captureGalleryScrollState() {
+  const relatedScroll = new Map();
+  for (const related of elements.gallery.querySelectorAll(".shot-related[data-gallery-card-key]")) {
+    const key = related.dataset.galleryCardKey;
+    if (!key) {
+      continue;
+    }
+    relatedScroll.set(key, {
+      top: related.scrollTop,
+      left: related.scrollLeft
+    });
+  }
+
+  return {
+    windowX: window.scrollX,
+    windowY: window.scrollY,
+    anchor: galleryScrollAnchor(),
+    relatedScroll
+  };
+}
+
+function galleryScrollAnchor() {
+  const cards = [...elements.gallery.querySelectorAll(".shot[data-gallery-card-key]")];
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+  let best = null;
+  for (const card of cards) {
+    const rect = card.getBoundingClientRect();
+    if (rect.bottom <= 0 || rect.top >= viewportHeight) {
+      continue;
+    }
+    const distance = Math.abs(rect.top);
+    if (!best || distance < best.distance) {
+      best = {
+        key: card.dataset.galleryCardKey,
+        top: rect.top,
+        distance
+      };
+    }
+  }
+  return best ? { key: best.key, top: best.top } : null;
+}
+
+function restoreGalleryScrollState(scrollState) {
+  if (!scrollState) {
+    return;
+  }
+
+  for (const related of elements.gallery.querySelectorAll(".shot-related[data-gallery-card-key]")) {
+    const position = scrollState.relatedScroll.get(related.dataset.galleryCardKey);
+    if (!position) {
+      continue;
+    }
+    related.scrollTop = clampNumber(position.top, 0, Math.max(0, related.scrollHeight - related.clientHeight));
+    related.scrollLeft = clampNumber(position.left, 0, Math.max(0, related.scrollWidth - related.clientWidth));
+  }
+
+  if (scrollState.anchor?.key) {
+    const anchor = [...elements.gallery.querySelectorAll(".shot[data-gallery-card-key]")]
+      .find((card) => card.dataset.galleryCardKey === scrollState.anchor.key);
+    if (anchor) {
+      const rect = anchor.getBoundingClientRect();
+      window.scrollTo(scrollState.windowX, Math.max(0, window.scrollY + rect.top - scrollState.anchor.top));
+      return;
+    }
+  }
+
+  window.scrollTo(scrollState.windowX, Math.max(0, scrollState.windowY));
+}
+
+function clampNumber(value, min, max) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) {
+    return min;
+  }
+  return Math.min(max, Math.max(min, number));
 }
 
 function buildGalleryCards(snapshots) {
@@ -610,9 +691,30 @@ function relatedSectionSort(sectionKey) {
   return index === -1 ? 1000 : index;
 }
 
+function galleryCardKey(card) {
+  const snapshot = card.snapshot || {};
+  if (card.homeGroup) {
+    return [
+      "home",
+      homeGroupKey(snapshot),
+      snapshot.id || "",
+      snapshot.file || "",
+      snapshot.capturedAt || ""
+    ].join("|");
+  }
+  return [
+    "shot",
+    snapshot.id || "",
+    snapshot.file || "",
+    snapshot.imageUrl || "",
+    snapshot.capturedAt || ""
+  ].join("|");
+}
+
 function renderShotCard(card) {
   const snapshot = card.snapshot;
   const displayUrl = card.homeGroup ? homeDisplayUrl() : canonicalDisplayUrlForSnapshot(snapshot);
+  const cardKey = galleryCardKey(card);
   const item = document.createElement("article");
   const hasRelatedWarning = relatedWarnings(card.relatedValidation).length > 0;
   item.className = [
@@ -620,6 +722,7 @@ function renderShotCard(card) {
     card.relatedShots.length ? "has-related-shots" : "",
     hasRelatedWarning ? "has-related-warning" : ""
   ].filter(Boolean).join(" ");
+  item.dataset.galleryCardKey = cardKey;
   item.innerHTML = `
     <a class="shot-main-image" href="${snapshot.imageUrl}" target="_blank" rel="noreferrer">
       <img src="${snapshot.imageUrl}" alt="${escapeHtml(displayUrl)} ${formatDate(snapshot.capturedAt)}" loading="lazy">
@@ -633,15 +736,16 @@ function renderShotCard(card) {
         ${snapshot.truncated ? "<span class=\"pill warn\">已截断</span>" : ""}
       </p>
     </div>
-    ${renderRelatedShots(card.relatedShots, card.relatedValidation)}
+    ${renderRelatedShots(card.relatedShots, card.relatedValidation, cardKey)}
   `;
   return item;
 }
 
-function renderRelatedShots(relatedShots, validation = null) {
+function renderRelatedShots(relatedShots, validation = null, cardKey = "") {
   const warnings = relatedWarnings(validation);
+  const keyAttribute = cardKey ? ` data-gallery-card-key="${escapeHtml(cardKey)}"` : "";
   if (!relatedShots.length && !warnings.length) {
-    return "<div class=\"shot-related shot-related-empty\" aria-hidden=\"true\"></div>";
+    return `<div class="shot-related shot-related-empty"${keyAttribute} aria-hidden="true"></div>`;
   }
   const groups = groupRelatedShots(relatedShots);
   const warningTitle = warnings.map((warning) =>
@@ -649,7 +753,7 @@ function renderRelatedShots(relatedShots, validation = null) {
   ).join("\n");
 
   return `
-    <div class="shot-related">
+    <div class="shot-related"${keyAttribute}>
       <p class="related-kicker">
         更多截图
         ${warnings.length ? `<button type="button" class="related-warning" title="${escapeHtml(warningTitle)}" aria-expanded="false">校验警告</button>` : ""}
