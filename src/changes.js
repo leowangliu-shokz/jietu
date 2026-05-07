@@ -254,6 +254,12 @@ async function compareItems(fromItem, toItem, options) {
       tabIndex: toItem.tabIndex,
       tabLabel: toItem.tabLabel,
       pageIndex: toItem.pageIndex,
+      interactionState: toItem.interactionState,
+      hoverItemKey: toItem.hoverItemKey,
+      hoverItemLabel: toItem.hoverItemLabel,
+      hoverItemRect: toItem.hoverItemRect,
+      basePageIndex: toItem.basePageIndex,
+      hoverIndex: toItem.hoverIndex,
       trackIndex: toItem.trackIndex,
       trackLabel: toItem.trackLabel,
       visibleItems: toItem.visibleItems
@@ -360,6 +366,7 @@ export function judgeHumanVisibleChange(fromItem, toItem, diff, options = {}) {
   }
 
   signals.push(...mediaItemChangeSignals(fromItem, toItem, settings));
+  signals.push(...productHoverChangeSignals(fromItem, toItem));
 
   const layoutChange = layoutChangeForTextBlocks(fromItem, toItem, settings);
   if (layoutChange.changed) {
@@ -432,6 +439,12 @@ function createComparableItem(snapshot, shot, relatedIndex = null) {
   const bannerIndex = numberOrNull(source.bannerIndex);
   const pageIndex = numberOrNull(source.pageIndex);
   const tabIndex = numberOrNull(source.tabIndex);
+  const interactionState = source.interactionState || source.sectionState?.interactionState || "default";
+  const hoverItemKey = source.hoverItemKey || source.sectionState?.hoverItemKey || null;
+  const hoverItemLabel = source.hoverItemLabel || source.sectionState?.hoverItemLabel || null;
+  const hoverItemRect = source.hoverItemRect || source.sectionState?.hoverItemRect || null;
+  const basePageIndex = numberOrNull(source.basePageIndex || source.sectionState?.basePageIndex);
+  const hoverIndex = numberOrNull(source.hoverIndex || source.sectionState?.hoverIndex);
   const positionKey = positionKeyForSource({
     itemKind,
     sectionKey,
@@ -439,6 +452,10 @@ function createComparableItem(snapshot, shot, relatedIndex = null) {
     bannerIndex,
     pageIndex,
     tabIndex,
+    interactionState,
+    hoverItemKey,
+    basePageIndex,
+    hoverIndex,
     relatedIndex
   });
   const item = {
@@ -468,6 +485,12 @@ function createComparableItem(snapshot, shot, relatedIndex = null) {
     tabIndex,
     tabLabel: source.tabLabel || null,
     pageIndex,
+    interactionState,
+    hoverItemKey,
+    hoverItemLabel,
+    hoverItemRect,
+    basePageIndex,
+    hoverIndex,
     trackIndex: numberOrNull(source.trackIndex || source.tabIndex),
     trackLabel: source.trackLabel || source.tabLabel || null,
     itemCount: numberOrNull(source.itemCount),
@@ -485,12 +508,33 @@ function createComparableItem(snapshot, shot, relatedIndex = null) {
   return item;
 }
 
-function positionKeyForSource({ itemKind, sectionKey, stateIndex, bannerIndex, pageIndex, tabIndex, relatedIndex }) {
+function positionKeyForSource({
+  itemKind,
+  sectionKey,
+  stateIndex,
+  bannerIndex,
+  pageIndex,
+  tabIndex,
+  interactionState,
+  hoverItemKey,
+  basePageIndex,
+  hoverIndex,
+  relatedIndex
+}) {
   if (itemKind === "page") {
     return "page";
   }
   if (bannerIndex) {
     return `banner:${bannerIndex}`;
+  }
+  if (interactionState === "hover") {
+    return [
+      sectionKey,
+      "tab",
+      tabIndex ?? "",
+      "hover",
+      hoverItemKey || hoverIndex || basePageIndex || relatedIndex || ""
+    ].join(":");
   }
   if (pageIndex || tabIndex !== null) {
     return `${sectionKey}:tab:${tabIndex ?? ""}:page:${pageIndex ?? ""}`;
@@ -511,7 +555,11 @@ function publicItemRef(item) {
     width: item.width,
     height: item.height,
     text: truncateText(normalizeComparableText(extractText(item)), 2000),
-    visibleItems: item.visibleItems || item.sectionState?.visibleItems || null
+    visibleItems: item.visibleItems || item.sectionState?.visibleItems || null,
+    interactionState: item.interactionState || "default",
+    hoverItemKey: item.hoverItemKey || null,
+    hoverItemLabel: item.hoverItemLabel || null,
+    hoverItemRect: item.hoverItemRect || null
   };
 }
 
@@ -599,6 +647,27 @@ function imageAssetKey(source) {
   }
 }
 
+function productHoverChangeSignals(fromItem, toItem) {
+  if (toItem.sectionKey !== "product-showcase" || toItem.interactionState !== "hover") {
+    return [];
+  }
+  const key = toItem.hoverItemKey || toItem.sectionState?.hoverItemKey || "";
+  const beforeKey = fromItem.hoverItemKey || fromItem.sectionState?.hoverItemKey || "";
+  const label = toItem.hoverItemLabel || toItem.sectionState?.hoverItemLabel || toItem.label || key || "product";
+  if (!key && !label) {
+    return [];
+  }
+  return [{
+    type: "product-hover-item",
+    label: `hover product changed: ${label}`,
+    reason: beforeKey && key && beforeKey !== key ? "hover item identity changed" : "hover visual changed",
+    hoverItemKey: key || null,
+    hoverItemLabel: label,
+    beforeHoverItemKey: beforeKey || null,
+    rect: toItem.hoverItemRect || toItem.sectionState?.hoverItemRect || null
+  }];
+}
+
 function mediaItemChangeSignals(fromItem, toItem, settings) {
   if (toItem.sectionKey !== "media") {
     return [];
@@ -656,7 +725,7 @@ function mediaItemChangeSignals(fromItem, toItem, settings) {
 
 function mediaItemSignalRegions(signals, width, height) {
   return (signals || [])
-    .filter((signal) => signal?.type === "media-item")
+    .filter((signal) => signal?.type === "media-item" || signal?.type === "product-hover-item")
     .map((signal) => {
       const rect = normalizeRect(signal.rect);
       if (!rect) {
@@ -675,9 +744,11 @@ function mediaItemSignalRegions(signals, width, height) {
         width: Math.round(right - x),
         height: Math.round(bottom - y),
         pixels: 0,
-        source: "media-item",
+        source: signal.type,
         mediaItemId: signal.mediaItemId || null,
-        mediaItemLabel: signal.mediaItemLabel || null
+        mediaItemLabel: signal.mediaItemLabel || null,
+        hoverItemKey: signal.hoverItemKey || null,
+        hoverItemLabel: signal.hoverItemLabel || null
       };
     })
     .filter(Boolean);

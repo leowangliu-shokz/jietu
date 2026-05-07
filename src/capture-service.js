@@ -203,6 +203,12 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
       tabLabel: item.tabLabel || null,
       tabIndex: item.tabIndex || null,
       pageIndex: item.pageIndex || null,
+      interactionState: item.interactionState || "default",
+      hoverItemKey: item.hoverItemKey || null,
+      hoverItemLabel: item.hoverItemLabel || null,
+      hoverItemRect: item.hoverItemRect || null,
+      basePageIndex: item.basePageIndex || null,
+      hoverIndex: item.hoverIndex || null,
       trackLabel: item.trackLabel || item.tabLabel || null,
       trackIndex: item.trackIndex || item.tabIndex || null,
       productCount: item.productCount || null,
@@ -274,9 +280,15 @@ function compareRelatedShots(a, b) {
   const orderB = sectionB === -1 ? 1000 : sectionB;
   return orderA - orderB ||
     Number(a.tabIndex || 0) - Number(b.tabIndex || 0) ||
+    interactionSort(a) - interactionSort(b) ||
     Number(a.pageIndex || 0) - Number(b.pageIndex || 0) ||
+    Number(a.hoverIndex || 0) - Number(b.hoverIndex || 0) ||
     Number(a.stateIndex || a.bannerIndex || 0) - Number(b.stateIndex || b.bannerIndex || 0) ||
     String(a.label || "").localeCompare(String(b.label || ""), "zh-CN");
+}
+
+function interactionSort(item) {
+  return item?.interactionState === "hover" ? 1 : 0;
 }
 
 async function removeCaptureOutputs(basePath) {

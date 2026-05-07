@@ -89,6 +89,67 @@ test("prefers tab and page identity when state index shifts", async () => {
   assert.equal(changes[0].textChange.afterFragment, "OpenRun Pro 2 New");
 });
 
+test("matches product showcase hover by product identity", async () => {
+  const before = productHoverShot("hover-before.png", {
+    stateIndex: 4,
+    hoverItemKey: "/products/openfit-pro",
+    hoverItemLabel: "OPENFIT PRO",
+    sectionState: { text: "OPENFIT PRO hover old" }
+  });
+  const after = productHoverShot("hover-after.png", {
+    stateIndex: 9,
+    hoverItemKey: "/products/openfit-pro",
+    hoverItemLabel: "OPENFIT PRO",
+    sectionState: { text: "OPENFIT PRO hover new" }
+  });
+
+  const changes = await compareSnapshots([
+    snapshot("snap-1", "2026-05-03T08:00:00.000Z", [before]),
+    snapshot("snap-2", "2026-05-03T09:00:00.000Z", [after])
+  ], { writeDiffImages: false });
+
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].location.interactionState, "hover");
+  assert.equal(changes[0].location.hoverItemKey, "/products/openfit-pro");
+  assert.equal(changes[0].location.hoverItemLabel, "OPENFIT PRO");
+  assert.match(changes[0].comparisonKey, /product-showcase:tab:1:hover:\/products\/openfit-pro$/);
+  assert.equal(changes[0].textChange.before, "OPENFIT PRO hover old");
+  assert.equal(changes[0].textChange.after, "OPENFIT PRO hover new");
+});
+
+test("marks product showcase hover visual changes on the hovered card", async () => {
+  const archiveRoot = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-product-hover-"));
+  const beforeFile = "2026-05-03/example-com/product-hover-before.png";
+  const afterFile = "2026-05-03/example-com/product-hover-after.png";
+  const beforeImage = solidImage(120, 80, [255, 255, 255, 255]);
+  const afterImage = solidImage(120, 80, [255, 255, 255, 255]);
+  fillRect(afterImage, 120, 38, 22, 16, 16, [210, 40, 40, 255]);
+  await writeArchiveImage(archiveRoot, beforeFile, 120, 80, beforeImage);
+  await writeArchiveImage(archiveRoot, afterFile, 120, 80, afterImage);
+
+  const rect = { x: 30, y: 18, width: 40, height: 32 };
+  const changes = await compareSnapshots([
+    snapshot("snap-1", "2026-05-03T08:00:00.000Z", [
+      productHoverShot(beforeFile, { hoverItemRect: rect })
+    ]),
+    snapshot("snap-2", "2026-05-03T09:00:00.000Z", [
+      productHoverShot(afterFile, { hoverItemRect: rect })
+    ])
+  ], { archiveRoot, writeDiffImages: false });
+
+  assert.equal(changes.length, 1);
+  assert.ok(changes[0].visualChange.signals.some((signal) =>
+    signal.type === "product-hover-item" &&
+    signal.hoverItemLabel === "OPENFIT PRO"
+  ));
+  assert.ok(changes[0].visualChange.regions.some((region) =>
+    region.source === "product-hover-item" &&
+    region.hoverItemLabel === "OPENFIT PRO" &&
+    region.x === rect.x &&
+    region.y === rect.y
+  ));
+});
+
 test("detects visual regions and filters tiny noise", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-diff-"));
   const beforePath = path.join(tempDir, "before.png");
@@ -480,6 +541,53 @@ function mediaShot(file, items, overrides = {}) {
       ...(overrides.sectionState || {})
     },
     ...overrides
+  };
+}
+
+function productHoverShot(file, overrides = {}) {
+  const hoverItemKey = overrides.hoverItemKey || "/products/openfit-pro";
+  const hoverItemLabel = overrides.hoverItemLabel || "OPENFIT PRO";
+  const hoverItemRect = overrides.hoverItemRect || { x: 30, y: 18, width: 40, height: 32 };
+  const sectionState = {
+    text: "OPENFIT PRO hover",
+    images: ["https://cdn.example.com/openfit-hover.webp"],
+    interactionState: "hover",
+    hoverItemKey,
+    hoverItemLabel,
+    hoverItemRect,
+    hoveredProduct: {
+      key: hoverItemKey,
+      label: hoverItemLabel,
+      href: hoverItemKey,
+      image: "https://cdn.example.com/openfit-hover.webp",
+      rect: hoverItemRect
+    },
+    ...(overrides.sectionState || {})
+  };
+  return {
+    kind: "product-hover",
+    sectionKey: "product-showcase",
+    sectionLabel: "Product Showcase",
+    sectionTitle: "Product Showcase",
+    tabLabel: "Best Selling",
+    tabIndex: 1,
+    pageIndex: 1,
+    basePageIndex: 1,
+    hoverIndex: 1,
+    stateIndex: 4,
+    stateLabel: `Hover ${hoverItemLabel}`,
+    label: `Hover ${hoverItemLabel}`,
+    interactionState: "hover",
+    hoverItemKey,
+    hoverItemLabel,
+    hoverItemRect,
+    file,
+    imageUrl: `/archive/${file}`,
+    width: overrides.width || 120,
+    height: overrides.height || 80,
+    sectionState,
+    ...overrides,
+    sectionState
   };
 }
 

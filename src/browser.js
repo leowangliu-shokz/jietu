@@ -511,7 +511,7 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
 
 async function captureShokzHomeRelatedSection(client, outputPath, viewport, definition) {
   await primeLazyImages(client);
-  const plan = await readShokzHomeRelatedSectionPlan(client, definition);
+  const plan = await readShokzHomeRelatedSectionPlan(client, definition, viewport);
   if (!plan.ok || !Array.isArray(plan.states) || !plan.states.length) {
     const warningReason = Array.isArray(plan.warnings) && plan.warnings.length
       ? ` ${plan.warnings.map((warning) => warning.message).filter(Boolean).join(" ")}`
@@ -529,11 +529,16 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
   let maxHeight = 0;
 
   for (const state of plan.states) {
-    await activateShokzHomeRelatedState(client, definition, state);
+    await clearRelatedHover(client);
+    const activation = await activateShokzHomeRelatedState(client, definition, state);
     await sleep(650);
     await waitForRelatedSectionImages(client, definition.key);
     await dismissObstructions(client, { rounds: 2 });
     await hideFixedElements(client);
+    if (activation?.hoverPoint) {
+      await moveMouseToPoint(client, activation.hoverPoint);
+      await sleep(420);
+    }
     await sleep(180);
 
     const current = await readShokzHomeRelatedState(client, definition, state);
@@ -625,6 +630,12 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
       tabLabel: state.tabLabel || null,
       tabIndex: state.tabIndex || null,
       pageIndex: state.pageIndex || null,
+      interactionState: state.interactionState || "default",
+      hoverItemKey: state.hoverItemKey || null,
+      hoverItemLabel: state.hoverItemLabel || null,
+      hoverItemRect: current.hoverItemRect || state.hoverItemRect || null,
+      basePageIndex: state.basePageIndex || null,
+      hoverIndex: state.hoverIndex || null,
       trackLabel: state.trackLabel || state.tabLabel || null,
       trackIndex: state.trackIndex || state.tabIndex || null,
       productCount: state.productCount || null,
@@ -654,6 +665,13 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
         tabLabel: state.tabLabel || null,
         tabIndex: state.tabIndex || null,
         pageIndex: state.pageIndex || null,
+        interactionState: state.interactionState || "default",
+        hoverItemKey: state.hoverItemKey || null,
+        hoverItemLabel: state.hoverItemLabel || null,
+        hoverItemRect: current.hoverItemRect || state.hoverItemRect || null,
+        basePageIndex: state.basePageIndex || null,
+        hoverIndex: state.hoverIndex || null,
+        hoveredProduct: current.hoveredProduct || state.hoveredProduct || null,
         trackLabel: state.trackLabel || state.tabLabel || null,
         trackIndex: state.trackIndex || state.tabIndex || null,
         productCount: state.productCount || null,
@@ -666,6 +684,7 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
         windowSignature: state.windowSignature || null
       }
     });
+    await clearRelatedHover(client);
   }
 
   return {
@@ -678,10 +697,16 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
   };
 }
 
-async function readShokzHomeRelatedSectionPlan(client, definition) {
+async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}) {
+  const runtimeDefinition = {
+    ...definition,
+    captureHover: definition.key === "product-showcase" &&
+      !viewport.mobile &&
+      !viewport.touch
+  };
   const result = await client.send("Runtime.evaluate", {
     expression: `(() => {
-      const definition = ${JSON.stringify(definition)};
+      const definition = ${JSON.stringify(runtimeDefinition)};
       const warnings = [];
       const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
       const cleanText = (value, max = 360) => String(value || "")
@@ -776,6 +801,12 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
         .replace(/\\b\\d+\\s*\\/\\s*\\d+\\b/g, "")
         .replace(/\\s+/g, " ")
         .trim();
+      const productLabel = (card, text) => cleanText(
+        card.querySelector("h1, h2, h3, h4, [class*='title'], [class*='name']")?.innerText ||
+        String(text || "").split(/\\$|From\\b|\\d+\\.\\d{2}/i)[0] ||
+        text,
+        90
+      );
       const productCards = (root, options = {}) => {
         const rootRect = root.getBoundingClientRect();
         const cards = Array.from(root.querySelectorAll("a[href*='/products/']"))
@@ -790,12 +821,28 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
             const href = productHref(element);
             const text = productText(card);
             const image = productImage(card);
+            const label = productLabel(card, text);
+            const clippedLeft = Math.max(rect.left, rootRect.left);
+            const clippedTop = Math.max(rect.top, rootRect.top);
+            const clippedRight = Math.min(rect.right, rootRect.right);
+            const clippedBottom = Math.min(rect.bottom, rootRect.bottom);
             return {
               href,
               text,
+              label,
               image,
               key: href || text,
               rect,
+              rectRelative: {
+                x: Math.round(Math.max(0, clippedLeft - rootRect.left)),
+                y: Math.round(Math.max(0, clippedTop - rootRect.top)),
+                width: Math.round(Math.max(0, clippedRight - clippedLeft)),
+                height: Math.round(Math.max(0, clippedBottom - clippedTop))
+              },
+              hoverPoint: {
+                x: Math.round(Math.max(2, Math.min(window.innerWidth - 2, centerX))),
+                y: Math.round(Math.max(2, Math.min(window.innerHeight - 2, centerY)))
+              },
               visibleArea,
               visibleRatio: visibleArea / area,
               centerX,
@@ -826,7 +873,10 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
             key,
             href: item.href,
             text: item.text,
-            image: item.image
+            label: item.label,
+            image: item.image,
+            rect: item.rectRelative,
+            hoverPoint: item.hoverPoint
           });
         }
         return deduped;
@@ -1786,6 +1836,13 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
           });
         }
       };
+      const supportsProductHover = () =>
+        Boolean(definition.captureHover) &&
+        (!window.matchMedia || window.matchMedia("(hover: hover) and (pointer: fine)").matches);
+      const productHoverLabel = (card) =>
+        cleanText(card?.label || card?.text || card?.href || "Product", 90);
+      const productHoverFileId = (tabLabel, hoverIndex) =>
+        tabLabel + "-hover-" + hoverIndex;
       const collectProductPages = async (root, tabLabel, tabIndex, states) => {
         const clicked = clickProductTab(root, tabLabel);
         await sleep(700);
@@ -1827,6 +1884,9 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
         }
 
         const seen = new Set();
+        const hoverEnabled = supportsProductHover();
+        const hoverStates = [];
+        const hoverSeen = new Set();
         const maxPages = Math.max(1, allCards.length || firstWindowCards.length) + 2;
         const lastProductKey = allCards[allCards.length - 1]?.key || "";
         for (let pageIndex = 1; pageIndex <= maxPages; pageIndex += 1) {
@@ -1835,8 +1895,9 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
           if (!signature || seen.has(signature)) break;
           seen.add(signature);
           const label = tabLabel + " " + pageIndex;
-          states.push({
+          const defaultState = {
             kind: "tab-carousel",
+            interactionState: "default",
             sectionKey: definition.key,
             sectionLabel: definition.sectionLabel,
             tabLabel,
@@ -1852,7 +1913,50 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
             visibleProducts: visibleCards,
             fileId: tabLabel + "-" + pageIndex,
             isDefaultState: pageIndex === 1
-          });
+          };
+          states.push(defaultState);
+
+          if (hoverEnabled) {
+            for (const card of visibleCards) {
+              const hoverKey = card.key || card.href || card.text;
+              if (!hoverKey || hoverSeen.has(hoverKey)) continue;
+              hoverSeen.add(hoverKey);
+              const hoverIndex = hoverStates.length + 1;
+              const hoverLabel = productHoverLabel(card);
+              hoverStates.push({
+                kind: "product-hover",
+                interactionState: "hover",
+                sectionKey: definition.key,
+                sectionLabel: definition.sectionLabel,
+                tabLabel,
+                tabIndex: Number.isFinite(tabIndex) ? tabIndex + 1 : null,
+                pageIndex,
+                basePageIndex: pageIndex,
+                hoverIndex,
+                stateIndex: 0,
+                stateLabel: "Hover " + hoverLabel,
+                logicalSignature: definition.key + "|" + tabLabel + "|hover|" + hoverKey + "|" + signature,
+                windowSignature: signature,
+                tabSetSignature,
+                productCount: allCards.length,
+                visibleProductCount: visibleCards.length,
+                visibleProducts: visibleCards,
+                hoverItemKey: hoverKey,
+                hoverItemLabel: hoverLabel,
+                hoverItemRect: card.rect || null,
+                hoveredProduct: {
+                  key: hoverKey,
+                  label: hoverLabel,
+                  href: card.href || "",
+                  text: card.text || "",
+                  image: card.image || "",
+                  rect: card.rect || null
+                },
+                fileId: productHoverFileId(tabLabel, hoverIndex),
+                isDefaultState: false
+              });
+            }
+          }
 
           if (lastProductKey && visibleCards.some((card) => card.key === lastProductKey)) {
             break;
@@ -1861,6 +1965,10 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
           const moved = await advance(root);
           const after = productWindowSignature(root);
           if (!moved || !after || after === before || seen.has(after)) break;
+        }
+        for (const hoverState of hoverStates) {
+          hoverState.stateIndex = states.length + 1;
+          states.push(hoverState);
         }
       };
       const collectAthletePages = async (root, tabLabel, tabIndex, states) => {
@@ -2141,8 +2249,12 @@ async function readShokzHomeRelatedSectionPlan(client, definition) {
           for (const [tabIndex, tabLabel] of (definition.tabs || []).entries()) {
             const tabStates = [];
             await collectPages(root, tabLabel, tabIndex, tabStates, warnings, knownTabFirstSignatures);
+            const defaultCount = tabStates.filter((item) => item.interactionState !== "hover").length || tabStates.length;
+            const hoverCount = tabStates.filter((item) => item.interactionState === "hover").length;
             for (const state of tabStates) {
-              state.pageCount = tabStates.length;
+              state.pageCount = state.interactionState === "hover"
+                ? (hoverCount || tabStates.length)
+                : defaultCount;
               states.push(state);
             }
           }
@@ -2234,6 +2346,12 @@ async function activateShokzHomeRelatedState(client, definition, state) {
         .replace(/\\b\\d+\\s*\\/\\s*\\d+\\b/g, "")
         .replace(/\\s+/g, " ")
         .trim();
+      const productLabel = (card, text) => cleanText(
+        card.querySelector("h1, h2, h3, h4, [class*='title'], [class*='name']")?.innerText ||
+        String(text || "").split(/\\$|From\\b|\\d+\\.\\d{2}/i)[0] ||
+        text,
+        90
+      );
       const productCards = () => {
         const rootRect = root.getBoundingClientRect();
         const cards = Array.from(root.querySelectorAll("a[href*='/products/']"))
@@ -2246,15 +2364,33 @@ async function activateShokzHomeRelatedState(client, definition, state) {
             const href = productHref(element);
             const text = productText(card);
             const image = productImage(card);
+            const label = productLabel(card, text);
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            const clippedLeft = Math.max(rect.left, rootRect.left);
+            const clippedTop = Math.max(rect.top, rootRect.top);
+            const clippedRight = Math.min(rect.right, rootRect.right);
+            const clippedBottom = Math.min(rect.bottom, rootRect.bottom);
             return {
               key: href || text,
               href,
               text,
+              label,
               image,
               rect,
+              rectRelative: {
+                x: Math.round(Math.max(0, clippedLeft - rootRect.left)),
+                y: Math.round(Math.max(0, clippedTop - rootRect.top)),
+                width: Math.round(Math.max(0, clippedRight - clippedLeft)),
+                height: Math.round(Math.max(0, clippedBottom - clippedTop))
+              },
+              hoverPoint: {
+                x: Math.round(Math.max(2, Math.min(window.innerWidth - 2, centerX))),
+                y: Math.round(Math.max(2, Math.min(window.innerHeight - 2, centerY)))
+              },
               visibleArea,
               visibleRatio: visibleArea / area,
-              centerY: rect.top + rect.height / 2
+              centerY
             };
           })
           .filter((item) =>
@@ -2275,7 +2411,15 @@ async function activateShokzHomeRelatedState(client, definition, state) {
           const key = item.key || item.href;
           if (!key || seen.has(key)) continue;
           seen.add(key);
-          deduped.push({ key, href: item.href, text: item.text, image: item.image });
+          deduped.push({
+            key,
+            href: item.href,
+            text: item.text,
+            label: item.label,
+            image: item.image,
+            rect: item.rectRelative,
+            hoverPoint: item.hoverPoint
+          });
         }
         return deduped;
       };
@@ -3031,17 +3175,46 @@ async function activateShokzHomeRelatedState(client, definition, state) {
           const currentWindowSignature = () => definition.key === "athletes"
             ? athleteWindowSignature()
             : productWindowSignature();
+          const hoverActivation = () => {
+            if (definition.key !== "product-showcase" || state.interactionState !== "hover") {
+              return null;
+            }
+            const cards = productCards();
+            const target = cards.find((card) =>
+              card.key === state.hoverItemKey ||
+              card.href === state.hoverItemKey ||
+              card.label === state.hoverItemLabel ||
+              card.text === state.hoverItemLabel
+            );
+            if (!target?.hoverPoint) {
+              return {
+                ok: false,
+                reason: "Could not find hover product " + (state.hoverItemLabel || state.hoverItemKey || state.stateLabel) + "."
+              };
+            }
+            return {
+              ok: true,
+              hoverPoint: target.hoverPoint,
+              hoverItemKey: target.key,
+              hoverItemLabel: target.label || state.hoverItemLabel || target.text,
+              hoverItemRect: target.rect || state.hoverItemRect || null
+            };
+          };
           const maxAttempts = Math.max(12, Number(state.pageIndex || 1) + 4);
           for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
             const currentSignature = currentWindowSignature();
             if (targetSignature && currentSignature === targetSignature) {
               root.scrollIntoView({ block: "center", inline: "nearest" });
               await sleep(260);
+              const hover = hoverActivation();
+              if (hover) return hover;
               return { ok: true };
             }
             if (!targetSignature && attempt >= Math.max(0, Number(state.pageIndex || 1) - 1)) {
               root.scrollIntoView({ block: "center", inline: "nearest" });
               await sleep(260);
+              const hover = hoverActivation();
+              if (hover) return hover;
               return { ok: true };
             }
             const before = currentSignature;
@@ -3081,6 +3254,25 @@ async function activateShokzHomeRelatedState(client, definition, state) {
     throw new Error(value.reason || `Could not activate ${definition.sectionLabel} ${state.stateLabel}.`);
   }
   return value;
+}
+
+async function moveMouseToPoint(client, point) {
+  const x = Math.round(Number(point?.x));
+  const y = Math.round(Number(point?.y));
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    return;
+  }
+  await client.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x,
+    y,
+    button: "none",
+    pointerType: "mouse"
+  }).catch(() => null);
+}
+
+async function clearRelatedHover(client) {
+  await moveMouseToPoint(client, { x: 2, y: 2 });
 }
 
 async function waitForRelatedSectionImages(client, sectionKey) {
@@ -3173,7 +3365,13 @@ async function readShokzHomeRelatedState(client, definition, state) {
         .replace(/\\b\\d+\\s*\\/\\s*\\d+\\b/g, "")
         .replace(/\\s+/g, " ")
         .trim();
-      const productCardSignature = (root) => {
+      const productLabel = (card, text) => cleanText(
+        card.querySelector("h1, h2, h3, h4, [class*='title'], [class*='name']")?.innerText ||
+        String(text || "").split(/\\$|From\\b|\\d+\\.\\d{2}/i)[0] ||
+        text,
+        90
+      );
+      const productVisibleCards = (root) => {
         const rootRect = root.getBoundingClientRect();
         const visibleLinks = Array.from(root.querySelectorAll("a[href*='/products/']"))
           .filter(visible)
@@ -3187,12 +3385,24 @@ async function readShokzHomeRelatedState(client, definition, state) {
             const href = productHref(element);
             const text = productText(card);
             const image = productImage(card);
+            const label = productLabel(card, text);
+            const clippedLeft = Math.max(rect.left, rootRect.left);
+            const clippedTop = Math.max(rect.top, rootRect.top);
+            const clippedRight = Math.min(rect.right, rootRect.right);
+            const clippedBottom = Math.min(rect.bottom, rootRect.bottom);
             return {
               href,
               text,
+              label,
               image,
               key: href || text,
               rect,
+              rectRelative: {
+                x: Math.round(Math.max(0, clippedLeft - rootRect.left)),
+                y: Math.round(Math.max(0, clippedTop - rootRect.top)),
+                width: Math.round(Math.max(0, clippedRight - clippedLeft)),
+                height: Math.round(Math.max(0, clippedBottom - clippedTop))
+              },
               visibleArea,
               visibleRatio: visibleArea / area,
               centerX,
@@ -3219,10 +3429,21 @@ async function readShokzHomeRelatedState(client, definition, state) {
           seen.add(key);
           deduped.push({
             key,
-            href: item.href
+            href: item.href,
+            text: item.text,
+            label: item.label,
+            image: item.image,
+            rect: item.rectRelative
           });
         }
-        return deduped.length ? JSON.stringify(deduped) : "";
+        return deduped;
+      };
+      const productCardSignature = (root) => {
+        const cards = productVisibleCards(root);
+        return cards.length ? JSON.stringify(cards.map((card) => ({
+          key: card.key,
+          href: card.href
+        }))) : "";
       };
       const activeTabbedPanel = (root) =>
         Array.from(root.querySelectorAll("[class*='swiper-container-product-card'], [class*='swiper-container-athlete'], [class*='athlete'][class*='swiper'], .swiper"))
@@ -3686,6 +3907,15 @@ async function readShokzHomeRelatedState(client, definition, state) {
         height: rootRect.height
       };
       const productSignature = definition.key === "product-showcase" ? productCardSignature(root) : "";
+      const productVisibleItems = definition.key === "product-showcase" ? productVisibleCards(root) : [];
+      const hoveredProduct = definition.key === "product-showcase" && state.interactionState === "hover"
+        ? productVisibleItems.find((card) =>
+          card.key === state.hoverItemKey ||
+          card.href === state.hoverItemKey ||
+          card.label === state.hoverItemLabel ||
+          card.text === state.hoverItemLabel
+        ) || null
+        : null;
       const sceneSignature = definition.key === "scene-explore" ? sceneWindowSignature(root) : "";
       const sceneVisibleItems = definition.key === "scene-explore" ? sceneItems(root) : [];
       const athleteSignature = definition.key === "athletes" ? athleteWindowSignature(root) : "";
@@ -3714,19 +3944,40 @@ async function readShokzHomeRelatedState(client, definition, state) {
         textBlocks,
         images,
         logicalSignature: definition.key === "product-showcase"
-          ? productSignature || state.logicalSignature
+          ? (state.interactionState === "hover"
+            ? (state.logicalSignature || productSignature)
+            : (productSignature || state.logicalSignature))
           : (definition.key === "scene-explore"
             ? sceneSignature || state.logicalSignature
             : (definition.key === "athletes" ? athleteSignature || state.logicalSignature : state.logicalSignature)),
         activeIndex: state.stateIndex,
-        visibleItemCount: sceneVisibleItems.length || null,
-        visibleItems: sceneVisibleItems.length ? sceneVisibleItems : null,
-        itemRects: sceneVisibleItems.length ? sceneVisibleItems.map((item) => ({
-          sceneItemId: item.sceneItemId,
-          key: item.key,
-          label: item.label,
-          rect: item.rect
-        })) : null
+        visibleItemCount: productVisibleItems.length || sceneVisibleItems.length || null,
+        visibleItems: productVisibleItems.length ? productVisibleItems : (sceneVisibleItems.length ? sceneVisibleItems : null),
+        itemRects: productVisibleItems.length
+          ? productVisibleItems.map((item) => ({
+            productItemId: item.key,
+            key: item.key,
+            label: item.label,
+            rect: item.rect
+          }))
+          : (sceneVisibleItems.length ? sceneVisibleItems.map((item) => ({
+            sceneItemId: item.sceneItemId,
+            key: item.key,
+            label: item.label,
+            rect: item.rect
+          })) : null),
+        interactionState: state.interactionState || "default",
+        hoverItemKey: state.hoverItemKey || null,
+        hoverItemLabel: state.hoverItemLabel || null,
+        hoverItemRect: hoveredProduct?.rect || state.hoverItemRect || null,
+        hoveredProduct: hoveredProduct ? {
+          key: hoveredProduct.key,
+          label: hoveredProduct.label,
+          href: hoveredProduct.href,
+          text: hoveredProduct.text,
+          image: hoveredProduct.image,
+          rect: hoveredProduct.rect
+        } : null
       };
     })()`,
     returnByValue: true
@@ -4336,8 +4587,11 @@ function relatedOutputPath(outputPath, sectionKey, stateId) {
 }
 
 function relatedCaptureScopeKey(definition, state) {
+  if (state?.interactionState === "hover") {
+    return `${definition.key}|${state.tabIndex || state.tabLabel || "tab"}|hover|${state.hoverItemKey || state.hoverIndex || state.stateLabel || "item"}`;
+  }
   if (definition.mode === "tabs-carousel") {
-    return `${definition.key}|${state.tabIndex || state.tabLabel || "tab"}`;
+    return `${definition.key}|${state.tabIndex || state.tabLabel || "tab"}|default`;
   }
   return definition.key;
 }

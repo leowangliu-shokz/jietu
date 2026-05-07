@@ -766,6 +766,9 @@ function visualChangeSummary(visualChange) {
 }
 
 function visualSignalLabel(signal) {
+  if (signal?.type === "product-hover-item") {
+    return signal.hoverItemLabel ? `Hover ${signal.hoverItemLabel}` : "Hover 交互态变化";
+  }
   return {
     copy: "文案变化",
     image: "图片素材变化",
@@ -777,6 +780,14 @@ function visualSignalLabel(signal) {
 }
 
 function changeTitle(change) {
+  if (change.location?.interactionState === "hover") {
+    return [
+      change.location?.displayUrl,
+      change.location?.sectionLabel,
+      change.location?.tabLabel,
+      `Hover ${change.location?.hoverItemLabel || change.location?.label || ""}`.trim()
+    ].filter(Boolean).join(" / ") || "页面变化";
+  }
   return [
     change.location?.displayUrl,
     change.location?.sectionLabel,
@@ -1008,11 +1019,17 @@ function sortedRelatedShots(relatedShots) {
   return [...relatedShots].sort((a, b) =>
     relatedSectionSort(a.sectionKey) - relatedSectionSort(b.sectionKey) ||
     String(a.tabLabel || "").localeCompare(String(b.tabLabel || ""), "zh-CN") ||
+    relatedInteractionSort(a) - relatedInteractionSort(b) ||
     Number(a.pageIndex || 0) - Number(b.pageIndex || 0) ||
+    Number(a.hoverIndex || 0) - Number(b.hoverIndex || 0) ||
     Number(a.stateIndex || 0) - Number(b.stateIndex || 0) ||
     Number(a.bannerIndex || 0) - Number(b.bannerIndex || 0) ||
     String(a.label || "").localeCompare(String(b.label || ""), "zh-CN")
   );
+}
+
+function relatedInteractionSort(shot) {
+  return shot?.interactionState === "hover" ? 1 : 0;
 }
 
 function relatedSectionSort(sectionKey) {
@@ -1123,7 +1140,9 @@ function renderRelatedSection(group) {
           ${tabGroups.map((tabGroup) => `
             <section class="related-tab-group">
               <p class="related-tab-title">${escapeHtml(tabGroup.title)}</p>
-              ${renderRelatedThumbGrid(tabGroup.shots)}
+              ${group.sectionKey === "product-showcase"
+                ? renderProductShowcaseTabShots(tabGroup.shots)
+                : renderRelatedThumbGrid(tabGroup.shots)}
             </section>
           `).join("")}
         </div>
@@ -1139,8 +1158,27 @@ function renderRelatedSection(group) {
   `;
 }
 
+function renderProductShowcaseTabShots(shots) {
+  const defaultShots = shots.filter((shot) => shot.interactionState !== "hover");
+  const hoverShots = shots.filter((shot) => shot.interactionState === "hover");
+  return `
+    ${defaultShots.length ? `
+      <div class="related-tab-subgroup">
+        <p class="related-subtitle">默认</p>
+        ${renderRelatedThumbGrid(defaultShots)}
+      </div>
+    ` : ""}
+    ${hoverShots.length ? `
+      <div class="related-tab-subgroup">
+        <p class="related-subtitle">Hover</p>
+        ${renderRelatedThumbGrid(hoverShots)}
+      </div>
+    ` : ""}
+  `;
+}
+
 function groupHasTabbedPages(group) {
-  return group.shots.some((shot) => shot.tabLabel && relatedShotPageIndex(shot));
+  return group.shots.some((shot) => shot.tabLabel && (relatedShotPageIndex(shot) || shot.interactionState === "hover"));
 }
 
 function renderRelatedThumbGrid(shots) {
@@ -1177,6 +1215,9 @@ function groupRelatedShotsByTab(shots) {
 }
 
 function relatedThumbLabel(shot) {
+  if (shot.interactionState === "hover") {
+    return `Hover ${shot.hoverItemLabel || relatedShotDisplayLabel(shot)}`;
+  }
   const pageIndex = relatedShotPageIndex(shot);
   if (shot.tabLabel && pageIndex) {
     return `第 ${pageIndex} 张`;
@@ -1206,6 +1247,14 @@ function relatedWarnings(validation) {
 
 function relatedShotTitle(shot) {
   const pageIndex = relatedShotPageIndex(shot);
+  if (shot.interactionState === "hover") {
+    return [
+      shot.sectionLabel,
+      shot.tabLabel,
+      `Hover ${shot.hoverItemLabel || relatedShotDisplayLabel(shot)}`,
+      shot.visualAudit?.status === "warning" ? shot.visualAudit.message : ""
+    ].filter(Boolean).join(" / ");
+  }
   const detailLabel = shot.tabLabel && pageIndex
     ? `第 ${pageIndex} 张`
     : relatedShotDisplayLabel(shot);
@@ -1276,6 +1325,12 @@ function normalizeRelatedShot(shot) {
     tabLabel: shot.tabLabel || null,
     tabIndex: shot.tabIndex || null,
     pageIndex: shot.pageIndex || null,
+    interactionState: shot.interactionState || shot.sectionState?.interactionState || "default",
+    hoverItemKey: shot.hoverItemKey || shot.sectionState?.hoverItemKey || null,
+    hoverItemLabel: shot.hoverItemLabel || shot.sectionState?.hoverItemLabel || null,
+    hoverItemRect: shot.hoverItemRect || shot.sectionState?.hoverItemRect || null,
+    basePageIndex: shot.basePageIndex || shot.sectionState?.basePageIndex || null,
+    hoverIndex: shot.hoverIndex || shot.sectionState?.hoverIndex || null,
     trackLabel: shot.trackLabel || shot.tabLabel || null,
     trackIndex: shot.trackIndex || shot.tabIndex || null,
     itemCount: shot.itemCount || null,
