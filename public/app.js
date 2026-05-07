@@ -27,6 +27,10 @@ const elements = {
   gallery: document.querySelector("#gallery"),
   empty: document.querySelector("#empty"),
   changesList: document.querySelector("#changesList"),
+  changesPagination: document.querySelector("#changesPagination"),
+  changesPaginationStatus: document.querySelector("#changesPaginationStatus"),
+  changesPrevPage: document.querySelector("#changesPrevPage"),
+  changesNextPage: document.querySelector("#changesNextPage"),
   changesEmpty: document.querySelector("#changesEmpty"),
   imagePreview: document.querySelector("#imagePreview"),
   imagePreviewImage: document.querySelector("#imagePreviewImage"),
@@ -52,10 +56,12 @@ const relatedSectionTitles = {
 let state = null;
 let changes = [];
 let activeTab = "archive";
+let changesPage = 1;
 let imagePreviewReturnFocus = null;
 let imagePreviewPreviousOverflow = "";
 let warningPreviewReturnFocus = null;
 let warningPreviewPreviousOverflow = "";
+const changesPageSize = 10;
 const selectedDeviceFilters = {
   devices: new Set()
 };
@@ -78,13 +84,15 @@ elements.dateClearFilter.addEventListener("click", clearDateFilter);
 elements.deviceFilterButton.addEventListener("click", toggleDeviceFilterMenu);
 elements.deviceFilterMenu.addEventListener("change", handleDeviceFilterChange);
 elements.deviceFilterMenu.addEventListener("click", handleDeviceFilterClick);
-elements.changesUrlFilter.addEventListener("change", renderChangesSummary);
-elements.changesDateStartFilter.addEventListener("change", renderChangesSummary);
-elements.changesDateEndFilter.addEventListener("change", renderChangesSummary);
+elements.changesUrlFilter.addEventListener("change", () => renderChangesSummary({ resetPage: true }));
+elements.changesDateStartFilter.addEventListener("change", () => renderChangesSummary({ resetPage: true }));
+elements.changesDateEndFilter.addEventListener("change", () => renderChangesSummary({ resetPage: true }));
 elements.changesDateClearFilter.addEventListener("click", clearChangesDateFilter);
 elements.changesDeviceFilterButton.addEventListener("click", toggleChangesDeviceFilterMenu);
 elements.changesDeviceFilterMenu.addEventListener("change", handleChangesDeviceFilterChange);
 elements.changesDeviceFilterMenu.addEventListener("click", handleChangesDeviceFilterClick);
+elements.changesPrevPage.addEventListener("click", () => changeChangesPage(-1));
+elements.changesNextPage.addEventListener("click", () => changeChangesPage(1));
 elements.gallery.addEventListener("click", handleGalleryClick);
 elements.changesList.addEventListener("click", handleImagePreviewClick);
 elements.imagePreview.addEventListener("click", handleImagePreviewBackdropClick);
@@ -446,7 +454,7 @@ function handleChangesDeviceFilterClick(event) {
   handleDeviceFilterClickFor(event, {
     selectedFilters: selectedChangesDeviceFilters,
     renderOptions: renderChangesDeviceFilterOptions,
-    renderResults: renderChangesSummary
+    renderResults: () => renderChangesSummary({ resetPage: true })
   });
 }
 
@@ -474,7 +482,7 @@ function handleChangesDeviceFilterChange(event) {
     selectedFilters: selectedChangesDeviceFilters,
     devices: uniqueDevicesFromChanges,
     renderOptions: renderChangesDeviceFilterOptions,
-    renderResults: renderChangesSummary
+    renderResults: () => renderChangesSummary({ resetPage: true })
   });
 }
 
@@ -603,7 +611,7 @@ function clearDateFilter() {
 }
 
 function clearChangesDateFilter() {
-  clearDateFilterFor(elements.changesDateStartFilter, elements.changesDateEndFilter, renderChangesSummary);
+  clearDateFilterFor(elements.changesDateStartFilter, elements.changesDateEndFilter, () => renderChangesSummary({ resetPage: true }));
 }
 
 function clearDateFilterFor(startInput, endInput, renderResults) {
@@ -628,12 +636,20 @@ function endOfDay(value) {
   return date.getTime();
 }
 
-function renderChangesSummary() {
+function renderChangesSummary(options = {}) {
+  if (options.resetPage) {
+    changesPage = 1;
+  }
   const filteredChanges = changes.filter(matchesChangeFilters);
+  const totalPages = Math.max(1, Math.ceil(filteredChanges.length / changesPageSize));
+  changesPage = Math.min(Math.max(changesPage, 1), totalPages);
+  const pageStart = filteredChanges.length === 0 ? 0 : (changesPage - 1) * changesPageSize;
+  const pageChanges = filteredChanges.slice(pageStart, pageStart + changesPageSize);
   elements.changesList.innerHTML = "";
   elements.changesEmpty.classList.toggle("visible", filteredChanges.length === 0);
+  renderChangesPagination(filteredChanges.length, pageStart, pageChanges.length, totalPages);
 
-  for (const change of filteredChanges) {
+  for (const change of pageChanges) {
     const item = document.createElement("article");
     item.className = "change-card";
     item.innerHTML = `
@@ -653,6 +669,28 @@ function renderChangesSummary() {
     `;
     elements.changesList.append(item);
   }
+}
+
+function renderChangesPagination(total, pageStart, visibleCount, totalPages) {
+  const hasMultiplePages = total > changesPageSize;
+  elements.changesPagination.hidden = !hasMultiplePages;
+  if (!hasMultiplePages) {
+    elements.changesPaginationStatus.textContent = "";
+    elements.changesPrevPage.disabled = true;
+    elements.changesNextPage.disabled = true;
+    return;
+  }
+
+  const firstVisible = pageStart + 1;
+  const lastVisible = pageStart + visibleCount;
+  elements.changesPaginationStatus.textContent = `第 ${changesPage} / ${totalPages} 页 · 显示 ${firstVisible}-${lastVisible} / ${total} 条`;
+  elements.changesPrevPage.disabled = changesPage <= 1;
+  elements.changesNextPage.disabled = changesPage >= totalPages;
+}
+
+function changeChangesPage(delta) {
+  changesPage += delta;
+  renderChangesSummary();
 }
 
 function matchesChangeFilters(change) {
