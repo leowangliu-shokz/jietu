@@ -537,7 +537,9 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
     await hideFixedElements(client);
     if (activation?.hoverPoint) {
       await moveMouseToPoint(client, activation.hoverPoint);
-      await sleep(420);
+      await waitForRelatedHoverSettled(client, definition, state);
+      await suppressRelatedHoverDefaultLayer(client, definition, state);
+      await sleep(120);
     }
     await sleep(180);
 
@@ -549,6 +551,7 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
         stateLabel: state.stateLabel,
         message: current.reason || `Could not read ${definition.sectionLabel} state.`
       });
+      await clearRelatedHover(client);
       continue;
     }
 
@@ -560,6 +563,7 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
         stateLabel: state.stateLabel,
         message: `Could not compute a valid crop for ${definition.sectionLabel} ${state.stateLabel}.`
       });
+      await clearRelatedHover(client);
       continue;
     }
 
@@ -585,6 +589,7 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
         stateLabel: state.stateLabel,
         message: `${definition.sectionLabel} ${state.stateLabel} looked duplicated and was not saved.`
       });
+      await clearRelatedHover(client);
       continue;
     }
 
@@ -3271,7 +3276,225 @@ async function moveMouseToPoint(client, point) {
   }).catch(() => null);
 }
 
+async function waitForRelatedHoverSettled(client, definition, state) {
+  await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const definition = ${JSON.stringify(definition)};
+      const state = ${JSON.stringify(state)};
+      const cleanText = (value, max = 220) => String(value || "")
+        .replace(/\\s+/g, " ")
+        .trim()
+        .slice(0, max);
+      const root = window.__pageShotRelatedSections?.[definition.key]?.root || document;
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const productHref = (element) => {
+        try {
+          return new URL(element.getAttribute("href") || element.href || "", window.location.href).pathname;
+        } catch {
+          return element.getAttribute("href") || element.href || "";
+        }
+      };
+      const productText = (card) => cleanText([card.innerText, card.textContent].filter(Boolean).join(" "), 220)
+        .replace(/\\b\\d+\\s*\\/\\s*\\d+\\b/g, "")
+        .replace(/\\s+/g, " ")
+        .trim();
+      const productLabel = (card, text) => cleanText(
+        card.querySelector("h1, h2, h3, h4, [class*='title'], [class*='name']")?.innerText ||
+        String(text || "").split(/\\$|From\\b|\\d+\\.\\d{2}/i)[0] ||
+        text,
+        90
+      );
+      const cardForLink = (link) =>
+        link.closest("[data-product-card], article, li, [class*='product'][class*='card'], [class*='card'], [class*='slide']") || link;
+      const cards = Array.from(root.querySelectorAll("a[href*='/products/']"))
+        .filter(visible)
+        .map((link) => {
+          const card = cardForLink(link);
+          const href = productHref(link);
+          const text = productText(card);
+          return { card, href, text, label: productLabel(card, text), key: href || text };
+        });
+      const target = cards.find((item) =>
+        item.key === state.hoverItemKey ||
+        item.href === state.hoverItemKey ||
+        item.label === state.hoverItemLabel ||
+        item.text === state.hoverItemLabel
+      )?.card || root;
+      const waitFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve(true)));
+      const decodeImages = async () => {
+        const images = Array.from(target.querySelectorAll("img")).filter((img) => img.currentSrc || img.src);
+        await Promise.all(images.map((img) => {
+          if (img.complete && img.naturalWidth > 0) return true;
+          if (typeof img.decode === "function") {
+            return Promise.race([
+              img.decode().catch(() => true),
+              new Promise((resolve) => setTimeout(resolve, 900))
+            ]);
+          }
+          return new Promise((resolve) => {
+            const done = () => resolve(true);
+            img.addEventListener("load", done, { once: true });
+            img.addEventListener("error", done, { once: true });
+            setTimeout(done, 900);
+          });
+        }));
+      };
+      const hasRunningAnimations = () => {
+        if (typeof document.getAnimations !== "function") return false;
+        return document.getAnimations({ subtree: true }).some((animation) => {
+          const targetElement = animation.effect?.target;
+          if (!(targetElement instanceof Element)) return false;
+          if (targetElement !== target && !target.contains(targetElement)) return false;
+          return animation.playState === "running" || animation.playState === "pending";
+        });
+      };
+      return (async () => {
+        await decodeImages();
+        let stableFrames = 0;
+        const started = performance.now();
+        while (performance.now() - started < 2400 && stableFrames < 8) {
+          await waitFrame();
+          if (hasRunningAnimations()) {
+            stableFrames = 0;
+          } else {
+            stableFrames += 1;
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 260));
+        return { ok: true };
+      })();
+    })()`,
+    awaitPromise: true,
+    returnByValue: true
+  }).catch(() => null);
+}
+
+async function suppressRelatedHoverDefaultLayer(client, definition, state) {
+  if (definition.key !== "product-showcase" || state.interactionState !== "hover") {
+    return;
+  }
+  await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const definition = ${JSON.stringify(definition)};
+      const state = ${JSON.stringify(state)};
+      const cleanText = (value, max = 220) => String(value || "")
+        .replace(/\\s+/g, " ")
+        .trim()
+        .slice(0, max);
+      const root = window.__pageShotRelatedSections?.[definition.key]?.root || document;
+      window.__pageShotSuppressedHoverLayers = window.__pageShotSuppressedHoverLayers || [];
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const imageSource = (node) => [
+        node.currentSrc,
+        node.src,
+        node.srcset,
+        node.getAttribute?.("data-src"),
+        node.getAttribute?.("data-srcset"),
+        node.getAttribute?.("data-original"),
+        node.getAttribute?.("data-lazy-src")
+      ].filter(Boolean).map((value) => String(value).split(",")[0].trim())[0] || "";
+      const productHref = (element) => {
+        try {
+          return new URL(element.getAttribute("href") || element.href || "", window.location.href).pathname;
+        } catch {
+          return element.getAttribute("href") || element.href || "";
+        }
+      };
+      const productText = (card) => cleanText([card.innerText, card.textContent].filter(Boolean).join(" "), 220)
+        .replace(/\\b\\d+\\s*\\/\\s*\\d+\\b/g, "")
+        .replace(/\\s+/g, " ")
+        .trim();
+      const productLabel = (card, text) => cleanText(
+        card.querySelector("h1, h2, h3, h4, [class*='title'], [class*='name']")?.innerText ||
+        String(text || "").split(/\\$|From\\b|\\d+\\.\\d{2}/i)[0] ||
+        text,
+        90
+      );
+      const cardForLink = (link) =>
+        link.closest("[data-product-card], article, li, [class*='product'][class*='card'], [class*='card'], [class*='slide']") || link;
+      const cards = Array.from(root.querySelectorAll("a[href*='/products/']"))
+        .filter(visible)
+        .map((link) => {
+          const card = cardForLink(link);
+          const href = productHref(link);
+          const text = productText(card);
+          return { card, href, text, label: productLabel(card, text), key: href || text };
+        });
+      const target = cards.find((item) =>
+        item.key === state.hoverItemKey ||
+        item.href === state.hoverItemKey ||
+        item.label === state.hoverItemLabel ||
+        item.text === state.hoverItemLabel
+      )?.card;
+      if (!target) return { ok: false, reason: "hover target missing" };
+      const plannedImage = String(state.hoveredProduct?.image || "").split(",")[0].trim();
+      const largeImages = Array.from(target.querySelectorAll("img"))
+        .filter((img) => {
+          if (!visible(img)) return false;
+          const rect = img.getBoundingClientRect();
+          return rect.width >= 80 && rect.height >= 80;
+        })
+        .map((img, index) => ({ img, index, source: imageSource(img), rect: img.getBoundingClientRect() }));
+      const exactMatches = plannedImage
+        ? largeImages.filter((item) => item.source && (item.source === plannedImage || item.source.includes(plannedImage) || plannedImage.includes(item.source)))
+        : [];
+      const targets = exactMatches.length ? exactMatches : largeImages.slice(0, 1);
+      for (const item of targets) {
+        const element = item.img;
+        if (element.dataset.pageShotHoverSuppressed === "true") continue;
+        window.__pageShotSuppressedHoverLayers.push({
+          element,
+          opacity: element.style.opacity,
+          transition: element.style.transition
+        });
+        element.dataset.pageShotHoverSuppressed = "true";
+        element.style.setProperty("transition", "none", "important");
+        element.style.setProperty("opacity", "0", "important");
+      }
+      return { ok: true, hiddenCount: targets.length };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
+}
+
+async function restoreRelatedHoverSuppressedLayers(client) {
+  await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const records = window.__pageShotSuppressedHoverLayers || [];
+      for (const record of records) {
+        const element = record?.element;
+        if (!element || !(element instanceof Element)) continue;
+        element.style.opacity = record.opacity || "";
+        element.style.transition = record.transition || "";
+        delete element.dataset.pageShotHoverSuppressed;
+      }
+      window.__pageShotSuppressedHoverLayers = [];
+      return true;
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
+}
+
 async function clearRelatedHover(client) {
+  await restoreRelatedHoverSuppressedLayers(client);
   await moveMouseToPoint(client, { x: 2, y: 2 });
 }
 
