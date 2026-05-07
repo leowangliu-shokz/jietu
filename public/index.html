@@ -142,6 +142,18 @@
         <p id="imagePreviewCaption" class="image-preview-caption"></p>
       </div>
     </div>
+    <div id="warningPreview" class="warning-preview" hidden aria-hidden="true">
+      <section class="warning-preview-panel" role="dialog" aria-modal="true" aria-labelledby="warningPreviewTitle">
+        <div class="warning-preview-head">
+          <div>
+            <p class="warning-preview-kicker">校验警告</p>
+            <h2 id="warningPreviewTitle">更多截图校验警告</h2>
+          </div>
+          <button id="warningPreviewClose" class="warning-preview-close" type="button" aria-label="关闭警告弹窗">关闭</button>
+        </div>
+        <ul id="warningPreviewList" class="warning-preview-list"></ul>
+      </section>
+    </div>
     <script src="/app.js" type="module"></script>
   </body>
 </html>

@@ -23,7 +23,11 @@ const elements = {
   imagePreview: document.querySelector("#imagePreview"),
   imagePreviewImage: document.querySelector("#imagePreviewImage"),
   imagePreviewCaption: document.querySelector("#imagePreviewCaption"),
-  imagePreviewClose: document.querySelector("#imagePreviewClose")
+  imagePreviewClose: document.querySelector("#imagePreviewClose"),
+  warningPreview: document.querySelector("#warningPreview"),
+  warningPreviewTitle: document.querySelector("#warningPreviewTitle"),
+  warningPreviewList: document.querySelector("#warningPreviewList"),
+  warningPreviewClose: document.querySelector("#warningPreviewClose")
 };
 
 const homeBannerWindowMs = 5 * 60 * 1000;
@@ -41,6 +45,8 @@ let state = null;
 let activeTab = "archive";
 let imagePreviewReturnFocus = null;
 let imagePreviewPreviousOverflow = "";
+let warningPreviewReturnFocus = null;
+let warningPreviewPreviousOverflow = "";
 const selectedDeviceFilters = {
   devices: new Set()
 };
@@ -64,9 +70,12 @@ elements.gallery.addEventListener("click", handleGalleryClick);
 elements.changesList.addEventListener("click", handleImagePreviewClick);
 elements.imagePreview.addEventListener("click", handleImagePreviewBackdropClick);
 elements.imagePreviewClose.addEventListener("click", closeImagePreview);
+elements.warningPreview.addEventListener("click", handleWarningPreviewBackdropClick);
+elements.warningPreviewClose.addEventListener("click", closeWarningPreview);
 document.addEventListener("click", closeDeviceFilterOnOutsideClick);
 document.addEventListener("keydown", closeDeviceFilterOnEscape);
 document.addEventListener("keydown", closeImagePreviewOnEscape);
+document.addEventListener("keydown", closeWarningPreviewOnEscape);
 
 function setActiveTab(tabName) {
   activeTab = tabName === "changes" ? "changes" : "archive";
@@ -286,6 +295,68 @@ function closeImagePreviewOnEscape(event) {
   }
 }
 
+function openWarningPreview({ title, warnings, trigger }) {
+  warningPreviewReturnFocus = trigger instanceof HTMLElement ? trigger : null;
+  warningPreviewPreviousOverflow = document.body.style.overflow || "";
+  elements.warningPreviewTitle.textContent = title || "更多截图校验警告";
+  elements.warningPreviewList.innerHTML = warnings.length
+    ? warnings.map((warning) => `
+      <li>
+        <strong>${escapeHtml(warning.scope || "更多截图")}</strong>
+        <span>${escapeHtml(warning.message || "校验警告")}</span>
+      </li>
+    `).join("")
+    : "<li><strong>更多截图</strong><span>暂无校验明细</span></li>";
+  elements.warningPreview.hidden = false;
+  elements.warningPreview.setAttribute("aria-hidden", "false");
+  document.body.style.overflow = "hidden";
+  elements.warningPreviewClose.focus();
+}
+
+function closeWarningPreview() {
+  if (elements.warningPreview.hidden) {
+    return;
+  }
+
+  elements.warningPreview.hidden = true;
+  elements.warningPreview.setAttribute("aria-hidden", "true");
+  elements.warningPreviewList.innerHTML = "";
+  document.body.style.overflow = warningPreviewPreviousOverflow;
+  const returnFocus = warningPreviewReturnFocus;
+  warningPreviewReturnFocus = null;
+  if (returnFocus?.isConnected) {
+    returnFocus.focus();
+  }
+}
+
+function handleWarningPreviewBackdropClick(event) {
+  if (event.target === elements.warningPreview) {
+    closeWarningPreview();
+  }
+}
+
+function closeWarningPreviewOnEscape(event) {
+  if (event.key === "Escape") {
+    closeWarningPreview();
+  }
+}
+
+function warningPayload(warnings) {
+  return encodeURIComponent(JSON.stringify(warnings.map((warning) => ({
+    scope: relatedWarningScope(warning),
+    message: relatedWarningMessage(warning)
+  }))));
+}
+
+function parseWarningPayload(value) {
+  try {
+    const parsed = JSON.parse(decodeURIComponent(value || ""));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 function handleDeviceFilterClick(event) {
   const action = event.target.closest("[data-filter-action]")?.dataset.filterAction;
   if (action !== "clear") {
@@ -333,14 +404,11 @@ function handleGalleryClick(event) {
     return;
   }
 
-  const details = warning.closest(".shot-related")?.querySelector(".related-warning-details");
-  if (!details) {
-    return;
-  }
-
-  const isExpanded = warning.getAttribute("aria-expanded") === "true";
-  warning.setAttribute("aria-expanded", String(!isExpanded));
-  details.hidden = isExpanded;
+  openWarningPreview({
+    title: warning.dataset.warningTitle || "更多截图校验警告",
+    warnings: parseWarningPayload(warning.dataset.warningItems),
+    trigger: warning
+  });
 }
 
 function renderDeviceFilterLabel(devices) {
@@ -830,31 +898,15 @@ function renderRelatedShots(relatedShots, validation = null, cardKey = "") {
   const warningTitle = warnings.map((warning) =>
     `${warning.sectionLabel || warning.sectionKey || "更多截图"}：${warning.message || "校验警告"}`
   ).join("\n");
+  const warningItems = warningPayload(warnings);
 
   return `
     <div class="shot-related"${keyAttribute}>
       <p class="related-kicker">
         更多截图
-        ${warnings.length ? `<button type="button" class="related-warning" title="${escapeHtml(warningTitle)}" aria-expanded="false">校验警告</button>` : ""}
+        ${warnings.length ? `<button type="button" class="related-warning" title="${escapeHtml(warningTitle)}" data-warning-title="更多截图校验警告" data-warning-items="${escapeHtml(warningItems)}">校验警告</button>` : ""}
       </p>
-      ${warnings.length ? renderRelatedWarningDetails(warnings) : ""}
       ${groups.map((group) => renderRelatedSection(group)).join("")}
-    </div>
-  `;
-}
-
-function renderRelatedWarningDetails(warnings) {
-  return `
-    <div class="related-warning-details" hidden>
-      <p class="related-warning-heading">校验明细</p>
-      <ul>
-        ${warnings.map((warning) => `
-          <li>
-            <strong>${escapeHtml(relatedWarningScope(warning))}</strong>
-            <span>${escapeHtml(relatedWarningMessage(warning))}</span>
-          </li>
-        `).join("")}
-      </ul>
     </div>
   `;
 }

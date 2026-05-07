@@ -3555,6 +3555,20 @@ async function readShokzHomeBannerState(client, ordinal) {
         .replace(/\\s+/g, " ")
         .trim()
         .slice(0, max);
+      const visible = (element) => {
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          Number(style.opacity || 1) > 0.01 &&
+          rect.width > 1 &&
+          rect.height > 1;
+      };
+      const intersects = (rect, bounds) => {
+        const x = Math.max(0, Math.min(rect.right, bounds.right) - Math.max(rect.left, bounds.left));
+        const y = Math.max(0, Math.min(rect.bottom, bounds.bottom) - Math.max(rect.top, bounds.top));
+        return x * y;
+      };
       const imageSources = (element) => Array.from(element.querySelectorAll("img, source"))
         .flatMap((node) => [
           node.currentSrc,
