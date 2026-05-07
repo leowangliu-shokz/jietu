@@ -8,6 +8,12 @@ import { CdpClient } from "./cdp.js";
 import { decodePng, encodePng } from "./png.js";
 
 const defaultTimeoutMs = 45000;
+const shokzNavigationTopLabels = ["Products", "Support", "Technology", "About Us"];
+const shokzProductsNavigationCategoryLabels = [
+  "Sports Headphones",
+  "Workout & Lifestyle Earbuds",
+  "Communication Headsets"
+];
 
 export async function capturePage(url, outputPath, options = {}) {
   const browserPath = await findBrowser();
@@ -425,11 +431,24 @@ async function captureShokzProductsNavigationRelated(client, outputPath, viewpor
   const warnings = [];
   const seenVisual = new Set();
   const mainSeed = await visualSeedForFile(outputPath);
-  if (mainSeed?.visualSignature) {
-    seenVisual.add(mainSeed.visualSignature);
-  }
   let expectedCount = 0;
-  const productsTopItem = plan.items.find((item) => isProductsNavigationLabel(item.label)) || {
+  const topItemsByLabel = new Map();
+  for (const [index, label] of shokzNavigationTopLabels.entries()) {
+    const item = plan.items.find((candidate) =>
+      comparableNavigationLabel(candidate.label) === comparableNavigationLabel(label)
+    );
+    if (item) {
+      topItemsByLabel.set(label, { ...item, label, index: index + 1 });
+    } else {
+      warnings.push({
+        sectionKey: "navigation",
+        sectionLabel: "Navigation",
+        stateLabel: label,
+        message: `Could not identify ${label} top-level navigation item.`
+      });
+    }
+  }
+  const productsTopItem = topItemsByLabel.get("Products") || {
     index: 1,
     label: "Products",
     hoverPoint: null,
@@ -446,10 +465,7 @@ async function captureShokzProductsNavigationRelated(client, outputPath, viewpor
     }
     await sleep(750);
     await primeLazyImages(client);
-    let productsSecondaryPlan = await readShokzProductsNavigationCategoryItems(client, productsTopItem);
-    if (!productsSecondaryPlan.items?.length) {
-      productsSecondaryPlan = await readShokzNavigationSecondaryItems(client, productsTopItem);
-    }
+    const productsSecondaryPlan = await readShokzProductsNavigationCategoryItems(client, productsTopItem);
     if (!productsSecondaryPlan.items?.length && productOpenError) {
       throw productOpenError;
     }
@@ -479,7 +495,7 @@ async function captureShokzProductsNavigationRelated(client, outputPath, viewpor
         hoverIndex: secondaryItem.index,
         stateLabel: `${productsTopItem.label} / ${secondaryItem.label}`,
         fileId: `top-${productsTopItem.index}-secondary-${secondaryItem.index}-${secondaryItem.label}`,
-        skipMainDuplicate: secondaryItem.index === 1
+        skipMainDuplicate: false
       }, { captures, warnings, seenVisual, mainSeed });
     }
   } catch (error) {
@@ -491,15 +507,15 @@ async function captureShokzProductsNavigationRelated(client, outputPath, viewpor
     });
   }
 
-  for (const topItem of plan.items.filter((item) => !isProductsNavigationLabel(item.label))) {
+  for (const label of shokzNavigationTopLabels.filter((itemLabel) => !isProductsNavigationLabel(itemLabel))) {
+    const topItem = topItemsByLabel.get(label);
+    if (!topItem) {
+      continue;
+    }
+
     await hoverShokzNavigationPoint(client, topItem.hoverPoint);
     await sleep(750);
     await primeLazyImages(client);
-
-    const secondaryPlan = await readShokzNavigationSecondaryItems(client, topItem);
-    if (!secondaryPlan.ok || !secondaryPlan.items?.length) {
-      continue;
-    }
 
     expectedCount += 1;
     await saveShokzNavigationCapture(client, outputPath, viewport, {
@@ -516,27 +532,6 @@ async function captureShokzProductsNavigationRelated(client, outputPath, viewpor
       fileId: `top-${topItem.index}-${topItem.label}`,
       skipMainDuplicate: false
     }, { captures, warnings, seenVisual, mainSeed });
-
-    for (const secondaryItem of secondaryPlan.items) {
-      expectedCount += 1;
-      await hoverShokzNavigationPoint(client, secondaryItem.hoverPoint);
-      await sleep(650);
-      await primeLazyImages(client);
-      await saveShokzNavigationCapture(client, outputPath, viewport, {
-        navigationLevel: "secondary",
-        topLevelLabel: topItem.label,
-        topLevelIndex: topItem.index,
-        tabLabel: topItem.label,
-        tabIndex: topItem.index,
-        hoverItemKey: `secondary:${topItem.index}:${secondaryItem.index}`,
-        hoverItemLabel: secondaryItem.label,
-        hoverItemRect: secondaryItem.rect || null,
-        hoverIndex: secondaryItem.index,
-        stateLabel: `${topItem.label} / ${secondaryItem.label}`,
-        fileId: `top-${topItem.index}-secondary-${secondaryItem.index}-${secondaryItem.label}`,
-        skipMainDuplicate: false
-      }, { captures, warnings, seenVisual, mainSeed });
-    }
   }
 
   captures.forEach((capture, index) => {
@@ -828,6 +823,7 @@ async function readShokzProductsNavigationCategoryItems(client, topItem) {
   const result = await client.send("Runtime.evaluate", {
     expression: `(() => {
       const topItem = ${JSON.stringify(topItem)};
+      const allowedLabels = ${JSON.stringify(shokzProductsNavigationCategoryLabels)};
       const visible = (element) => {
         if (!element || !(element instanceof Element)) return false;
         const rect = element.getBoundingClientRect();
@@ -846,6 +842,7 @@ async function readShokzProductsNavigationCategoryItems(client, topItem) {
         .toLowerCase()
         .replace(/&/g, "and")
         .replace(/[^a-z0-9]+/g, "");
+      const allowedComparables = new Set(allowedLabels.map(comparable));
       const directText = (element) => Array.from(element.childNodes || [])
         .filter((node) => node.nodeType === Node.TEXT_NODE)
         .map((node) => node.textContent || "")
@@ -893,7 +890,7 @@ async function readShokzProductsNavigationCategoryItems(client, topItem) {
           item.rect.top >= 90 &&
           item.rect.height >= 180 &&
           item.rect.width >= 160 &&
-          /Sports Headphones|Workout|Communication|Accessories|Refurbished/i.test(item.text)
+          allowedLabels.some((label) => comparable(item.text).includes(comparable(label)))
         )
         .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left)[0];
       if (!root) {
@@ -918,31 +915,38 @@ async function readShokzProductsNavigationCategoryItems(client, topItem) {
             item.rect.width >= 36 &&
             item.rect.height >= 14 &&
             item.rect.height <= 80 &&
+            allowedComparables.has(normalized) &&
             !rejectText.test(item.label);
         })
         .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
-      const seen = new Set();
-      const items = [];
+      const byLabel = new Map();
       for (const item of raw) {
         const key = comparable(item.label);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        items.push({
-          index: items.length + 1,
-          key: "secondary:" + topItem.index + ":" + (items.length + 1),
-          label: item.label,
-          text: item.label,
-          rect: item.rect,
-          hoverPoint: {
-            x: Math.round(item.rect.left + item.rect.width / 2),
-            y: Math.round(item.rect.top + item.rect.height / 2)
-          }
-        });
+        if (!byLabel.has(key)) {
+          byLabel.set(key, item);
+        }
       }
+      const items = allowedLabels
+        .map((label, index) => {
+          const item = byLabel.get(comparable(label));
+          if (!item) return null;
+          return {
+            index: index + 1,
+            key: "secondary:" + topItem.index + ":" + (index + 1),
+            label,
+            text: item.label,
+            rect: item.rect,
+            hoverPoint: {
+              x: Math.round(item.rect.left + item.rect.width / 2),
+              y: Math.round(item.rect.top + item.rect.height / 2)
+            }
+          };
+        })
+        .filter(Boolean);
       return {
         ok: true,
         panelRect: root.rect,
-        items: items.slice(0, 8)
+        items
       };
     })()`,
     returnByValue: true
@@ -1033,6 +1037,7 @@ async function readShokzNavigationSecondaryItems(client, topItem) {
               element,
               text,
               rect,
+              explicitPanel,
               score:
                 Number(topHit) * 4 +
                 categoryHits * 3 +
@@ -1171,7 +1176,16 @@ async function readShokzNavigationSnapshotState(client, state) {
           .map((element) => {
             const rect = rectOf(element);
             const style = getComputedStyle(element);
-            const text = textOf(element);
+            const text = textOf(element).slice(0, 12000);
+            const explicitPanel = element.matches([
+              "#menu-drawer",
+              ".menu-drawer",
+              ".mega-menu__content",
+              ".product_mega_menu",
+              ".product_mega_menu-wrapper",
+              "[class*='mega']",
+              "[class*='menu-drawer']"
+            ].join(","));
             const topHit = comparable(text).includes(comparable(state.topLevelLabel));
             const itemHit = comparable(text).includes(comparable(state.hoverItemLabel));
             const categoryHits = [
@@ -1197,6 +1211,7 @@ async function readShokzNavigationSnapshotState(client, state) {
                 Number(topHit) * 4 +
                 Number(itemHit) * 4 +
                 categoryHits * 3 +
+                Number(explicitPanel) * 10 +
                 Number(positioned) * 2 +
                 Math.min(rect.width / Math.max(1, window.innerWidth), 1) * 4 +
                 Math.min(rect.height / Math.max(1, window.innerHeight), 1) * 2
@@ -1204,8 +1219,8 @@ async function readShokzNavigationSnapshotState(client, state) {
           })
           .filter((item) =>
             item.text.length > 16 &&
-            item.text.length < 12000 &&
-            item.rect.top >= 70 &&
+            item.text.length <= 12000 &&
+            (item.rect.top >= 70 || item.explicitPanel) &&
             item.rect.top < Math.max(280, window.innerHeight * 0.35) &&
             item.rect.height >= 80 &&
             item.rect.width >= Math.min(360, window.innerWidth * 0.35) &&
@@ -1216,7 +1231,27 @@ async function readShokzNavigationSnapshotState(client, state) {
             !/^Feedback$/i.test(item.text)
           )
           .sort((a, b) => b.score - a.score || (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height));
-        return candidates[0] || null;
+        if (candidates[0]) {
+          return candidates[0];
+        }
+        const bodyText = textOf(document.body).slice(0, 12000);
+        if (!bodyText) {
+          return null;
+        }
+        return {
+          element: document.body,
+          text: bodyText,
+          rect: {
+            x: 0,
+            y: 0,
+            top: 0,
+            left: 0,
+            right: window.innerWidth,
+            bottom: window.innerHeight,
+            width: window.innerWidth,
+            height: window.innerHeight
+          }
+        };
       };
       const panel = findPanel();
       if (!panel) {
@@ -6748,6 +6783,17 @@ async function readShokzProductsNavigationState(client, mobile) {
           item.topLevelHits >= 1
         )[0] || empty;
       const best = mobile ? mobileBest : desktopBest;
+      const drawer = document.querySelector("#menu-drawer, .menu-drawer");
+      const drawerVisible = Boolean(drawer && visible(drawer));
+      const drawerFullText = drawer ? textOf(drawer) : "";
+      const drawerText = drawerFullText.slice(0, 220);
+      const drawerCategoryHits = categories.filter((value) => includesLabel(drawerFullText, value)).length;
+      const drawerTaxonomyHits = desktopTaxonomy.filter((value) => includesLabel(drawerFullText, value)).length;
+      const drawerUtilityHits = utilityLinks.filter((value) => includesLabel(drawerFullText, value)).length;
+      const desktopDrawerOk = drawerVisible &&
+        includesLabel(drawerFullText, "Products") &&
+        drawerCategoryHits >= 1 &&
+        (drawerTaxonomyHits >= 1 || drawerUtilityHits >= 1 || /OPENRUN|OPENSWIM|OPENMOVE|OPENFIT/i.test(drawerFullText));
       const mobileOk = !searchOpen &&
         !cartOpen &&
         window.scrollY < 20 &&
@@ -6760,16 +6806,14 @@ async function readShokzProductsNavigationState(client, mobile) {
         window.scrollY < 20 &&
         includesLabel(best.text, "Products") &&
         best.categoryHits >= 2 &&
-        (best.taxonomyHits >= 1 || best.panelLike);
-      const drawer = document.querySelector("#menu-drawer, .menu-drawer");
-      const drawerVisible = Boolean(drawer && visible(drawer));
-      const drawerText = drawer ? textOf(drawer).slice(0, 220) : "";
+        (best.taxonomyHits >= 1 || best.panelLike) ||
+        (!searchOpen && !cartOpen && window.scrollY < 20 && desktopDrawerOk);
       return {
         ok: mobile ? mobileOk : desktopOk,
         visibleText: best.text.slice(0, 260),
-        categoryHits: best.categoryHits,
-        taxonomyHits: best.taxonomyHits,
-        utilityHits: best.utilityHits,
+        categoryHits: Math.max(best.categoryHits, drawerCategoryHits),
+        taxonomyHits: Math.max(best.taxonomyHits, drawerTaxonomyHits),
+        utilityHits: Math.max(best.utilityHits, drawerUtilityHits),
         topLevelHits: best.topLevelHits,
         panelLike: best.panelLike,
         mobilePanelLike: best.mobilePanelLike,

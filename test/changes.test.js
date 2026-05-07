@@ -122,10 +122,14 @@ test("keeps primary and secondary navigation hover positions separate", async ()
     navigationSnapshot("nav-1", "2026-05-03T08:00:00.000Z", [
       navigationShot("nav-primary-before.png", {
         navigationLevel: "primary",
-        hoverItemKey: "primary:1",
-        hoverItemLabel: "Products",
+        tabLabel: "Support",
+        tabIndex: 2,
+        topLevelLabel: "Support",
+        topLevelIndex: 2,
+        hoverItemKey: "primary:2",
+        hoverItemLabel: "Support",
         hoverIndex: 0,
-        sectionState: { text: "Products menu old" }
+        sectionState: { text: "Support menu old" }
       }),
       navigationShot("nav-secondary-before.png", {
         navigationLevel: "secondary",
@@ -138,10 +142,14 @@ test("keeps primary and secondary navigation hover positions separate", async ()
     navigationSnapshot("nav-2", "2026-05-03T09:00:00.000Z", [
       navigationShot("nav-primary-after.png", {
         navigationLevel: "primary",
-        hoverItemKey: "primary:1",
-        hoverItemLabel: "Products",
+        tabLabel: "Support",
+        tabIndex: 2,
+        topLevelLabel: "Support",
+        topLevelIndex: 2,
+        hoverItemKey: "primary:2",
+        hoverItemLabel: "Support",
         hoverIndex: 0,
-        sectionState: { text: "Products menu new" }
+        sectionState: { text: "Support menu new" }
       }),
       navigationShot("nav-secondary-after.png", {
         navigationLevel: "secondary",
@@ -158,8 +166,10 @@ test("keeps primary and secondary navigation hover positions separate", async ()
     changes.map((change) => change.location.navigationLevel).sort(),
     ["primary", "secondary"]
   );
-  assert.ok(changes.some((change) => /navigation:tab:1:hover:primary:1$/.test(change.comparisonKey)));
+  assert.ok(changes.some((change) => /navigation:tab:2:hover:primary:2$/.test(change.comparisonKey)));
   assert.ok(changes.some((change) => /navigation:tab:1:hover:secondary:1:2$/.test(change.comparisonKey)));
+  assert.ok(changes.some((change) => change.location.hoverItemLabel === "Support"));
+  assert.ok(changes.some((change) => change.location.hoverItemLabel === "Workout & Lifestyle Earbuds"));
 });
 
 test("marks product showcase hover visual changes on the hovered card", async () => {
@@ -650,6 +660,10 @@ function navigationShot(file, overrides = {}) {
   const navigationLevel = overrides.navigationLevel || "secondary";
   const hoverItemKey = overrides.hoverItemKey || "secondary:1:1";
   const hoverItemLabel = overrides.hoverItemLabel || "Sports Headphones";
+  const tabLabel = overrides.tabLabel || (navigationLevel === "primary" ? hoverItemLabel : "Products");
+  const tabIndex = Object.hasOwn(overrides, "tabIndex") ? overrides.tabIndex : 1;
+  const topLevelLabel = overrides.topLevelLabel || tabLabel;
+  const topLevelIndex = Object.hasOwn(overrides, "topLevelIndex") ? overrides.topLevelIndex : tabIndex;
   const hoverIndex = Object.hasOwn(overrides, "hoverIndex") ? overrides.hoverIndex : 1;
   const sectionState = {
     text: "Navigation hover",
@@ -657,8 +671,8 @@ function navigationShot(file, overrides = {}) {
     images: [],
     interactionState: "hover",
     navigationLevel,
-    topLevelLabel: "Products",
-    topLevelIndex: 1,
+    topLevelLabel,
+    topLevelIndex,
     hoverItemKey,
     hoverItemLabel,
     hoverIndex,
@@ -669,15 +683,15 @@ function navigationShot(file, overrides = {}) {
     sectionKey: "navigation",
     sectionLabel: "Navigation",
     sectionTitle: "Navigation hierarchy",
-    tabLabel: "Products",
-    tabIndex: 1,
+    tabLabel,
+    tabIndex,
     stateIndex: overrides.stateIndex || hoverIndex + 1,
     stateLabel: hoverItemLabel,
     label: hoverItemLabel,
     interactionState: "hover",
     navigationLevel,
-    topLevelLabel: "Products",
-    topLevelIndex: 1,
+    topLevelLabel,
+    topLevelIndex,
     hoverItemKey,
     hoverItemLabel,
     hoverIndex,
