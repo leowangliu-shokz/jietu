@@ -224,6 +224,19 @@ async function driveCapture(client, url, outputPath, options) {
     if (viewport.mobile) {
       await beforeSegmentCapture();
       await materializeFullPageContent(client);
+      await prepareForScreenshotCapture(client, {
+        rounds: 5,
+        shokzKnownPopups: cleanShokzKnownPopups,
+        guardSearchOverlay: guardShokzSearchOverlay,
+        stage: "after mobile full-page content materialization"
+      });
+      await sleep(450);
+      await prepareForScreenshotCapture(client, {
+        rounds: 5,
+        shokzKnownPopups: cleanShokzKnownPopups,
+        guardSearchOverlay: guardShokzSearchOverlay,
+        stage: "immediately before mobile full-page screenshot capture"
+      });
       await captureFullPageClipScreenshot(client, outputPath, {
         width: clipWidth,
         height: clipHeight
@@ -354,7 +367,8 @@ const homeRelatedSectionDefinitions = [
     title: "用户心声轮播图",
     mode: "carousel",
     anchors: ["Real Stories, Inspiring Moments."],
-    labelPrefix: "心声"
+    labelPrefix: "心声",
+    expectedPages: 4
   }
 ];
 
@@ -1945,7 +1959,7 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
 
   for (const state of plan.states) {
     await clearRelatedHover(client);
-    const useDirectState = definition.key === "scene-explore" && state.directClip;
+    const useDirectState = definition.key === "scene-explore" && state.directClip && state.directCaptureOnly;
     const skipActivation = useDirectState && !state.requiresActivation;
     const activation = skipActivation
       ? { ok: true }
@@ -2033,14 +2047,8 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
         sectionKey: definition.key,
         sectionLabel: definition.sectionLabel,
         stateLabel: state.stateLabel,
-        message: definition.key === "scene-explore" && state.directClip
-          ? `${definition.sectionLabel} ${state.stateLabel} looked duplicated and was saved with a warning.`
-          : `${definition.sectionLabel} ${state.stateLabel} looked duplicated and was not saved.`
+        message: `${definition.sectionLabel} ${state.stateLabel} looked duplicated and was saved with a warning.`
       });
-      if (!(definition.key === "scene-explore" && state.directClip)) {
-        await clearRelatedHover(client);
-        continue;
-      }
     }
 
     const similar = nearestVisualHash(visualHash, seenHashes);
@@ -2553,7 +2561,7 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
         const panelRect = panel.getBoundingClientRect();
         const rootCenterX = rootRect.left + rootRect.width / 2;
         const slides = Array.from(panel.querySelectorAll(".swiper-slide, [class*='swiper-slide']"))
-          .filter(visible)
+          .filter((slide) => options.visibleOnly ? visible(slide) : true)
           .map((slide, domIndex) => {
             const rect = slide.getBoundingClientRect();
             const area = Math.max(1, rect.width * rect.height);
@@ -2617,10 +2625,12 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
           })
           .filter((item) =>
             item.key &&
-            item.rect.width >= 180 &&
-            item.rect.height >= 120 &&
-            item.centerY >= panelRect.top - 40 &&
-            item.centerY <= panelRect.bottom + 40 &&
+            (!options.visibleOnly || (
+              item.rect.width >= 180 &&
+              item.rect.height >= 120 &&
+              item.centerY >= panelRect.top - 40 &&
+              item.centerY <= panelRect.bottom + 40
+            )) &&
             (!options.visibleOnly || (
               item.visibleArea > 600 &&
               item.visibleRatio >= 0.2 &&
@@ -3217,7 +3227,22 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
       };
       const forceSceneSlideToIndex = async (root, index, item = null) => {
         const panel = scenePanel(root);
-        const slides = sceneSlideElements(root);
+        let slides = Array.from(panel.querySelectorAll(".swiper-slide, [class*='swiper-slide'], .slick-slide, [class*='slide']"));
+        for (const slide of slides) {
+          if (slide.dataset.pageShotSceneForced === "true") {
+            slide.style.removeProperty("display");
+            slide.style.removeProperty("visibility");
+            slide.style.removeProperty("opacity");
+            slide.style.removeProperty("position");
+            slide.style.removeProperty("left");
+            slide.style.removeProperty("top");
+            slide.style.removeProperty("transform");
+            slide.style.removeProperty("transition");
+            delete slide.dataset.pageShotSceneForced;
+          }
+        }
+        slides = Array.from(panel.querySelectorAll(".swiper-slide, [class*='swiper-slide'], .slick-slide, [class*='slide']"))
+          .filter((slide) => textOf(slide, 700));
         const targetText = cleanText(item?.expectedAnchor || item?.title || item?.label || "", 180).toLowerCase();
         const target = (targetText
           ? slides.find((slide) => textOf(slide, 700).toLowerCase().includes(targetText))
@@ -3227,7 +3252,6 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
         const wrapper = target.parentElement;
         const panelRect = panel.getBoundingClientRect();
         const targetRect = target.getBoundingClientRect();
-        const targetLeft = Math.max(0, target.offsetLeft || Math.round(targetRect.left - panelRect.left));
         const targetDelta = Math.round(targetRect.left - panelRect.left);
         const scrollers = [panel, wrapper, ...panel.querySelectorAll("*")]
           .filter((element, elementIndex, list) =>
@@ -3241,7 +3265,27 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
         }
         if (wrapper && /swiper-wrapper|slick-track|slider|carousel|track|wrapper/i.test(classText(wrapper))) {
           wrapper.style.transitionDuration = "0ms";
-          wrapper.style.transform = "translate3d(" + (-targetLeft) + "px, 0px, 0px)";
+          wrapper.style.transform = "none";
+        }
+        for (const slide of slides) {
+          const isTarget = slide === target;
+          slide.dataset.pageShotSceneForced = "true";
+          slide.style.setProperty("transition", "none", "important");
+          slide.style.setProperty("transform", "none", "important");
+          slide.classList.toggle("swiper-slide-active", isTarget);
+          slide.classList.toggle("slick-active", isTarget);
+          if (isTarget) {
+            slide.style.setProperty("display", "block", "important");
+            slide.style.setProperty("visibility", "visible", "important");
+            slide.style.setProperty("opacity", "1", "important");
+            slide.style.setProperty("position", "relative", "important");
+            slide.style.setProperty("left", "0", "important");
+            slide.style.setProperty("top", "0", "important");
+          } else {
+            slide.style.setProperty("display", "none", "important");
+            slide.style.setProperty("visibility", "hidden", "important");
+            slide.style.setProperty("opacity", "0", "important");
+          }
         }
         target.scrollIntoView({ block: "nearest", inline: "center" });
         await sleep(560);
@@ -3362,11 +3406,11 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
           } else if (typeof swiper.slideTo === "function") {
             swiper.slideTo(targetIndex, 0, false);
           } else {
-            return false;
+            return forceSceneSlideToIndex(root, fallbackIndex, item);
           }
           if (typeof swiper.update === "function") swiper.update();
           await sleep(420);
-          return true;
+          return forceSceneSlideToIndex(root, fallbackIndex, item);
         }
         if (fallbackIndex === 0) {
           resetCarousel(root);
@@ -3468,7 +3512,7 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
             stateIndex: states.length + 1,
             stateLabel: label,
             logicalSignature: definition.key + "|" + (item.directClip ? item.key : activeItem.key) + "|" + (item.directClip ? "direct" : signature),
-            windowSignature: item.directClip ? "" : signature,
+            windowSignature: signature || "",
             itemCount: expectedItems.length,
             discoveredItemCount: allItems.length,
             directClip: item.directClip || null,
@@ -3833,17 +3877,15 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
         resetCarousel(root);
         await sleep(300);
         const seen = new Set();
-        const bulletCount = definition.key === "product-showcase" ? findPageBullets(root).length : 0;
-        const maxPages = bulletCount > 1 ? bulletCount : 12;
+        const bulletCount = findPageBullets(root).length;
+        const expectedPages = Number(definition.expectedPages || 0);
+        const maxPages = bulletCount > 1
+          ? Math.max(bulletCount, expectedPages)
+          : (expectedPages || 12);
         for (let pageIndex = 1; pageIndex <= maxPages; pageIndex += 1) {
-          if (pageIndex > 1) {
-            let moved = false;
-            if (definition.key === "product-showcase" && bulletCount > 1) {
-              moved = clickPageBullet(root, pageIndex);
-              await sleep(450);
-            } else {
-              moved = await advance(root);
-            }
+          if (pageIndex > 1 && bulletCount > 1) {
+            const moved = clickPageBullet(root, pageIndex);
+            await sleep(450);
             if (!moved) break;
           }
           const signature = pageSignature(root);
@@ -3878,7 +3920,7 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
             fileId: (tabLabel || "state") + "-" + pageIndex,
             isDefaultState
           });
-          if (definition.key === "product-showcase" && bulletCount > 1) {
+          if (bulletCount > 1) {
             continue;
           }
           const before = signature;
@@ -4220,7 +4262,6 @@ async function activateShokzHomeRelatedState(client, definition, state) {
         const panelRect = panel.getBoundingClientRect();
         const rootCenterX = rootRect.left + rootRect.width / 2;
         const slides = Array.from(panel.querySelectorAll(".swiper-slide, [class*='swiper-slide']"))
-          .filter(visible)
           .map((slide, domIndex) => {
             const rect = slide.getBoundingClientRect();
             const area = Math.max(1, rect.width * rect.height);
@@ -4264,14 +4305,17 @@ async function activateShokzHomeRelatedState(client, definition, state) {
           })
           .filter((item) =>
             item.key &&
-            item.rect.width >= 180 &&
-            item.rect.height >= 120 &&
-            item.visibleArea > 600 &&
-            item.visibleRatio >= 0.2 &&
-            item.rect.right > rootRect.left + 12 &&
-            item.rect.left < rootRect.right - 12 &&
-            item.centerY >= panelRect.top - 40 &&
-            item.centerY <= panelRect.bottom + 40
+            ((
+              item.visibleArea > 600 &&
+              item.visibleRatio >= 0.2 &&
+              item.rect.width >= 180 &&
+              item.rect.height >= 120 &&
+              item.rect.right > rootRect.left + 12 &&
+              item.rect.left < rootRect.right - 12 &&
+              item.centerY >= panelRect.top - 40 &&
+              item.centerY <= panelRect.bottom + 40
+            ) ||
+            Boolean(item.title || item.href || item.image))
           );
         const bestByKey = new Map();
         for (const item of slides) {
@@ -4656,7 +4700,22 @@ async function activateShokzHomeRelatedState(client, definition, state) {
       };
       const forceSceneSlideToIndex = async (index, item = null) => {
         const panel = scenePanel();
-        const slides = sceneSlideElements();
+        let slides = Array.from(panel.querySelectorAll(".swiper-slide, [class*='swiper-slide'], .slick-slide, [class*='slide']"));
+        for (const slide of slides) {
+          if (slide.dataset.pageShotSceneForced === "true") {
+            slide.style.removeProperty("display");
+            slide.style.removeProperty("visibility");
+            slide.style.removeProperty("opacity");
+            slide.style.removeProperty("position");
+            slide.style.removeProperty("left");
+            slide.style.removeProperty("top");
+            slide.style.removeProperty("transform");
+            slide.style.removeProperty("transition");
+            delete slide.dataset.pageShotSceneForced;
+          }
+        }
+        slides = Array.from(panel.querySelectorAll(".swiper-slide, [class*='swiper-slide'], .slick-slide, [class*='slide']"))
+          .filter((slide) => textOf(slide, 700));
         const targetText = cleanText(item?.expectedAnchor || item?.title || item?.label || "", 180).toLowerCase();
         const target = (targetText
           ? slides.find((slide) => textOf(slide, 700).toLowerCase().includes(targetText))
@@ -4666,7 +4725,6 @@ async function activateShokzHomeRelatedState(client, definition, state) {
         const wrapper = target.parentElement;
         const panelRect = panel.getBoundingClientRect();
         const targetRect = target.getBoundingClientRect();
-        const targetLeft = Math.max(0, target.offsetLeft || Math.round(targetRect.left - panelRect.left));
         const targetDelta = Math.round(targetRect.left - panelRect.left);
         const scrollers = [panel, wrapper, ...panel.querySelectorAll("*")]
           .filter((element, elementIndex, list) =>
@@ -4680,7 +4738,27 @@ async function activateShokzHomeRelatedState(client, definition, state) {
         }
         if (wrapper && /swiper-wrapper|slick-track|slider|carousel|track|wrapper/i.test(classText(wrapper))) {
           wrapper.style.transitionDuration = "0ms";
-          wrapper.style.transform = "translate3d(" + (-targetLeft) + "px, 0px, 0px)";
+          wrapper.style.transform = "none";
+        }
+        for (const slide of slides) {
+          const isTarget = slide === target;
+          slide.dataset.pageShotSceneForced = "true";
+          slide.style.setProperty("transition", "none", "important");
+          slide.style.setProperty("transform", "none", "important");
+          slide.classList.toggle("swiper-slide-active", isTarget);
+          slide.classList.toggle("slick-active", isTarget);
+          if (isTarget) {
+            slide.style.setProperty("display", "block", "important");
+            slide.style.setProperty("visibility", "visible", "important");
+            slide.style.setProperty("opacity", "1", "important");
+            slide.style.setProperty("position", "relative", "important");
+            slide.style.setProperty("left", "0", "important");
+            slide.style.setProperty("top", "0", "important");
+          } else {
+            slide.style.setProperty("display", "none", "important");
+            slide.style.setProperty("visibility", "hidden", "important");
+            slide.style.setProperty("opacity", "0", "important");
+          }
         }
         target.scrollIntoView({ block: "nearest", inline: "center" });
         await sleep(560);
@@ -4791,7 +4869,7 @@ async function activateShokzHomeRelatedState(client, definition, state) {
         if (!swiper) {
           if (clickPageBullet(fallbackIndex + 1)) {
             await sleep(450);
-            return true;
+            return forceSceneSlideToIndex(fallbackIndex, item);
           }
           return forceSceneSlideToIndex(fallbackIndex, item);
         }
@@ -4801,11 +4879,11 @@ async function activateShokzHomeRelatedState(client, definition, state) {
         } else if (typeof swiper.slideTo === "function") {
           swiper.slideTo(targetIndex, 0, false);
         } else {
-          return false;
+          return forceSceneSlideToIndex(fallbackIndex, item);
         }
         if (typeof swiper.update === "function") swiper.update();
         await sleep(420);
-        return true;
+        return forceSceneSlideToIndex(fallbackIndex, item);
       };
       return (async () => {
         root.scrollIntoView({ block: "center", inline: "nearest" });
@@ -4849,7 +4927,12 @@ async function activateShokzHomeRelatedState(client, definition, state) {
             allItems[Math.max(0, Number(state.pageIndex || 1) - 1)] ||
             (state.expectedAnchor ? state : null);
           if (targetItem) {
-            await activateSceneItem(targetItem, Number(state.forceIndex ?? Math.max(0, Number(state.pageIndex || 1) - 1)));
+            const activated = await activateSceneItem(targetItem, Number(state.forceIndex ?? Math.max(0, Number(state.pageIndex || 1) - 1)));
+            if (activated) {
+              root.scrollIntoView({ block: "center", inline: "nearest" });
+              await sleep(260);
+              return { ok: true };
+            }
           }
           const maxAttempts = Math.max(8, Number(state.itemCount || allItems.length || 0) + 3);
           for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
@@ -4943,7 +5026,7 @@ async function activateShokzHomeRelatedState(client, definition, state) {
         }
         resetCarousel();
         await sleep(260);
-        if (definition.key === "product-showcase" && Number(state.pageIndex || 1) > 1 && clickPageBullet(Number(state.pageIndex || 1))) {
+        if (Number(state.pageIndex || 1) > 1 && clickPageBullet(Number(state.pageIndex || 1))) {
           await sleep(450);
         } else {
           const clicks = Math.max(0, Number(state.pageIndex || 1) - 1);
@@ -5853,7 +5936,7 @@ async function readShokzHomeRelatedState(client, definition, state) {
           reason: "Visible products did not match planned product showcase window " + state.stateLabel + "."
         };
       }
-      if (definition.key === "scene-explore" && state.windowSignature && sceneSignature !== state.windowSignature) {
+      if (definition.key === "scene-explore" && state.windowSignature && sceneSignature !== state.windowSignature && !state.activeItemKey && !state.expectedAnchor) {
         return {
           ok: false,
           reason: "Visible scene exploration slides did not match planned scene window " + state.stateLabel + "."
@@ -6951,6 +7034,7 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
             area,
             zIndex: Number.isFinite(zIndex) ? zIndex : 0,
             roleDialog,
+            ariaModal,
             bottomCookie,
             pageContainer,
             popupLike
@@ -6988,6 +7072,20 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
           element.style.setProperty("visibility", "hidden", "important");
           element.style.setProperty("pointer-events", "none", "important");
           hidden.push(reason || textOf(element).slice(0, 80) || element.tagName);
+          return true;
+        };
+        const forceRemovePopupElement = (element, reason) => {
+          if (!visible(element) ||
+              element === document.body ||
+              element === document.documentElement ||
+              isNavigationElement(element) ||
+              containsNavigation(element)) return false;
+          element.dataset.pageShotHidden = "true";
+          element.style.setProperty("display", "none", "important");
+          element.style.setProperty("visibility", "hidden", "important");
+          element.style.setProperty("pointer-events", "none", "important");
+          hidden.push(reason || textOf(element).slice(0, 80) || element.tagName);
+          element.remove();
           return true;
         };
         const clickElement = (element, reason) => {
@@ -7115,8 +7213,24 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
           }
           if (!closed) {
             hideRelatedBackdrop(layer, kind);
-            hideElement(layer, kind + " popup");
+            if (kind === "email" || kind === "region") {
+              forceRemovePopupElement(layer, kind + " popup");
+            } else {
+              hideElement(layer, kind + " popup");
+            }
           }
+        }
+
+        for (const element of Array.from(document.querySelectorAll("body *"))) {
+          if (!visible(element) || element.dataset.pageShotHidden === "true" || isNavigationElement(element)) continue;
+          const kind = classifyKnownPopup(textOf(element));
+          if (!kind || kind === "cookie") continue;
+          const layer = layerRootFor(element);
+          if (!visible(layer) || isNavigationElement(layer) || containsNavigation(layer)) continue;
+          const state = layerState(layer, kind);
+          if (!state.popupLike && !state.roleDialog && !state.ariaModal) continue;
+          hideRelatedBackdrop(layer, kind);
+          forceRemovePopupElement(layer, kind + " forced popup");
         }
 
         for (const element of Array.from(document.querySelectorAll("body *"))) {

@@ -1419,30 +1419,29 @@ function addRelatedShot(group, relatedShot) {
   if (!relatedShot) {
     return;
   }
-  if (
-    (relatedShot.kind === "banner" || relatedShot.sectionKey === "banner") &&
-    (relatedShot.isDefaultState || Number(relatedShot.bannerIndex || 0) <= 1)
-  ) {
-    return;
-  }
-  if (group.mainBannerIndex && Number(relatedShot.bannerIndex) === group.mainBannerIndex) {
-    return;
-  }
   if (relatedShot.file && relatedShot.file === group.snapshot.file) {
     return;
   }
 
-  const key = [
-    relatedShot.sectionKey || "banner",
-    relatedShot.visualSignature || relatedShot.file || relatedShot.imageUrl || relatedShot.label
-  ].join("|");
-  if (group.relatedShots.some((item) => [
-    item.sectionKey || "banner",
-    item.visualSignature || item.file || item.imageUrl || item.label
-  ].join("|") === key)) {
+  const key = relatedShotIdentityKey(relatedShot);
+  if (group.relatedShots.some((item) => relatedShotIdentityKey(item) === key)) {
     return;
   }
   group.relatedShots.push(relatedShot);
+}
+
+function relatedShotIdentityKey(shot) {
+  return [
+    shot.sectionKey || "banner",
+    shot.coverageKey || "",
+    shot.bannerIndex ? `banner:${shot.bannerIndex}` : "",
+    shot.tabIndex || shot.tabLabel || "",
+    shot.interactionState || "default",
+    shot.hoverItemKey || shot.hoverIndex || "",
+    shot.pageIndex || "",
+    shot.stateIndex || "",
+    shot.logicalSignature || shot.stateLabel || shot.label || shot.file || shot.imageUrl || ""
+  ].join("|");
 }
 
 function sortedRelatedShots(relatedShots) {
@@ -1824,6 +1823,7 @@ function normalizeRelatedShot(shot) {
     visualAudit: shot.visualAudit || null,
     clip: shot.clip || shot.bannerClip || null,
     isDefaultState: Boolean(shot.isDefaultState),
+    coverageKey: shot.coverageKey || null,
     bannerIndex,
     bannerCount: shot.bannerCount || null,
     bannerSignature: shot.bannerSignature || null,

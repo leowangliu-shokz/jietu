@@ -233,6 +233,7 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
       visualAudit: item.visualAudit || null,
       clip: item.clip || item.bannerClip || null,
       isDefaultState: Boolean(item.isDefaultState),
+      coverageKey: item.coverageKey || null,
       bannerIndex: item.bannerIndex,
       bannerCount: item.bannerCount,
       bannerSignature: item.bannerSignature || null,
