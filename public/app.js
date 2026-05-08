@@ -34,7 +34,11 @@ const elements = {
   changesEmpty: document.querySelector("#changesEmpty"),
   imagePreview: document.querySelector("#imagePreview"),
   imagePreviewViewport: document.querySelector("#imagePreviewViewport"),
+  imagePreviewLongView: document.querySelector("#imagePreviewLongView"),
+  imagePreviewMainFrame: document.querySelector("#imagePreviewMainFrame"),
   imagePreviewImage: document.querySelector("#imagePreviewImage"),
+  imagePreviewDepthMarkers: document.querySelector("#imagePreviewDepthMarkers"),
+  imagePreviewScreenRail: document.querySelector("#imagePreviewScreenRail"),
   imagePreviewCaption: document.querySelector("#imagePreviewCaption"),
   imagePreviewZoomOut: document.querySelector("#imagePreviewZoomOut"),
   imagePreviewZoomValue: document.querySelector("#imagePreviewZoomValue"),
@@ -73,6 +77,7 @@ const imagePreviewDefaultMinScale = 0.25;
 const imagePreviewMaxScale = 5;
 const imagePreviewButtonScaleStep = 1.25;
 const imagePreviewWheelScaleStep = 1.12;
+const imagePreviewScreenRailGap = 24;
 const selectedDeviceFilters = {
   devices: new Set()
 };
@@ -351,6 +356,7 @@ function handleImagePreviewClick(event) {
   openImagePreview({
     src: link.href,
     caption: imagePreviewCaptionForLink(link),
+    snapshot: link.classList.contains("shot-main-image") ? snapshotForPreviewLink(link) : null,
     trigger: link
   });
 }
@@ -372,14 +378,17 @@ function createImagePreviewZoomState() {
     dragStartX: 0,
     dragStartY: 0,
     dragStartScrollLeft: 0,
-    dragStartScrollTop: 0
+    dragStartScrollTop: 0,
+    snapshot: null,
+    comparison: null
   };
 }
 
-function openImagePreview({ src, caption, trigger }) {
+function openImagePreview({ src, caption, snapshot = null, trigger }) {
   imagePreviewReturnFocus = trigger instanceof HTMLElement ? trigger : null;
   imagePreviewPreviousOverflow = document.body.style.overflow || "";
   resetImagePreviewZoom();
+  imagePreviewZoomState.snapshot = snapshot;
   elements.imagePreviewImage.src = src;
   elements.imagePreviewImage.alt = caption || "图片预览";
   elements.imagePreviewCaption.textContent = caption || "";
@@ -417,6 +426,11 @@ function closeImagePreview() {
 function resetImagePreviewZoom() {
   imagePreviewZoomState = createImagePreviewZoomState();
   elements.imagePreviewImage.removeAttribute("style");
+  elements.imagePreviewLongView.dataset.mode = "single";
+  elements.imagePreviewLongView.removeAttribute("style");
+  elements.imagePreviewMainFrame.removeAttribute("style");
+  elements.imagePreviewDepthMarkers.innerHTML = "";
+  elements.imagePreviewScreenRail.innerHTML = "";
   elements.imagePreviewViewport.scrollLeft = 0;
   elements.imagePreviewViewport.scrollTop = 0;
   elements.imagePreviewViewport.classList.remove("can-drag", "is-dragging");
@@ -430,7 +444,185 @@ function handleImagePreviewImageLoad() {
 
   imagePreviewZoomState.naturalWidth = elements.imagePreviewImage.naturalWidth;
   imagePreviewZoomState.naturalHeight = elements.imagePreviewImage.naturalHeight;
+  imagePreviewZoomState.comparison = imagePreviewComparisonForSnapshot(imagePreviewZoomState.snapshot);
+  renderImagePreviewMode();
   fitImagePreviewToViewport();
+}
+
+function renderImagePreviewMode() {
+  const comparison = imagePreviewZoomState.comparison;
+  elements.imagePreviewLongView.dataset.mode = comparison ? "comparison" : "single";
+  elements.imagePreviewDepthMarkers.innerHTML = "";
+  elements.imagePreviewScreenRail.innerHTML = "";
+
+  if (comparison) {
+    renderImagePreviewDepthMarkers();
+    renderImagePreviewScreenRail(comparison);
+  }
+
+  applyImagePreviewScale(imagePreviewZoomState.scale || 1);
+}
+
+function renderImagePreviewDepthMarkers() {
+  for (let depth = 10; depth <= 100; depth += 10) {
+    const marker = document.createElement("div");
+    marker.className = [
+      "image-preview-depth-marker",
+      depth === 100 ? "is-bottom" : ""
+    ].filter(Boolean).join(" ");
+    if (depth < 100) {
+      marker.style.top = `${depth}%`;
+    }
+
+    const label = document.createElement("span");
+    label.textContent = `${depth}%`;
+    marker.append(label);
+    elements.imagePreviewDepthMarkers.append(marker);
+  }
+}
+
+function renderImagePreviewScreenRail(comparison) {
+  const imageUrl = elements.imagePreviewImage.currentSrc || elements.imagePreviewImage.src;
+  const fragment = document.createDocumentFragment();
+
+  for (const segment of comparison.segments) {
+    const screen = document.createElement("div");
+    screen.className = "image-preview-screen";
+    screen.dataset.y = String(segment.y);
+    screen.dataset.height = String(segment.height);
+    screen.style.backgroundImage = cssUrl(imageUrl);
+    screen.setAttribute("aria-label", `第 ${segment.index} 屏`);
+
+    const label = document.createElement("span");
+    label.textContent = `第 ${segment.index} 屏`;
+    screen.append(label);
+    fragment.append(screen);
+  }
+
+  elements.imagePreviewScreenRail.append(fragment);
+}
+
+function applyImagePreviewScale(scale) {
+  if (!imagePreviewZoomState.naturalWidth || !imagePreviewZoomState.naturalHeight) {
+    return;
+  }
+
+  const imageWidth = imagePreviewZoomState.naturalWidth * scale;
+  const imageHeight = imagePreviewZoomState.naturalHeight * scale;
+  elements.imagePreviewImage.style.width = `${imageWidth}px`;
+  elements.imagePreviewImage.style.height = `${imageHeight}px`;
+  elements.imagePreviewMainFrame.style.width = `${imageWidth}px`;
+  elements.imagePreviewMainFrame.style.height = `${imageHeight}px`;
+
+  if (!imagePreviewZoomState.comparison) {
+    elements.imagePreviewLongView.removeAttribute("style");
+    elements.imagePreviewScreenRail.removeAttribute("style");
+    return;
+  }
+
+  elements.imagePreviewLongView.style.columnGap = `${imagePreviewScreenRailGap * scale}px`;
+  elements.imagePreviewScreenRail.style.width = `${imageWidth}px`;
+
+  for (const screen of elements.imagePreviewScreenRail.querySelectorAll(".image-preview-screen")) {
+    const y = Number(screen.dataset.y || 0);
+    const height = Number(screen.dataset.height || 0);
+    screen.style.width = `${imageWidth}px`;
+    screen.style.height = `${height * scale}px`;
+    screen.style.backgroundSize = `${imageWidth}px ${imageHeight}px`;
+    screen.style.backgroundPosition = `0 -${y * scale}px`;
+  }
+}
+
+function imagePreviewContentNaturalSize() {
+  const width = imagePreviewZoomState.naturalWidth || 1;
+  const height = imagePreviewZoomState.naturalHeight || 1;
+  return {
+    width: imagePreviewZoomState.comparison ? width * 2 + imagePreviewScreenRailGap : width,
+    height
+  };
+}
+
+function imagePreviewFitScaleForViewport(viewportWidth, viewportHeight) {
+  const contentSize = imagePreviewContentNaturalSize();
+  const widthScale = viewportWidth / contentSize.width;
+  const heightScale = viewportHeight / contentSize.height;
+  const fitScale = imagePreviewZoomState.comparison
+    ? widthScale
+    : Math.min(widthScale, heightScale);
+  return Math.min(fitScale, 1);
+}
+
+function imagePreviewComparisonForSnapshot(snapshot) {
+  if (!snapshot || !imagePreviewZoomState.naturalHeight) {
+    return null;
+  }
+
+  const viewportHeight = imagePreviewViewportHeightForSnapshot(snapshot);
+  const naturalHeight = imagePreviewZoomState.naturalHeight;
+  if (!Number.isFinite(viewportHeight) || viewportHeight <= 0 || naturalHeight <= viewportHeight + 2) {
+    return null;
+  }
+
+  const segments = [];
+  for (let y = 0, index = 1; y < naturalHeight - 1 && segments.length < 200; y += viewportHeight, index += 1) {
+    segments.push({
+      index,
+      y,
+      height: Math.min(viewportHeight, naturalHeight - y)
+    });
+  }
+
+  return segments.length > 1
+    ? { viewportHeight, segments }
+    : null;
+}
+
+function imagePreviewViewportHeightForSnapshot(snapshot) {
+  const scrollViewportHeight = Number(snapshot?.scrollInfo?.viewportHeight || 0);
+  if (Number.isFinite(scrollViewportHeight) && scrollViewportHeight > 0) {
+    return scrollViewportHeight;
+  }
+
+  const preset = (state?.devicePresets || []).find((item) => item.id === snapshot?.devicePresetId);
+  const presetHeight = Number(preset?.height || 0);
+  return Number.isFinite(presetHeight) && presetHeight > 0 ? presetHeight : null;
+}
+
+function snapshotForPreviewLink(link) {
+  if (!link || !state?.snapshots?.length) {
+    return null;
+  }
+
+  const snapshotId = link.dataset.snapshotId || "";
+  if (snapshotId) {
+    const byId = state.snapshots.find((snapshot) => snapshot.id === snapshotId);
+    if (byId) {
+      return byId;
+    }
+  }
+
+  const snapshotFile = link.dataset.snapshotFile || "";
+  if (snapshotFile) {
+    const byFile = state.snapshots.find((snapshot) => snapshot.file === snapshotFile);
+    if (byFile) {
+      return byFile;
+    }
+  }
+
+  const hrefPath = safePathname(link.href);
+  return state.snapshots.find((snapshot) => safePathname(snapshot.imageUrl) === hrefPath) || null;
+}
+
+function safePathname(value) {
+  try {
+    return new URL(value, window.location.href).pathname;
+  } catch {
+    return String(value || "");
+  }
+}
+
+function cssUrl(value) {
+  return `url("${String(value || "").replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}")`;
 }
 
 function fitImagePreviewToViewport() {
@@ -440,11 +632,7 @@ function fitImagePreviewToViewport() {
 
   const viewportWidth = Math.max(1, elements.imagePreviewViewport.clientWidth);
   const viewportHeight = Math.max(1, elements.imagePreviewViewport.clientHeight);
-  const fitScale = Math.min(
-    viewportWidth / imagePreviewZoomState.naturalWidth,
-    viewportHeight / imagePreviewZoomState.naturalHeight,
-    1
-  );
+  const fitScale = imagePreviewFitScaleForViewport(viewportWidth, viewportHeight);
 
   imagePreviewZoomState.fitScale = Number.isFinite(fitScale) && fitScale > 0 ? fitScale : 1;
   setImagePreviewScale(imagePreviewZoomState.fitScale, { fit: true });
@@ -497,8 +685,7 @@ function setImagePreviewScale(nextScale, { anchorX = null, anchorY = null, fit =
 
   imagePreviewZoomState.scale = scale;
   imagePreviewZoomState.isFit = Boolean(fit);
-  elements.imagePreviewImage.style.width = `${imagePreviewZoomState.naturalWidth * scale}px`;
-  elements.imagePreviewImage.style.height = `${imagePreviewZoomState.naturalHeight * scale}px`;
+  applyImagePreviewScale(scale);
   updateImagePreviewZoomControls();
 
   requestAnimationFrame(() => {
@@ -521,7 +708,9 @@ function clampImagePreviewScale(scale) {
 function centerImagePreviewViewport() {
   const viewport = elements.imagePreviewViewport;
   viewport.scrollLeft = Math.max(0, (viewport.scrollWidth - viewport.clientWidth) / 2);
-  viewport.scrollTop = Math.max(0, (viewport.scrollHeight - viewport.clientHeight) / 2);
+  viewport.scrollTop = imagePreviewZoomState.comparison
+    ? 0
+    : Math.max(0, (viewport.scrollHeight - viewport.clientHeight) / 2);
 }
 
 function updateImagePreviewZoomControls() {
@@ -593,11 +782,7 @@ function handleImagePreviewResize() {
   const previousScale = imagePreviewZoomState.scale;
   const viewportWidth = Math.max(1, elements.imagePreviewViewport.clientWidth);
   const viewportHeight = Math.max(1, elements.imagePreviewViewport.clientHeight);
-  const nextFitScale = Math.min(
-    viewportWidth / imagePreviewZoomState.naturalWidth,
-    viewportHeight / imagePreviewZoomState.naturalHeight,
-    1
-  );
+  const nextFitScale = imagePreviewFitScaleForViewport(viewportWidth, viewportHeight);
   imagePreviewZoomState.fitScale = Number.isFinite(nextFitScale) && nextFitScale > 0 ? nextFitScale : 1;
 
   if (wasFit) {
@@ -1315,7 +1500,7 @@ function renderShotCard(card) {
   ].filter(Boolean).join(" ");
   item.dataset.galleryCardKey = cardKey;
   item.innerHTML = `
-    <a class="shot-main-image" href="${snapshot.imageUrl}" target="_blank" rel="noreferrer">
+    <a class="shot-main-image" href="${snapshot.imageUrl}" target="_blank" rel="noreferrer" data-snapshot-id="${escapeHtml(snapshot.id || "")}" data-snapshot-file="${escapeHtml(snapshot.file || "")}">
       <img src="${snapshot.imageUrl}" alt="${escapeHtml(displayUrl)} ${formatDate(snapshot.capturedAt)}" loading="lazy">
     </a>
     <div class="shot-info">

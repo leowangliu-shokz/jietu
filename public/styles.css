@@ -947,12 +947,112 @@ select:focus {
   min-height: 100%;
 }
 
+.image-preview-long-view {
+  display: block;
+  align-items: start;
+  width: max-content;
+  height: max-content;
+}
+
+.image-preview-long-view[data-mode="comparison"] {
+  display: grid;
+  grid-template-columns: max-content max-content;
+}
+
+.image-preview-main-frame {
+  position: relative;
+  overflow: hidden;
+  width: max-content;
+  height: max-content;
+  background: #0c0f12;
+  border-radius: 4px;
+}
+
 .image-preview-panel img {
   display: block;
   max-width: none;
   max-height: none;
   user-select: none;
   border-radius: 4px;
+}
+
+.image-preview-depth-markers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.image-preview-depth-marker {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: rgba(255, 71, 57, 0.82);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.24);
+}
+
+.image-preview-depth-marker.is-bottom {
+  top: auto;
+  bottom: 0;
+}
+
+.image-preview-depth-marker span {
+  position: absolute;
+  right: 8px;
+  top: -18px;
+  min-width: 34px;
+  border-radius: 4px;
+  background: rgba(180, 35, 24, 0.9);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1;
+  padding: 4px 6px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.image-preview-depth-marker.is-bottom span {
+  top: auto;
+  bottom: 4px;
+}
+
+.image-preview-screen-rail {
+  display: none;
+  align-content: start;
+  width: max-content;
+}
+
+.image-preview-long-view[data-mode="comparison"] .image-preview-screen-rail {
+  display: grid;
+}
+
+.image-preview-screen {
+  position: relative;
+  overflow: hidden;
+  border: 2px solid #ff3b30;
+  border-radius: 6px;
+  background-color: #101214;
+  background-repeat: no-repeat;
+  box-sizing: border-box;
+}
+
+.image-preview-screen + .image-preview-screen {
+  margin-top: 0;
+}
+
+.image-preview-screen span {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  border-radius: 4px;
+  background: rgba(180, 35, 24, 0.92);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1;
+  padding: 4px 6px;
+  white-space: nowrap;
 }
 
 .image-preview-caption {

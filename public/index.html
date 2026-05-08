@@ -178,7 +178,13 @@
         </div>
         <div id="imagePreviewViewport" class="image-preview-viewport">
           <div class="image-preview-stage">
-            <img id="imagePreviewImage" src="" alt="" draggable="false">
+            <div id="imagePreviewLongView" class="image-preview-long-view" data-mode="single">
+              <div id="imagePreviewMainFrame" class="image-preview-main-frame">
+                <img id="imagePreviewImage" src="" alt="" draggable="false">
+                <div id="imagePreviewDepthMarkers" class="image-preview-depth-markers" aria-hidden="true"></div>
+              </div>
+              <aside id="imagePreviewScreenRail" class="image-preview-screen-rail" aria-label="璁惧灞忓箷瀵规瘮"></aside>
+            </div>
           </div>
         </div>
         <p id="imagePreviewCaption" class="image-preview-caption"></p>
