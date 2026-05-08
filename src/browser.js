@@ -379,7 +379,7 @@ async function captureShokzHomeRelated(client, outputPath, viewport) {
       sectionLabel: "Banner",
       expectedCount: bannerCapture.bannerInfo?.expectedCount || bannerCapture.captures.length,
       capturedCount: bannerCapture.captures.length,
-      savedCount: bannerCapture.captures.filter((item) => !item.isDefaultState).length,
+      savedCount: bannerCapture.captures.length,
       status: "ok"
     });
   } catch (error) {
@@ -676,6 +676,7 @@ async function saveShokzNavigationCapture(client, outputPath, viewport, state, c
   const buffer = Buffer.from(screenshot.data, "base64");
   const visualSignature = hashBuffer(buffer);
   const visualHash = visualHashForBuffer(buffer);
+  const visualAudit = visualAuditForBuffer(buffer, visualHash);
   const mainDuplicate = Boolean(
     state.skipMainDuplicate &&
     context.mainSeed?.visualHash &&
@@ -731,7 +732,7 @@ async function saveShokzNavigationCapture(client, outputPath, viewport, state, c
     logicalSignature: `navigation|top:${state.topLevelIndex}|${state.navigationLevel}|${state.hoverItemKey}`,
     visualSignature,
     visualHash,
-    visualAudit: { status: "ok", visualHash },
+    visualAudit,
     clip: {
       x: 0,
       y: 0,
@@ -1844,6 +1845,7 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
     const buffer = Buffer.from(screenshot.data, "base64");
     const visualSignature = hashBuffer(buffer);
     const visualHash = visualHashForBuffer(buffer);
+    const visualAudit = visualAuditForBuffer(buffer, visualHash);
     const bannerIndex = bannerIndexForCapture(index, state, slide, plan.count);
     const bannerSignature = state.signature || slide.signature || `banner-${bannerIndex}`;
     const duplicate = seenLogical.has(bannerSignature) || seenVisual.has(visualSignature);
@@ -1878,7 +1880,7 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
       label: `轮播 ${bannerIndex}`,
       logicalSignature: bannerSignature,
       visualHash,
-      visualAudit: { status: "ok", visualHash },
+      visualAudit,
       isDefaultState: bannerIndex === 1,
       bannerIndex,
       bannerCount: plan.count,
@@ -1943,7 +1945,11 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
 
   for (const state of plan.states) {
     await clearRelatedHover(client);
-    const activation = await activateShokzHomeRelatedState(client, definition, state);
+    const useDirectState = definition.key === "scene-explore" && state.directClip;
+    const skipActivation = useDirectState && !state.requiresActivation;
+    const activation = skipActivation
+      ? { ok: true }
+      : await activateShokzHomeRelatedState(client, definition, state);
     await sleep(650);
     await waitForRelatedSectionImages(client, definition.key);
     await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2 });
@@ -1955,7 +1961,9 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
     }
     await sleep(180);
 
-    const current = await readShokzHomeRelatedState(client, definition, state);
+    const current = useDirectState
+      ? directRelatedStateForCapture(state)
+      : await readShokzHomeRelatedState(client, definition, state);
     if (!current.ok) {
       warnings.push({
         sectionKey: definition.key,
@@ -2025,22 +2033,18 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
         sectionKey: definition.key,
         sectionLabel: definition.sectionLabel,
         stateLabel: state.stateLabel,
-        message: `${definition.sectionLabel} ${state.stateLabel} looked duplicated and was not saved.`
+        message: definition.key === "scene-explore" && state.directClip
+          ? `${definition.sectionLabel} ${state.stateLabel} looked duplicated and was saved with a warning.`
+          : `${definition.sectionLabel} ${state.stateLabel} looked duplicated and was not saved.`
       });
-      await clearRelatedHover(client);
-      continue;
+      if (!(definition.key === "scene-explore" && state.directClip)) {
+        await clearRelatedHover(client);
+        continue;
+      }
     }
 
     const similar = nearestVisualHash(visualHash, seenHashes);
-    const visualAudit = similar && similar.distance <= 3
-      ? {
-          status: "warning",
-          visualHash,
-          similarTo: similar.label,
-          distance: similar.distance,
-          message: `视觉签名与 ${similar.label} 非常接近`
-        }
-      : { status: "ok", visualHash };
+    const visualAudit = visualAuditForBuffer(buffer, visualHash, similar);
     if (visualAudit.status === "warning") {
       warnings.push({
         sectionKey: definition.key,
@@ -2099,7 +2103,8 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
         width: Math.round(clip.width),
         height: Math.round(clip.height)
       },
-      isDefaultState: false,
+      isDefaultState: Boolean(state.isDefaultState),
+      coverageKey: relatedCoverageKeyForState(state),
       sectionState: {
         text: current.text || "",
         textBlocks: current.textBlocks || [],
@@ -2130,6 +2135,8 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
     await clearRelatedHover(client);
   }
 
+  warnings.push(...relatedSectionCoverageWarnings(definition, plan.states, captures));
+
   return {
     width: maxWidth,
     height: maxHeight,
@@ -2137,6 +2144,82 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
     warnings,
     expectedCount: plan.states.length,
     capturedCount: captures.length
+  };
+}
+
+function relatedSectionCoverageWarnings(definition, plannedStates, captures) {
+  const warnings = [];
+  const expected = new Map();
+  for (const state of plannedStates || []) {
+    expected.set(relatedCoverageKeyForState(state), state);
+  }
+
+  const counts = new Map();
+  for (const capture of captures || []) {
+    const key = capture.coverageKey || relatedCoverageKeyForState(capture);
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+
+  const missing = [...expected.entries()]
+    .filter(([key]) => !counts.has(key))
+    .map(([, state]) => state.stateLabel || state.label || state.fileId || state.logicalSignature)
+    .filter(Boolean);
+  const repeated = [...counts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([key]) => expected.get(key)?.stateLabel || key);
+
+  if (missing.length) {
+    warnings.push({
+      sectionKey: definition.key,
+      sectionLabel: definition.sectionLabel,
+      message: `${definition.sectionLabel} missing planned screenshots: ${missing.join(", ")}.`
+    });
+  }
+  if (repeated.length) {
+    warnings.push({
+      sectionKey: definition.key,
+      sectionLabel: definition.sectionLabel,
+      message: `${definition.sectionLabel} repeated planned screenshots: ${repeated.join(", ")}.`
+    });
+  }
+
+  return warnings;
+}
+
+function relatedCoverageKeyForState(state) {
+  return [
+    state?.sectionKey || "",
+    state?.tabIndex || state?.tabLabel || "",
+    state?.interactionState || "default",
+    state?.hoverItemKey || state?.hoverIndex || "",
+    state?.pageIndex || state?.stateIndex || "",
+    state?.fileId || state?.logicalSignature || state?.stateLabel || ""
+  ].join("|");
+}
+
+function directRelatedStateForCapture(state) {
+  const directItems = state.directItem ? [state.directItem] : state.visibleItems || null;
+  return {
+    ok: true,
+    clip: state.directClip,
+    text: state.text || "",
+    textBlocks: state.textBlocks || [],
+    images: state.images || [],
+    logicalSignature: state.logicalSignature || state.fileId || state.stateLabel,
+    activeIndex: state.stateIndex,
+    visibleItemCount: Array.isArray(directItems) ? directItems.length : state.visibleItemCount || null,
+    visibleItems: directItems,
+    itemRects: Array.isArray(directItems)
+      ? directItems.map((item) => ({
+          sceneItemId: item.sceneItemId,
+          key: item.key,
+          label: item.label,
+          rect: item.rect || null
+        }))
+      : state.itemRects || null,
+    interactionState: state.interactionState || "default",
+    hoverItemRect: state.hoverItemRect || null,
+    hoveredProduct: state.hoveredProduct || null
   };
 }
 
@@ -2498,6 +2581,12 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
             const clippedRight = Math.min(rect.right, rootRect.right);
             const clippedBottom = Math.min(rect.bottom, rootRect.bottom);
             const centerX = rect.left + rect.width / 2;
+            const absoluteClip = {
+              x: Math.max(0, Math.round(rect.left + window.scrollX)),
+              y: Math.max(0, Math.round(rect.top + window.scrollY)),
+              width: Math.round(rect.width),
+              height: Math.round(rect.height)
+            };
             const activeScore = Number(/swiper-slide-active|active|current/i.test(classText(slide))) * 10000 +
               visibleArea -
               Math.abs(centerX - rootCenterX) * 3;
@@ -2522,7 +2611,8 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
                 y: Math.round(Math.max(0, clippedTop - rootRect.top)),
                 width: Math.round(Math.max(0, clippedRight - clippedLeft)),
                 height: Math.round(Math.max(0, clippedBottom - clippedTop))
-              }
+              },
+              directClip: absoluteClip
             };
           })
           .filter((item) =>
@@ -2559,6 +2649,7 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
             slideIndex: item.slideIndex,
             order: item.order,
             rect: item.rectRelative,
+            directClip: item.directClip,
             activeScore: item.activeScore
           }));
       };
@@ -2572,6 +2663,55 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
           active: active.key,
           visible: items.map((item) => item.key)
         }) : "";
+      };
+      const sceneExpectedItems = (root, allItems) => {
+        const anchors = (definition.anchors || []).map((anchor) => cleanText(anchor, 180)).filter(Boolean);
+        if (!anchors.length) {
+          return allItems;
+        }
+        const baseClip = allItems.find((item) => item.directClip)?.directClip || null;
+        const used = new Set();
+        return anchors.map((anchor, index) => {
+          const normalizedAnchor = anchor.toLowerCase();
+          const match = allItems.find((item) => {
+            if (used.has(item.key)) return false;
+            const text = cleanText([
+              item.title,
+              item.label,
+              item.description,
+              item.href,
+              item.imageFamily
+            ].filter(Boolean).join(" "), 500).toLowerCase();
+            return Boolean(text) && (text.includes(normalizedAnchor) || normalizedAnchor.includes(text));
+          });
+          if (match) {
+            used.add(match.key);
+            return {
+              ...match,
+              expectedAnchor: anchor,
+              expectedIndex: index
+            };
+          }
+          return {
+            sceneItemId: "anchor:" + anchor,
+            key: "anchor:" + anchor,
+            label: anchor,
+            title: anchor,
+            description: "",
+            href: "",
+            image: "",
+            imageFamily: "",
+            slideIndex: null,
+            order: index,
+            rect: null,
+            directClip: baseClip ? { ...baseClip } : null,
+            requiresActivation: Boolean(baseClip),
+            forceIndex: index,
+            activeScore: 0,
+            expectedAnchor: anchor,
+            expectedIndex: index
+          };
+        });
       };
       const mediaTrackDefinitions = [
         {
@@ -3037,9 +3177,14 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
         const firstBullet = root.querySelector(".swiper-pagination-bullet, .slick-dots button, [role='tab'][aria-label*='slide' i]");
         if (firstBullet) clickElement(firstBullet);
       };
+      const controlSearchRoot = (root) =>
+        definition.key === "scene-explore"
+          ? root.closest("section, .shopify-section, main > div, [class*='section']") || root.parentElement || root
+          : root;
       const findPageBullets = (root) => {
-        const rootRect = root.getBoundingClientRect();
-        return Array.from(root.querySelectorAll(".swiper-pagination-bullet, .slick-dots button, [role='tab'][aria-label*='slide' i]"))
+        const searchRoot = controlSearchRoot(root);
+        const rootRect = searchRoot.getBoundingClientRect();
+        return Array.from(searchRoot.querySelectorAll(".swiper-pagination-bullet, .slick-dots button, [role='tab'][aria-label*='slide' i]"))
           .filter(visible)
           .map((element) => {
             const rect = element.getBoundingClientRect();
@@ -3062,8 +3207,49 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
         const target = bullets[pageIndex - 1];
         return target ? clickElement(target) : false;
       };
+      const sceneSlideElements = (root) => {
+        const panel = scenePanel(root);
+        return Array.from(panel.querySelectorAll(".swiper-slide, [class*='swiper-slide'], .slick-slide, [class*='slide']"))
+          .filter((slide) => {
+            const rect = slide.getBoundingClientRect();
+            return rect.width >= 120 && rect.height >= 80 && textOf(slide, 500);
+          });
+      };
+      const forceSceneSlideToIndex = async (root, index, item = null) => {
+        const panel = scenePanel(root);
+        const slides = sceneSlideElements(root);
+        const targetText = cleanText(item?.expectedAnchor || item?.title || item?.label || "", 180).toLowerCase();
+        const target = (targetText
+          ? slides.find((slide) => textOf(slide, 700).toLowerCase().includes(targetText))
+          : null) ||
+          slides[Math.max(0, Math.min(slides.length - 1, Number(index || 0)))];
+        if (!target) return false;
+        const wrapper = target.parentElement;
+        const panelRect = panel.getBoundingClientRect();
+        const targetRect = target.getBoundingClientRect();
+        const targetLeft = Math.max(0, target.offsetLeft || Math.round(targetRect.left - panelRect.left));
+        const targetDelta = Math.round(targetRect.left - panelRect.left);
+        const scrollers = [panel, wrapper, ...panel.querySelectorAll("*")]
+          .filter((element, elementIndex, list) =>
+            element &&
+            list.indexOf(element) === elementIndex &&
+            element.scrollWidth > element.clientWidth + 8
+          );
+        for (const scroller of scrollers) {
+          scroller.scrollLeft = Math.max(0, scroller.scrollLeft + targetDelta - Math.max(0, (scroller.clientWidth - target.clientWidth) / 2));
+          scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+        }
+        if (wrapper && /swiper-wrapper|slick-track|slider|carousel|track|wrapper/i.test(classText(wrapper))) {
+          wrapper.style.transitionDuration = "0ms";
+          wrapper.style.transform = "translate3d(" + (-targetLeft) + "px, 0px, 0px)";
+        }
+        target.scrollIntoView({ block: "nearest", inline: "center" });
+        await sleep(560);
+        return true;
+      };
       const findNextControl = (root) => {
-        const rootRect = root.getBoundingClientRect();
+        const searchRoot = controlSearchRoot(root);
+        const rootRect = searchRoot.getBoundingClientRect();
         if (isTabbedCardSection) {
           const pointCandidates = [
             { x: rootRect.right - 18, y: rootRect.bottom - 18 },
@@ -3085,7 +3271,7 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
             return pointCandidates[0].element;
           }
         }
-        return Array.from(root.querySelectorAll(".swiper-button-next, .slick-next, button, [role='button'], a, [aria-label], [title]"))
+        return Array.from(searchRoot.querySelectorAll(".swiper-button-next, .slick-next, button, [role='button'], a, [aria-label], [title]"))
           .map((element) => element.closest("button, [role='button'], a, .swiper-button-next, .slick-next") || element)
           .filter((element, index, list) => list.indexOf(element) === index)
           .filter(visible)
@@ -3159,7 +3345,7 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
         const panel = scenePanel(root);
         const panelSwiper = panel?.swiper;
         if (panelSwiper) return panelSwiper;
-        return activeSwipers(root).find((swiper) => {
+        return activeSwipers(controlSearchRoot(root)).find((swiper) => {
           const element = swiper.el || swiper.wrapperEl?.parentElement;
           return !element || element === panel || panel.contains(element) || element.contains(panel);
         }) || null;
@@ -3191,16 +3377,17 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
           await sleep(450);
           return true;
         }
-        return false;
+        return forceSceneSlideToIndex(root, fallbackIndex, item);
       };
       const collectScenePages = async (root, states) => {
         resetCarousel(root);
         await sleep(500);
 
         const allItems = sceneItems(root);
+        const expectedItems = sceneExpectedItems(root, allItems);
         const firstWindowItems = sceneItems(root, { visibleOnly: true });
         const firstWindowSignature = sceneWindowSignature(root);
-        if (!allItems.length || !firstWindowItems.length || !firstWindowSignature) {
+        if (!expectedItems.length || !firstWindowItems.length || !firstWindowSignature) {
           warnings.push({
             sectionKey: definition.key,
             sectionLabel: definition.sectionLabel,
@@ -3211,7 +3398,7 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
         }
 
         const seen = new Set();
-        for (const [index, item] of allItems.entries()) {
+        for (const [index, item] of expectedItems.entries()) {
           const activated = await activateSceneItem(root, item, index);
           if (!activated && index > 0) {
             const before = sceneWindowSignature(root);
@@ -3224,12 +3411,14 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
                 stateLabel: (definition.labelPrefix || "场景") + " " + (index + 1),
                 message: "Could not activate scene exploration slide " + (item.label || index + 1) + "."
               });
-              continue;
+              if (!item.directClip) {
+                continue;
+              }
             }
           }
 
           const visibleItems = sceneItems(root, { visibleOnly: true });
-          const activeItem = sceneActiveItem(root);
+          const activeItem = sceneActiveItem(root) || (item.directClip ? item : null);
           const signature = sceneWindowSignature(root);
           if (!signature || !activeItem) {
             warnings.push({
@@ -3238,9 +3427,12 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
               stateLabel: (definition.labelPrefix || "场景") + " " + (index + 1),
               message: "Could not verify scene exploration slide " + (item.label || index + 1) + "."
             });
-            continue;
+            if (!item.directClip) {
+              continue;
+            }
           }
-          if (seen.has(signature)) {
+          const signatureKey = item.directClip ? "direct:" + item.key : signature;
+          if (seen.has(signatureKey)) {
             warnings.push({
               sectionKey: definition.key,
               sectionLabel: definition.sectionLabel,
@@ -3249,10 +3441,23 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
             });
             continue;
           }
-          seen.add(signature);
+          seen.add(signatureKey);
 
           const pageIndex = states.length + 1;
           const label = (definition.labelPrefix || "场景") + " " + pageIndex;
+          const directItem = {
+            sceneItemId: item.sceneItemId,
+            key: item.key,
+            label: item.label,
+            title: item.title,
+            description: item.description,
+            href: item.href,
+            image: item.image,
+            imageFamily: item.imageFamily,
+            slideIndex: item.slideIndex,
+            order: item.order,
+            rect: item.rect
+          };
           states.push({
             kind: "carousel",
             sectionKey: definition.key,
@@ -3262,12 +3467,24 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
             pageIndex,
             stateIndex: states.length + 1,
             stateLabel: label,
-            logicalSignature: definition.key + "|" + activeItem.key + "|" + signature,
-            windowSignature: signature,
-            itemCount: allItems.length,
-            visibleItemCount: visibleItems.length,
-            visibleItems,
-            itemRects: visibleItems.map((visibleItem) => ({
+            logicalSignature: definition.key + "|" + (item.directClip ? item.key : activeItem.key) + "|" + (item.directClip ? "direct" : signature),
+            windowSignature: item.directClip ? "" : signature,
+            itemCount: expectedItems.length,
+            discoveredItemCount: allItems.length,
+            directClip: item.directClip || null,
+            directItem,
+            requiresActivation: Boolean(item.requiresActivation),
+            forceIndex: item.forceIndex ?? index,
+            expectedAnchor: item.expectedAnchor || null,
+            text: [item.title, item.description].filter(Boolean).join(" "),
+            textBlocks: [
+              { text: item.title || item.label || label, x: 0, y: 0, width: item.rect?.width || null, height: null },
+              item.description ? { text: item.description, x: 0, y: null, width: item.rect?.width || null, height: null } : null
+            ].filter(Boolean),
+            images: item.image ? [item.image] : [],
+            visibleItemCount: item.directClip ? 1 : visibleItems.length,
+            visibleItems: item.directClip ? [directItem] : visibleItems,
+            itemRects: (item.directClip ? [directItem] : visibleItems).map((visibleItem) => ({
               sceneItemId: visibleItem.sceneItemId,
               key: visibleItem.key,
               label: visibleItem.label,
@@ -4374,7 +4591,7 @@ async function activateShokzHomeRelatedState(client, definition, state) {
           );
         return clickElement(choices[0]?.element);
       };
-      const activeSwipers = () => [root, ...root.querySelectorAll(".swiper, [class*='swiper']")]
+      const activeSwipers = (searchRoot = root) => [searchRoot, ...searchRoot.querySelectorAll(".swiper, [class*='swiper']")]
         .map((element) => element.swiper)
         .filter((swiper, index, list) => swiper && list.indexOf(swiper) === index);
       const activeProductSwipers = () => activeSwipers().filter((swiper) => {
@@ -4398,9 +4615,14 @@ async function activateShokzHomeRelatedState(client, definition, state) {
         const firstBullet = root.querySelector(".swiper-pagination-bullet, .slick-dots button, [role='tab'][aria-label*='slide' i]");
         if (firstBullet) clickElement(firstBullet);
       };
+      const controlSearchRoot = () =>
+        definition.key === "scene-explore"
+          ? root.closest("section, .shopify-section, main > div, [class*='section']") || root.parentElement || root
+          : root;
       const findPageBullets = () => {
-        const rootRect = root.getBoundingClientRect();
-        return Array.from(root.querySelectorAll(".swiper-pagination-bullet, .slick-dots button, [role='tab'][aria-label*='slide' i]"))
+        const searchRoot = controlSearchRoot();
+        const rootRect = searchRoot.getBoundingClientRect();
+        return Array.from(searchRoot.querySelectorAll(".swiper-pagination-bullet, .slick-dots button, [role='tab'][aria-label*='slide' i]"))
           .filter(visible)
           .map((element) => {
             const rect = element.getBoundingClientRect();
@@ -4424,8 +4646,49 @@ async function activateShokzHomeRelatedState(client, definition, state) {
         const target = bullets[pageIndex - 1];
         return target ? clickElement(target) : false;
       };
+      const sceneSlideElements = () => {
+        const panel = scenePanel();
+        return Array.from(panel.querySelectorAll(".swiper-slide, [class*='swiper-slide'], .slick-slide, [class*='slide']"))
+          .filter((slide) => {
+            const rect = slide.getBoundingClientRect();
+            return rect.width >= 120 && rect.height >= 80 && textOf(slide, 500);
+          });
+      };
+      const forceSceneSlideToIndex = async (index, item = null) => {
+        const panel = scenePanel();
+        const slides = sceneSlideElements();
+        const targetText = cleanText(item?.expectedAnchor || item?.title || item?.label || "", 180).toLowerCase();
+        const target = (targetText
+          ? slides.find((slide) => textOf(slide, 700).toLowerCase().includes(targetText))
+          : null) ||
+          slides[Math.max(0, Math.min(slides.length - 1, Number(index || 0)))];
+        if (!target) return false;
+        const wrapper = target.parentElement;
+        const panelRect = panel.getBoundingClientRect();
+        const targetRect = target.getBoundingClientRect();
+        const targetLeft = Math.max(0, target.offsetLeft || Math.round(targetRect.left - panelRect.left));
+        const targetDelta = Math.round(targetRect.left - panelRect.left);
+        const scrollers = [panel, wrapper, ...panel.querySelectorAll("*")]
+          .filter((element, elementIndex, list) =>
+            element &&
+            list.indexOf(element) === elementIndex &&
+            element.scrollWidth > element.clientWidth + 8
+          );
+        for (const scroller of scrollers) {
+          scroller.scrollLeft = Math.max(0, scroller.scrollLeft + targetDelta - Math.max(0, (scroller.clientWidth - target.clientWidth) / 2));
+          scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+        }
+        if (wrapper && /swiper-wrapper|slick-track|slider|carousel|track|wrapper/i.test(classText(wrapper))) {
+          wrapper.style.transitionDuration = "0ms";
+          wrapper.style.transform = "translate3d(" + (-targetLeft) + "px, 0px, 0px)";
+        }
+        target.scrollIntoView({ block: "nearest", inline: "center" });
+        await sleep(560);
+        return true;
+      };
       const findNextControl = () => {
-        const rootRect = root.getBoundingClientRect();
+        const searchRoot = controlSearchRoot();
+        const rootRect = searchRoot.getBoundingClientRect();
         if (isTabbedCardSection) {
           const pointCandidates = [
             { x: rootRect.right - 18, y: rootRect.bottom - 18 },
@@ -4447,7 +4710,7 @@ async function activateShokzHomeRelatedState(client, definition, state) {
             return pointCandidates[0].element;
           }
         }
-        return Array.from(root.querySelectorAll(".swiper-button-next, .slick-next, button, [role='button'], a, [aria-label], [title]"))
+        return Array.from(searchRoot.querySelectorAll(".swiper-button-next, .slick-next, button, [role='button'], a, [aria-label], [title]"))
           .map((element) => element.closest("button, [role='button'], a, .swiper-button-next, .slick-next") || element)
           .filter((element, index, list) => list.indexOf(element) === index)
           .filter(visible)
@@ -4515,7 +4778,7 @@ async function activateShokzHomeRelatedState(client, definition, state) {
       const activeSceneSwiper = () => {
         const panel = scenePanel();
         if (panel?.swiper) return panel.swiper;
-        return activeSwipers().find((swiper) => {
+        return activeSwipers(controlSearchRoot()).find((swiper) => {
           const element = swiper.el || swiper.wrapperEl?.parentElement;
           return !element || element === panel || panel.contains(element) || element.contains(panel);
         }) || null;
@@ -4526,7 +4789,11 @@ async function activateShokzHomeRelatedState(client, definition, state) {
           ? Number(item.slideIndex)
           : Number(fallbackIndex || 0);
         if (!swiper) {
-          return false;
+          if (clickPageBullet(fallbackIndex + 1)) {
+            await sleep(450);
+            return true;
+          }
+          return forceSceneSlideToIndex(fallbackIndex, item);
         }
         if (swiper.autoplay?.stop) swiper.autoplay.stop();
         if (typeof swiper.slideToLoop === "function") {
@@ -4580,9 +4847,9 @@ async function activateShokzHomeRelatedState(client, definition, state) {
           const allItems = sceneItems();
           const targetItem = allItems.find((item) => item.key === state.activeItemKey) ||
             allItems[Math.max(0, Number(state.pageIndex || 1) - 1)] ||
-            null;
+            (state.expectedAnchor ? state : null);
           if (targetItem) {
-            await activateSceneItem(targetItem, Number(state.pageIndex || 1) - 1);
+            await activateSceneItem(targetItem, Number(state.forceIndex ?? Math.max(0, Number(state.pageIndex || 1) - 1)));
           }
           const maxAttempts = Math.max(8, Number(state.itemCount || allItems.length || 0) + 3);
           for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
@@ -6305,6 +6572,118 @@ function visualHashForBuffer(buffer) {
   } catch {
     return hashBuffer(buffer).slice(0, 16);
   }
+}
+
+function visualAuditForBuffer(buffer, visualHash, similar = null) {
+  const quality = imageQualityAuditForBuffer(buffer);
+  const audit = {
+    status: "ok",
+    visualHash,
+    sharpness: quality.sharpness,
+    contrast: quality.contrast
+  };
+  const messages = [];
+
+  if (similar && similar.distance <= 3) {
+    audit.similarTo = similar.label;
+    audit.distance = similar.distance;
+    messages.push(`Visual signature is very close to ${similar.label}.`);
+  }
+  if (quality.status === "warning") {
+    audit.qualityStatus = "warning";
+    messages.push(quality.message);
+  }
+
+  if (messages.length) {
+    audit.status = "warning";
+    audit.message = messages.join(" ");
+  }
+
+  return audit;
+}
+
+export function imageQualityAuditForBuffer(buffer) {
+  try {
+    const image = decodePng(buffer);
+    if (image.width < 3 || image.height < 3) {
+      return {
+        status: "warning",
+        sharpness: 0,
+        contrast: 0,
+        message: "Image is too small for quality audit."
+      };
+    }
+
+    const maxSamples = 60000;
+    const step = Math.max(1, Math.ceil(Math.sqrt((image.width * image.height) / maxSamples)));
+    let count = 0;
+    let sum = 0;
+    let sumSquares = 0;
+    let edgeCount = 0;
+    let edgeSum = 0;
+
+    for (let y = 0; y < image.height; y += step) {
+      for (let x = 0; x < image.width; x += step) {
+        const gray = grayAt(image, x, y);
+        count += 1;
+        sum += gray;
+        sumSquares += gray * gray;
+
+        if (x + step < image.width) {
+          edgeSum += Math.abs(gray - grayAt(image, x + step, y));
+          edgeCount += 1;
+        }
+        if (y + step < image.height) {
+          edgeSum += Math.abs(gray - grayAt(image, x, y + step));
+          edgeCount += 1;
+        }
+      }
+    }
+
+    const mean = sum / Math.max(1, count);
+    const variance = Math.max(0, (sumSquares / Math.max(1, count)) - mean * mean);
+    const contrast = Math.sqrt(variance);
+    const sharpness = edgeSum / Math.max(1, edgeCount);
+    const roundedSharpness = roundMetric(sharpness);
+    const roundedContrast = roundMetric(contrast);
+
+    if (sharpness < 4 && contrast < 18) {
+      return {
+        status: "warning",
+        sharpness: roundedSharpness,
+        contrast: roundedContrast,
+        message: "Image may be blurry or low detail."
+      };
+    }
+
+    return {
+      status: "ok",
+      sharpness: roundedSharpness,
+      contrast: roundedContrast
+    };
+  } catch (error) {
+    return {
+      status: "warning",
+      sharpness: null,
+      contrast: null,
+      message: `Image quality audit failed: ${error.message}`
+    };
+  }
+}
+
+function grayAt(image, x, y) {
+  const sourceX = Math.max(0, Math.min(image.width - 1, x));
+  const sourceY = Math.max(0, Math.min(image.height - 1, y));
+  const offset = (sourceY * image.width + sourceX) * 4;
+  return (
+    image.rgba[offset] * 0.299 +
+    image.rgba[offset + 1] * 0.587 +
+    image.rgba[offset + 2] * 0.114
+  );
+}
+
+function roundMetric(value) {
+  return Number.isFinite(value) ? Math.round(value * 100) / 100 : null;
 }
 
 function visualHashDistance(a, b) {

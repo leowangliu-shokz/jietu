@@ -190,13 +190,6 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
 
   for (const item of relatedCapture.captures || []) {
     const bannerIndex = Number(item.bannerIndex || 0);
-    if ((item.sectionKey === "banner" || item.kind === "banner") && (item.isDefaultState || bannerIndex === 1)) {
-      if (item.outputPath) {
-        await fs.rm(item.outputPath, { force: true });
-      }
-      continue;
-    }
-
     const relativePath = archiveRelativePath(item.outputPath);
     const stat = await fs.stat(item.outputPath);
     relatedShots.push({
