@@ -854,10 +854,10 @@ select:focus {
 .image-preview-panel {
   position: relative;
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 10px;
-  max-width: min(96vw, 1500px);
-  max-height: 92vh;
+  width: min(96vw, 1500px);
+  height: min(92vh, 980px);
   min-width: min(92vw, 420px);
   border-radius: 8px;
   background: #101214;
@@ -865,22 +865,23 @@ select:focus {
   padding: 12px;
 }
 
-.image-preview-panel img {
-  max-width: calc(96vw - 24px);
-  max-height: calc(92vh - 82px);
-  min-height: 0;
-  display: block;
-  justify-self: center;
-  object-fit: contain;
-  border-radius: 4px;
-  background: #16191d;
+.image-preview-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
 }
 
+.image-preview-zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.image-preview-tool,
 .image-preview-close {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  z-index: 1;
   min-height: 32px;
   border-color: rgba(255, 255, 255, 0.22);
   background: rgba(15, 17, 20, 0.82);
@@ -889,10 +890,69 @@ select:focus {
   padding: 0 12px;
 }
 
+.image-preview-tool {
+  min-width: 34px;
+}
+
+.image-preview-fit {
+  white-space: nowrap;
+}
+
+.image-preview-tool:hover,
 .image-preview-close:hover {
   border-color: rgba(255, 255, 255, 0.42);
   background: rgba(15, 17, 20, 0.96);
   transform: none;
+}
+
+.image-preview-tool:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.image-preview-zoom-value {
+  min-width: 54px;
+  color: #dbe7df;
+  font-size: 12px;
+  font-weight: 750;
+  text-align: center;
+}
+
+.image-preview-viewport {
+  min-height: 0;
+  overflow: auto;
+  border-radius: 4px;
+  background: #16191d;
+  overscroll-behavior: contain;
+  scrollbar-color: #475467 transparent;
+  scrollbar-width: thin;
+  touch-action: none;
+}
+
+.image-preview-viewport.can-drag {
+  cursor: grab;
+}
+
+.image-preview-viewport.is-dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.image-preview-stage {
+  display: grid;
+  place-items: center;
+  width: max-content;
+  min-width: 100%;
+  height: max-content;
+  min-height: 100%;
+}
+
+.image-preview-panel img {
+  display: block;
+  max-width: none;
+  max-height: none;
+  user-select: none;
+  border-radius: 4px;
 }
 
 .image-preview-caption {
@@ -1061,13 +1121,23 @@ select:focus {
   .image-preview-panel {
     width: 100%;
     min-width: 0;
-    max-height: 94vh;
+    height: 94vh;
     padding: 10px;
   }
 
-  .image-preview-panel img {
-    max-width: calc(100vw - 44px);
-    max-height: calc(94vh - 78px);
+  .image-preview-toolbar {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .image-preview-zoom-controls {
+    flex: 1 1 210px;
+    flex-wrap: wrap;
+  }
+
+  .image-preview-tool,
+  .image-preview-close {
+    flex: 0 0 auto;
   }
 
   .warning-preview {

@@ -33,8 +33,13 @@ const elements = {
   changesNextPage: document.querySelector("#changesNextPage"),
   changesEmpty: document.querySelector("#changesEmpty"),
   imagePreview: document.querySelector("#imagePreview"),
+  imagePreviewViewport: document.querySelector("#imagePreviewViewport"),
   imagePreviewImage: document.querySelector("#imagePreviewImage"),
   imagePreviewCaption: document.querySelector("#imagePreviewCaption"),
+  imagePreviewZoomOut: document.querySelector("#imagePreviewZoomOut"),
+  imagePreviewZoomValue: document.querySelector("#imagePreviewZoomValue"),
+  imagePreviewZoomIn: document.querySelector("#imagePreviewZoomIn"),
+  imagePreviewZoomFit: document.querySelector("#imagePreviewZoomFit"),
   imagePreviewClose: document.querySelector("#imagePreviewClose"),
   warningPreview: document.querySelector("#warningPreview"),
   warningPreviewTitle: document.querySelector("#warningPreviewTitle"),
@@ -60,9 +65,14 @@ let activeTab = "archive";
 let changesPage = 1;
 let imagePreviewReturnFocus = null;
 let imagePreviewPreviousOverflow = "";
+let imagePreviewZoomState = createImagePreviewZoomState();
 let warningPreviewReturnFocus = null;
 let warningPreviewPreviousOverflow = "";
 const changesPageSize = 10;
+const imagePreviewDefaultMinScale = 0.25;
+const imagePreviewMaxScale = 5;
+const imagePreviewButtonScaleStep = 1.25;
+const imagePreviewWheelScaleStep = 1.12;
 const selectedDeviceFilters = {
   devices: new Set()
 };
@@ -97,6 +107,15 @@ elements.changesNextPage.addEventListener("click", () => changeChangesPage(1));
 elements.gallery.addEventListener("click", handleGalleryClick);
 elements.changesList.addEventListener("click", handleImagePreviewClick);
 elements.imagePreview.addEventListener("click", handleImagePreviewBackdropClick);
+elements.imagePreviewImage.addEventListener("load", handleImagePreviewImageLoad);
+elements.imagePreviewViewport.addEventListener("wheel", handleImagePreviewWheel, { passive: false });
+elements.imagePreviewViewport.addEventListener("pointerdown", startImagePreviewDrag);
+elements.imagePreviewViewport.addEventListener("pointermove", moveImagePreviewDrag);
+elements.imagePreviewViewport.addEventListener("pointerup", endImagePreviewDrag);
+elements.imagePreviewViewport.addEventListener("pointercancel", endImagePreviewDrag);
+elements.imagePreviewZoomOut.addEventListener("click", () => changeImagePreviewZoom(-1));
+elements.imagePreviewZoomIn.addEventListener("click", () => changeImagePreviewZoom(1));
+elements.imagePreviewZoomFit.addEventListener("click", fitImagePreviewToViewport);
 elements.imagePreviewClose.addEventListener("click", closeImagePreview);
 elements.warningPreview.addEventListener("click", handleWarningPreviewBackdropClick);
 elements.warningPreviewClose.addEventListener("click", closeWarningPreview);
@@ -104,6 +123,7 @@ document.addEventListener("click", closeDeviceFilterOnOutsideClick);
 document.addEventListener("keydown", closeDeviceFilterOnEscape);
 document.addEventListener("keydown", closeImagePreviewOnEscape);
 document.addEventListener("keydown", closeWarningPreviewOnEscape);
+window.addEventListener("resize", handleImagePreviewResize);
 
 function setActiveTab(tabName) {
   activeTab = tabName === "changes" ? "changes" : "archive";
@@ -340,15 +360,37 @@ function imagePreviewCaptionForLink(link) {
   return image?.getAttribute("alt") || link.getAttribute("title") || link.href;
 }
 
+function createImagePreviewZoomState() {
+  return {
+    naturalWidth: 0,
+    naturalHeight: 0,
+    scale: 1,
+    fitScale: 1,
+    isFit: true,
+    dragging: false,
+    dragPointerId: null,
+    dragStartX: 0,
+    dragStartY: 0,
+    dragStartScrollLeft: 0,
+    dragStartScrollTop: 0
+  };
+}
+
 function openImagePreview({ src, caption, trigger }) {
   imagePreviewReturnFocus = trigger instanceof HTMLElement ? trigger : null;
   imagePreviewPreviousOverflow = document.body.style.overflow || "";
+  resetImagePreviewZoom();
   elements.imagePreviewImage.src = src;
   elements.imagePreviewImage.alt = caption || "图片预览";
   elements.imagePreviewCaption.textContent = caption || "";
   elements.imagePreview.hidden = false;
   elements.imagePreview.setAttribute("aria-hidden", "false");
   document.body.style.overflow = "hidden";
+  requestAnimationFrame(() => {
+    if (elements.imagePreviewImage.complete && elements.imagePreviewImage.naturalWidth) {
+      handleImagePreviewImageLoad();
+    }
+  });
   elements.imagePreviewClose.focus();
 }
 
@@ -359,14 +401,215 @@ function closeImagePreview() {
 
   elements.imagePreview.hidden = true;
   elements.imagePreview.setAttribute("aria-hidden", "true");
+  endImagePreviewDrag();
   elements.imagePreviewImage.removeAttribute("src");
+  elements.imagePreviewImage.removeAttribute("style");
   elements.imagePreviewCaption.textContent = "";
+  resetImagePreviewZoom();
   document.body.style.overflow = imagePreviewPreviousOverflow;
   const returnFocus = imagePreviewReturnFocus;
   imagePreviewReturnFocus = null;
   if (returnFocus?.isConnected) {
     returnFocus.focus();
   }
+}
+
+function resetImagePreviewZoom() {
+  imagePreviewZoomState = createImagePreviewZoomState();
+  elements.imagePreviewImage.removeAttribute("style");
+  elements.imagePreviewViewport.scrollLeft = 0;
+  elements.imagePreviewViewport.scrollTop = 0;
+  elements.imagePreviewViewport.classList.remove("can-drag", "is-dragging");
+  updateImagePreviewZoomControls();
+}
+
+function handleImagePreviewImageLoad() {
+  if (elements.imagePreview.hidden || !elements.imagePreviewImage.naturalWidth) {
+    return;
+  }
+
+  imagePreviewZoomState.naturalWidth = elements.imagePreviewImage.naturalWidth;
+  imagePreviewZoomState.naturalHeight = elements.imagePreviewImage.naturalHeight;
+  fitImagePreviewToViewport();
+}
+
+function fitImagePreviewToViewport() {
+  if (!imagePreviewZoomState.naturalWidth || !imagePreviewZoomState.naturalHeight) {
+    return;
+  }
+
+  const viewportWidth = Math.max(1, elements.imagePreviewViewport.clientWidth);
+  const viewportHeight = Math.max(1, elements.imagePreviewViewport.clientHeight);
+  const fitScale = Math.min(
+    viewportWidth / imagePreviewZoomState.naturalWidth,
+    viewportHeight / imagePreviewZoomState.naturalHeight,
+    1
+  );
+
+  imagePreviewZoomState.fitScale = Number.isFinite(fitScale) && fitScale > 0 ? fitScale : 1;
+  setImagePreviewScale(imagePreviewZoomState.fitScale, { fit: true });
+}
+
+function changeImagePreviewZoom(direction) {
+  if (!imagePreviewZoomState.naturalWidth) {
+    return;
+  }
+
+  const factor = direction > 0 ? imagePreviewButtonScaleStep : 1 / imagePreviewButtonScaleStep;
+  const rect = elements.imagePreviewViewport.getBoundingClientRect();
+  setImagePreviewScale(imagePreviewZoomState.scale * factor, {
+    anchorX: rect.left + rect.width / 2,
+    anchorY: rect.top + rect.height / 2
+  });
+}
+
+function handleImagePreviewWheel(event) {
+  if (!imagePreviewZoomState.naturalWidth) {
+    return;
+  }
+
+  event.preventDefault();
+  if (!event.deltaY) {
+    return;
+  }
+
+  const factor = Math.pow(imagePreviewWheelScaleStep, -event.deltaY / 100);
+  setImagePreviewScale(imagePreviewZoomState.scale * factor, {
+    anchorX: event.clientX,
+    anchorY: event.clientY
+  });
+}
+
+function setImagePreviewScale(nextScale, { anchorX = null, anchorY = null, fit = false } = {}) {
+  if (!imagePreviewZoomState.naturalWidth || !imagePreviewZoomState.naturalHeight) {
+    return;
+  }
+
+  const previousScale = imagePreviewZoomState.scale || 1;
+  const scale = clampImagePreviewScale(nextScale);
+  const viewport = elements.imagePreviewViewport;
+  const rect = viewport.getBoundingClientRect();
+  const hasAnchor = Number.isFinite(anchorX) && Number.isFinite(anchorY);
+  const anchorViewportX = hasAnchor ? anchorX - rect.left : rect.width / 2;
+  const anchorViewportY = hasAnchor ? anchorY - rect.top : rect.height / 2;
+  const anchorContentX = (viewport.scrollLeft + anchorViewportX) / previousScale;
+  const anchorContentY = (viewport.scrollTop + anchorViewportY) / previousScale;
+
+  imagePreviewZoomState.scale = scale;
+  imagePreviewZoomState.isFit = Boolean(fit);
+  elements.imagePreviewImage.style.width = `${imagePreviewZoomState.naturalWidth * scale}px`;
+  elements.imagePreviewImage.style.height = `${imagePreviewZoomState.naturalHeight * scale}px`;
+  updateImagePreviewZoomControls();
+
+  requestAnimationFrame(() => {
+    if (fit) {
+      centerImagePreviewViewport();
+    } else {
+      viewport.scrollLeft = anchorContentX * scale - anchorViewportX;
+      viewport.scrollTop = anchorContentY * scale - anchorViewportY;
+    }
+    updateImagePreviewZoomControls();
+  });
+}
+
+function clampImagePreviewScale(scale) {
+  const minScale = Math.min(imagePreviewDefaultMinScale, imagePreviewZoomState.fitScale || imagePreviewDefaultMinScale);
+  const boundedScale = Math.min(imagePreviewMaxScale, Math.max(minScale, scale));
+  return Number.isFinite(boundedScale) && boundedScale > 0 ? boundedScale : 1;
+}
+
+function centerImagePreviewViewport() {
+  const viewport = elements.imagePreviewViewport;
+  viewport.scrollLeft = Math.max(0, (viewport.scrollWidth - viewport.clientWidth) / 2);
+  viewport.scrollTop = Math.max(0, (viewport.scrollHeight - viewport.clientHeight) / 2);
+}
+
+function updateImagePreviewZoomControls() {
+  const hasImage = Boolean(imagePreviewZoomState.naturalWidth);
+  const minScale = Math.min(imagePreviewDefaultMinScale, imagePreviewZoomState.fitScale || imagePreviewDefaultMinScale);
+  elements.imagePreviewZoomOut.disabled = !hasImage || imagePreviewZoomState.scale <= minScale + 0.001;
+  elements.imagePreviewZoomIn.disabled = !hasImage || imagePreviewZoomState.scale >= imagePreviewMaxScale - 0.001;
+  elements.imagePreviewZoomFit.disabled = !hasImage || Math.abs(imagePreviewZoomState.scale - imagePreviewZoomState.fitScale) <= 0.001;
+  elements.imagePreviewZoomValue.textContent = hasImage ? `${Math.round(imagePreviewZoomState.scale * 100)}%` : "100%";
+
+  const canDrag = hasImage && (
+    elements.imagePreviewViewport.scrollWidth > elements.imagePreviewViewport.clientWidth + 1 ||
+    elements.imagePreviewViewport.scrollHeight > elements.imagePreviewViewport.clientHeight + 1
+  );
+  elements.imagePreviewViewport.classList.toggle("can-drag", canDrag && !elements.imagePreview.hidden);
+}
+
+function startImagePreviewDrag(event) {
+  if (event.button !== 0 || !imagePreviewZoomState.naturalWidth) {
+    return;
+  }
+
+  const canDrag = elements.imagePreviewViewport.scrollWidth > elements.imagePreviewViewport.clientWidth + 1 ||
+    elements.imagePreviewViewport.scrollHeight > elements.imagePreviewViewport.clientHeight + 1;
+  if (!canDrag) {
+    return;
+  }
+
+  imagePreviewZoomState.dragging = true;
+  imagePreviewZoomState.dragPointerId = event.pointerId;
+  imagePreviewZoomState.dragStartX = event.clientX;
+  imagePreviewZoomState.dragStartY = event.clientY;
+  imagePreviewZoomState.dragStartScrollLeft = elements.imagePreviewViewport.scrollLeft;
+  imagePreviewZoomState.dragStartScrollTop = elements.imagePreviewViewport.scrollTop;
+  elements.imagePreviewViewport.classList.add("is-dragging");
+  elements.imagePreviewViewport.setPointerCapture(event.pointerId);
+  event.preventDefault();
+}
+
+function moveImagePreviewDrag(event) {
+  if (!imagePreviewZoomState.dragging || imagePreviewZoomState.dragPointerId !== event.pointerId) {
+    return;
+  }
+
+  elements.imagePreviewViewport.scrollLeft = imagePreviewZoomState.dragStartScrollLeft - (event.clientX - imagePreviewZoomState.dragStartX);
+  elements.imagePreviewViewport.scrollTop = imagePreviewZoomState.dragStartScrollTop - (event.clientY - imagePreviewZoomState.dragStartY);
+  event.preventDefault();
+}
+
+function endImagePreviewDrag(event) {
+  if (event && imagePreviewZoomState.dragPointerId !== event.pointerId) {
+    return;
+  }
+
+  if (imagePreviewZoomState.dragPointerId !== null && elements.imagePreviewViewport.hasPointerCapture?.(imagePreviewZoomState.dragPointerId)) {
+    elements.imagePreviewViewport.releasePointerCapture(imagePreviewZoomState.dragPointerId);
+  }
+  imagePreviewZoomState.dragging = false;
+  imagePreviewZoomState.dragPointerId = null;
+  elements.imagePreviewViewport.classList.remove("is-dragging");
+}
+
+function handleImagePreviewResize() {
+  if (elements.imagePreview.hidden || !imagePreviewZoomState.naturalWidth) {
+    return;
+  }
+
+  const wasFit = imagePreviewZoomState.isFit;
+  const previousScale = imagePreviewZoomState.scale;
+  const viewportWidth = Math.max(1, elements.imagePreviewViewport.clientWidth);
+  const viewportHeight = Math.max(1, elements.imagePreviewViewport.clientHeight);
+  const nextFitScale = Math.min(
+    viewportWidth / imagePreviewZoomState.naturalWidth,
+    viewportHeight / imagePreviewZoomState.naturalHeight,
+    1
+  );
+  imagePreviewZoomState.fitScale = Number.isFinite(nextFitScale) && nextFitScale > 0 ? nextFitScale : 1;
+
+  if (wasFit) {
+    setImagePreviewScale(imagePreviewZoomState.fitScale, { fit: true });
+    return;
+  }
+
+  const rect = elements.imagePreviewViewport.getBoundingClientRect();
+  setImagePreviewScale(previousScale, {
+    anchorX: rect.left + rect.width / 2,
+    anchorY: rect.top + rect.height / 2
+  });
 }
 
 function handleImagePreviewBackdropClick(event) {

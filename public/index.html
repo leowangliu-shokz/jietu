@@ -167,8 +167,20 @@
     </main>
     <div id="imagePreview" class="image-preview" hidden aria-hidden="true">
       <div class="image-preview-panel" role="dialog" aria-modal="true" aria-label="图片预览">
-        <button id="imagePreviewClose" class="image-preview-close" type="button" aria-label="关闭预览">关闭</button>
-        <img id="imagePreviewImage" src="" alt="">
+        <div class="image-preview-toolbar">
+          <div class="image-preview-zoom-controls" aria-label="图片缩放">
+            <button id="imagePreviewZoomOut" class="image-preview-tool" type="button" aria-label="缩小图片">-</button>
+            <span id="imagePreviewZoomValue" class="image-preview-zoom-value" aria-live="polite">100%</span>
+            <button id="imagePreviewZoomIn" class="image-preview-tool" type="button" aria-label="放大图片">+</button>
+            <button id="imagePreviewZoomFit" class="image-preview-tool image-preview-fit" type="button">适应窗口</button>
+          </div>
+          <button id="imagePreviewClose" class="image-preview-close" type="button" aria-label="关闭预览">关闭</button>
+        </div>
+        <div id="imagePreviewViewport" class="image-preview-viewport">
+          <div class="image-preview-stage">
+            <img id="imagePreviewImage" src="" alt="" draggable="false">
+          </div>
+        </div>
         <p id="imagePreviewCaption" class="image-preview-caption"></p>
       </div>
     </div>
