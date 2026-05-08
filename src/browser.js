@@ -215,23 +215,32 @@ async function driveCapture(client, url, outputPath, options) {
     if (guardShokzSearchOverlay) {
       await ensureShokzSearchOverlayClosed(client, "before screenshot capture");
     }
-    await captureStitchedScreenshot(client, outputPath, {
-      width: clipWidth,
-      height: clipHeight,
-      viewportHeight: viewport.height,
-      stepDelay: options.scrollStepMs ?? 350,
-      dismissObstructionsBeforeSegment: !cleanShokzKnownPopups,
-      hideFixedElementsAfterFirstSegment: options.hideFixedElementsAfterFirstSegment !== false,
-      beforeSegmentCapture: () => prepareForScreenshotCapture(client, {
-        rounds: 2,
-        shokzKnownPopups: cleanShokzKnownPopups,
-        guardSearchOverlay: guardShokzSearchOverlay,
-        stage: "before stitched segment screenshot capture"
-      }),
-      beforeFirstSegmentCapture: guardShokzSearchOverlay
-        ? () => ensureShokzSearchOverlayClosed(client, "before first segment screenshot capture")
-        : null
+    const beforeSegmentCapture = () => prepareForScreenshotCapture(client, {
+      rounds: 2,
+      shokzKnownPopups: cleanShokzKnownPopups,
+      guardSearchOverlay: guardShokzSearchOverlay,
+      stage: "before stitched segment screenshot capture"
     });
+    if (viewport.mobile) {
+      await beforeSegmentCapture();
+      await captureFullPageClipScreenshot(client, outputPath, {
+        width: clipWidth,
+        height: clipHeight
+      });
+    } else {
+      await captureStitchedScreenshot(client, outputPath, {
+        width: clipWidth,
+        height: clipHeight,
+        viewportHeight: viewport.height,
+        stepDelay: options.scrollStepMs ?? 350,
+        dismissObstructionsBeforeSegment: !cleanShokzKnownPopups,
+        hideFixedElementsAfterFirstSegment: options.hideFixedElementsAfterFirstSegment !== false,
+        beforeSegmentCapture,
+        beforeFirstSegmentCapture: guardShokzSearchOverlay
+          ? () => ensureShokzSearchOverlayClosed(client, "before first segment screenshot capture")
+          : null
+      });
+    }
   } else {
     if (options.captureMode === "shokz-products-nav") {
       await prepareShokzNavigationMainScreenshot(client, viewport);
@@ -6531,6 +6540,42 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
 
           return null;
         };
+        const layerState = (element, kind) => {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          const zIndex = Number.parseInt(style.zIndex, 10);
+          const area = rect.width * rect.height;
+          const roleDialog = /dialog|alertdialog/i.test(element.getAttribute("role") || "");
+          const ariaModal = element.getAttribute("aria-modal") === "true";
+          const overlayMeta = [
+            element.id,
+            String(element.className || ""),
+            element.getAttribute("role"),
+            element.getAttribute("aria-label")
+          ].filter(Boolean).join(" ");
+          const modalHint = /(modal|dialog|popup|overlay|lightbox|klaviyo|flyout|interstitial)/i.test(overlayMeta);
+          const positioned = ["fixed", "sticky", "absolute"].includes(style.position) ||
+            (Number.isFinite(zIndex) && zIndex >= 20);
+          const bottomCookie = kind === "cookie" &&
+            rect.bottom >= window.innerHeight - 4 &&
+            rect.width >= window.innerWidth * 0.45 &&
+            rect.height >= 70;
+          const pageContainer = rect.top <= 80 &&
+            rect.height > window.innerHeight * 1.35 &&
+            rect.width >= window.innerWidth * 0.85;
+          const popupLike = kind === "cookie"
+            ? roleDialog || ariaModal || modalHint || positioned || bottomCookie
+            : roleDialog || ariaModal || modalHint || positioned;
+          return {
+            rect,
+            area,
+            zIndex: Number.isFinite(zIndex) ? zIndex : 0,
+            roleDialog,
+            bottomCookie,
+            pageContainer,
+            popupLike
+          };
+        };
         const interactiveSelector = "button, [role='button'], input[type='button'], input[type='submit'], a, [aria-label], [title], [tabindex]";
         const navigatesAway = (target) => {
           const link = target.closest?.("a[href]");
@@ -6609,25 +6654,11 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
           if (!kind) continue;
           const layer = layerRootFor(element);
           if (!visible(layer) || isNavigationElement(layer) || containsNavigation(layer) || seen.has(layer)) continue;
-          const rect = layer.getBoundingClientRect();
-          const style = getComputedStyle(layer);
-          const area = rect.width * rect.height;
-          const zIndex = Number.parseInt(style.zIndex, 10);
-          const roleDialog = /dialog|alertdialog/i.test(layer.getAttribute("role") || "");
-          const positioned = ["fixed", "sticky", "absolute"].includes(style.position) ||
-            (Number.isFinite(zIndex) && zIndex >= 20);
-          const bottomCookie = kind === "cookie" &&
-            rect.bottom >= window.innerHeight - 4 &&
-            rect.width >= window.innerWidth * 0.45 &&
-            rect.height >= 70;
-          const pageContainer = rect.top <= 80 &&
-            rect.height > window.innerHeight * 1.35 &&
-            rect.width >= window.innerWidth * 0.85;
-          const largeOverlay = area >= Math.min(viewportArea * 0.08, 120000);
-          if (pageContainer && !roleDialog && !bottomCookie) continue;
-          if (!roleDialog && !positioned && !bottomCookie && !largeOverlay) continue;
+          const state = layerState(layer, kind);
+          if (state.pageContainer && !state.roleDialog && !state.bottomCookie) continue;
+          if (!state.popupLike) continue;
           seen.add(layer);
-          candidates.push({ layer, kind, area, zIndex: Number.isFinite(zIndex) ? zIndex : 0 });
+          candidates.push({ layer, kind, area: state.area, zIndex: state.zIndex });
         }
         const priority = { cookie: 0, email: 1, region: 2 };
         const layers = candidates.sort((a, b) =>
@@ -6712,25 +6743,18 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
           if (!visible(element) || element.dataset.pageShotHidden === "true" || isNavigationElement(element) || containsNavigation(element)) continue;
           const kind = classifyKnownPopup(textOf(element));
           if (!kind) continue;
-            const rect = element.getBoundingClientRect();
-            const style = getComputedStyle(element);
-            const area = rect.width * rect.height;
-            const zIndex = Number.parseInt(style.zIndex, 10);
-          const positioned = ["fixed", "sticky", "absolute"].includes(style.position) ||
-            (Number.isFinite(zIndex) && zIndex >= 20);
-          const bottomCookie = kind === "cookie" &&
-            rect.bottom >= window.innerHeight - 4 &&
-            rect.width >= window.innerWidth * 0.45 &&
-            rect.height >= 70;
-          const pageContainer = rect.top <= 80 &&
-            rect.height > window.innerHeight * 1.35 &&
-            rect.width >= window.innerWidth * 0.85;
-          if (pageContainer && !bottomCookie) continue;
-          if (positioned || bottomCookie || area >= Math.min(viewportArea * 0.08, 120000)) {
+          const state = layerState(element, kind);
+          if (state.pageContainer && !state.bottomCookie) continue;
+          if (state.popupLike) {
             remaining.push({
               kind,
               text: textOf(element).slice(0, 120),
-              rect: { left: Math.round(rect.left), top: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height) }
+              rect: {
+                left: Math.round(state.rect.left),
+                top: Math.round(state.rect.top),
+                width: Math.round(state.rect.width),
+                height: Math.round(state.rect.height)
+              }
             });
           }
         }
@@ -7532,6 +7556,22 @@ async function captureStitchedScreenshot(client, outputPath, options) {
   }
 
   await fs.writeFile(outputPath, encodePng(width, height, rgba));
+}
+
+async function captureFullPageClipScreenshot(client, outputPath, options) {
+  const screenshot = await client.send("Page.captureScreenshot", {
+    format: "png",
+    fromSurface: true,
+    captureBeyondViewport: true,
+    clip: {
+      x: 0,
+      y: 0,
+      width: Math.ceil(options.width),
+      height: Math.ceil(options.height),
+      scale: 1
+    }
+  });
+  await fs.writeFile(outputPath, screenshot.data, "base64");
 }
 
 async function dismissObstructions(client, options = {}) {
