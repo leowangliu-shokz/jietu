@@ -223,6 +223,7 @@ async function driveCapture(client, url, outputPath, options) {
     });
     if (viewport.mobile) {
       await beforeSegmentCapture();
+      await materializeFullPageContent(client);
       await captureFullPageClipScreenshot(client, outputPath, {
         width: clipWidth,
         height: clipHeight
@@ -7796,28 +7797,7 @@ function copySegment(image, target, targetWidth, targetHeight, targetY) {
 async function prepareFullPage(client, options) {
   const stepDelay = options.scrollStepMs ?? 350;
   const maxHeight = options.maxFullPageHeight || 16000;
-  await client.send("Runtime.evaluate", {
-    expression: `
-      document.querySelectorAll("img[loading='lazy']").forEach((img) => {
-        img.loading = "eager";
-      });
-
-      document.querySelectorAll("img").forEach((img) => {
-        for (const attr of ["data-src", "data-original", "data-lazy-src"]) {
-          const value = img.getAttribute(attr);
-          if (value && !img.getAttribute("src")) {
-            img.setAttribute("src", value);
-          }
-        }
-        for (const attr of ["data-srcset", "data-lazy-srcset"]) {
-          const value = img.getAttribute(attr);
-          if (value && !img.getAttribute("srcset")) {
-            img.setAttribute("srcset", value);
-          }
-        }
-      });
-    `
-  });
+  await materializeFullPageContent(client);
 
   let state = await getPageState(client);
   let y = 0;
@@ -7851,9 +7831,111 @@ async function prepareFullPage(client, options) {
   await sleep(Math.max(stepDelay, 700));
   await scrollTo(client, 0);
   await sleep(Math.max(stepDelay, 1200));
+  await materializeFullPageContent(client);
   state = await getPageState(client);
 
   return { ...state, scrolls };
+}
+
+async function materializeFullPageContent(client) {
+  await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const eagerImageAttrs = ["data-src", "data-original", "data-lazy-src"];
+      const eagerSrcSetAttrs = ["data-srcset", "data-lazy-srcset"];
+      const eagerBackgroundAttrs = [
+        "data-bg",
+        "data-background",
+        "data-background-image",
+        "data-lazy-background",
+        "data-bg-image",
+        "data-desktop-bg",
+        "data-mobile-bg"
+      ];
+      const waitFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve(true)));
+      const decodeImage = (img) => {
+        if (!(img instanceof HTMLImageElement)) return Promise.resolve(true);
+        if (img.complete && img.naturalWidth > 0) return Promise.resolve(true);
+        if (typeof img.decode === "function") {
+          return Promise.race([
+            img.decode().catch(() => true),
+            new Promise((resolve) => setTimeout(resolve, 1200))
+          ]);
+        }
+        return new Promise((resolve) => {
+          const done = () => resolve(true);
+          img.addEventListener("load", done, { once: true });
+          img.addEventListener("error", done, { once: true });
+          setTimeout(done, 1200);
+        });
+      };
+      return (async () => {
+        let forcedVisible = 0;
+        let eagerBackgrounds = 0;
+
+        document.querySelectorAll("img[loading='lazy']").forEach((img) => {
+          img.loading = "eager";
+          img.setAttribute("loading", "eager");
+        });
+
+        for (const img of document.querySelectorAll("img")) {
+          if (!img.getAttribute("decoding")) {
+            img.setAttribute("decoding", "sync");
+          }
+          if (!img.getAttribute("fetchpriority")) {
+            img.setAttribute("fetchpriority", "high");
+          }
+          for (const attr of eagerImageAttrs) {
+            const value = img.getAttribute(attr);
+            if (value && !img.getAttribute("src")) {
+              img.setAttribute("src", value);
+            }
+          }
+          for (const attr of eagerSrcSetAttrs) {
+            const value = img.getAttribute(attr);
+            if (value && !img.getAttribute("srcset")) {
+              img.setAttribute("srcset", value);
+            }
+          }
+        }
+
+        for (const element of document.querySelectorAll("body *")) {
+          if (!(element instanceof HTMLElement)) continue;
+          const style = getComputedStyle(element);
+          if (style.contentVisibility === "auto") {
+            element.style.setProperty("content-visibility", "visible", "important");
+            element.style.setProperty("contain-intrinsic-size", "auto", "important");
+            forcedVisible += 1;
+          }
+          if ((!style.backgroundImage || style.backgroundImage === "none")) {
+            for (const attr of eagerBackgroundAttrs) {
+              const value = element.getAttribute(attr);
+              if (!value) continue;
+              element.style.setProperty("background-image", value.startsWith("url(") ? value : \`url("\${value}")\`, "important");
+              eagerBackgrounds += 1;
+              break;
+            }
+          }
+        }
+
+        if (document.fonts?.ready) {
+          await Promise.race([
+            document.fonts.ready.catch(() => true),
+            new Promise((resolve) => setTimeout(resolve, 1200))
+          ]);
+        }
+        await Promise.all(Array.from(document.images || []).map((img) => decodeImage(img)));
+        window.dispatchEvent(new Event("resize"));
+        await waitFrame();
+        await waitFrame();
+        window.dispatchEvent(new Event("scroll"));
+        await waitFrame();
+        await waitFrame();
+        return { ok: true, forcedVisible, eagerBackgrounds, images: document.images.length };
+      })();
+    })()`,
+    awaitPromise: true,
+    returnByValue: true
+  }).catch(() => null);
 }
 
 async function getPageState(client) {
