@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { archiveDir, changesPath } from "./paths.js";
+import { normalizeCaptureConfidence } from "./capture-confidence.js";
 import { decodePng, encodePng } from "./png.js";
 import { loadSnapshots, publicSnapshotUrl } from "./store.js";
 
@@ -59,18 +60,20 @@ export async function compareSnapshots(snapshots, options = {}) {
       timestamp(a.capturedAt) - timestamp(b.capturedAt) ||
       String(a.itemId).localeCompare(String(b.itemId))
     );
-  const previousByKey = new Map();
+  const previousTrustedByKey = new Map();
   const changes = [];
 
   for (const item of items) {
-    const previous = previousByKey.get(item.comparisonKey);
-    if (previous) {
+    const previous = previousTrustedByKey.get(item.comparisonKey);
+    if (previous && item.captureConfidence.baselineEligible) {
       const change = await compareItems(previous, item, { ...options, archiveRoot });
       if (change) {
         changes.push(change);
       }
     }
-    previousByKey.set(item.comparisonKey, item);
+    if (item.captureConfidence.baselineEligible) {
+      previousTrustedByKey.set(item.comparisonKey, item);
+    }
   }
 
   return changes.sort((a, b) => String(b.to.capturedAt).localeCompare(String(a.to.capturedAt)));
@@ -508,11 +511,13 @@ function createComparableItem(snapshot, shot, relatedIndex = null) {
     itemRects: Array.isArray(source.itemRects) ? source.itemRects : null,
     visualSignature: source.visualSignature || null,
     visualHash: source.visualHash || null,
+    visualAudit: source.visualAudit || snapshot.visualAudit || null,
     logicalSignature: source.logicalSignature || source.bannerSignature || null,
     bannerState: source.bannerState || null,
     sectionState: source.sectionState || null,
     positionKey
   };
+  item.captureConfidence = normalizeCaptureConfidence(source.captureConfidence || snapshot.captureConfidence);
   item.comparisonKey = comparisonKeyForItem(item);
   return item;
 }
@@ -568,7 +573,8 @@ function publicItemRef(item) {
     interactionState: item.interactionState || "default",
     hoverItemKey: item.hoverItemKey || null,
     hoverItemLabel: item.hoverItemLabel || null,
-    hoverItemRect: item.hoverItemRect || null
+    hoverItemRect: item.hoverItemRect || null,
+    captureConfidence: item.captureConfidence
   };
 }
 

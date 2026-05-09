@@ -8,6 +8,7 @@
     "start": "node src/server.js",
     "capture": "node src/capture-once.js",
     "compare": "node src/compare-once.js",
+    "smoke:capture": "node src/capture-smoke.js",
     "test": "node --test --test-isolation=none"
   },
   "engines": {

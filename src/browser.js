@@ -1,19 +1,21 @@
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
-import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { CdpClient } from "./cdp.js";
 import { decodePng, encodePng } from "./png.js";
+import { hashBuffer, imageQualityAuditForBuffer, nearestVisualHash, visualAuditForBuffer, visualHashForBuffer } from "./image-audit.js";
+import {
+  findShokzHomeRelatedSectionDefinition,
+  shokzMediaTrackDefinitions,
+  shokzNavigationTopLabels,
+  shokzProductsNavigationCategoryLabels,
+  shokzRelatedSectionOrder
+} from "./shokz-capture-specs.js";
+export { imageQualityAuditForBuffer } from "./image-audit.js";
 
 const defaultTimeoutMs = 45000;
-const shokzNavigationTopLabels = ["Products", "Support", "Technology", "About Us"];
-const shokzProductsNavigationCategoryLabels = [
-  "Sports Headphones",
-  "Workout & Lifestyle Earbuds",
-  "Communication Headsets"
-];
 
 export async function capturePage(url, outputPath, options = {}) {
   const browserPath = await findBrowser();
@@ -146,20 +148,49 @@ async function driveCapture(client, url, outputPath, options) {
   if (
     options.captureMode === "shokz-home-banners" ||
     options.captureMode === "shokz-home-related" ||
-    options.captureMode === "shokz-products-nav-related"
+    options.captureMode === "shokz-products-nav-related" ||
+    options.captureMode === "shokz-home-related-section"
   ) {
     stage = "reading page title";
     const titleResult = await readPageTitle(client);
     stage = options.captureMode === "shokz-products-nav-related"
       ? "capturing Shokz products navigation states"
+      : options.captureMode === "shokz-home-related-section"
+        ? `capturing Shokz home related section ${options.sectionKey || ""}`.trim()
       : options.captureMode === "shokz-home-related"
         ? "capturing Shokz home related sections"
         : "capturing Shokz home banners";
-    const relatedCapture = options.captureMode === "shokz-products-nav-related"
-      ? await captureShokzProductsNavigationRelated(client, outputPath, viewport)
-      : options.captureMode === "shokz-home-related"
-        ? await captureShokzHomeRelated(client, outputPath, viewport)
-        : await captureShokzHomeBanners(client, outputPath, viewport);
+    let relatedCapture;
+    if (options.captureMode === "shokz-products-nav-related") {
+      relatedCapture = await captureShokzProductsNavigationRelated(client, outputPath, viewport);
+    } else if (options.captureMode === "shokz-home-related-section") {
+      const definition = findShokzHomeRelatedSectionDefinition(options.sectionKey);
+      if (!definition) {
+        throw new Error(`Unknown Shokz home related section: ${options.sectionKey || "(missing)"}.`);
+      }
+      const sectionCapture = await captureShokzHomeRelatedSection(client, outputPath, viewport, definition);
+      relatedCapture = {
+        width: sectionCapture.width,
+        height: sectionCapture.height,
+        captures: sectionCapture.captures,
+        relatedValidation: {
+          status: sectionCapture.warnings.length ? "warning" : "ok",
+          warnings: sectionCapture.warnings,
+          sections: [{
+            sectionKey: definition.key,
+            sectionLabel: definition.sectionLabel,
+            expectedCount: sectionCapture.expectedCount,
+            capturedCount: sectionCapture.capturedCount,
+            savedCount: sectionCapture.captures.length,
+            status: sectionCapture.warnings.length ? "warning" : "ok"
+          }]
+        }
+      };
+    } else if (options.captureMode === "shokz-home-related") {
+      relatedCapture = await captureShokzHomeRelated(client, outputPath, viewport);
+    } else {
+      relatedCapture = await captureShokzHomeBanners(client, outputPath, viewport);
+    }
     const finalUrl = await verifyCurrentUrl(client, url, "after related capture", urlCheck);
     urlCheck.ok = true;
     return {
@@ -210,6 +241,7 @@ async function driveCapture(client, url, outputPath, options) {
   const clipWidth = options.fullPage ? pageWidth : viewport.width;
 
   stage = "capturing screenshot";
+  let captureBuffer = null;
   if (options.fullPage) {
     const guardShokzSearchOverlay = shouldGuardShokzSearchOverlay(url, viewport, options);
     if (guardShokzSearchOverlay) {
@@ -237,12 +269,12 @@ async function driveCapture(client, url, outputPath, options) {
         guardSearchOverlay: guardShokzSearchOverlay,
         stage: "immediately before mobile full-page screenshot capture"
       });
-      await captureFullPageClipScreenshot(client, outputPath, {
+      captureBuffer = await captureFullPageClipScreenshot(client, outputPath, {
         width: clipWidth,
         height: clipHeight
       });
     } else {
-      await captureStitchedScreenshot(client, outputPath, {
+      captureBuffer = await captureStitchedScreenshot(client, outputPath, {
         width: clipWidth,
         height: clipHeight,
         viewportHeight: viewport.height,
@@ -270,10 +302,13 @@ async function driveCapture(client, url, outputPath, options) {
       format: "png",
       fromSurface: true
     });
+    captureBuffer = Buffer.from(screenshot.data, "base64");
     await fs.writeFile(outputPath, screenshot.data, "base64");
   }
   const finalUrl = await verifyCurrentUrl(client, url, "after screenshot capture", urlCheck);
   urlCheck.ok = true;
+  const visualHash = captureBuffer ? visualHashForBuffer(captureBuffer) : null;
+  const visualAudit = captureBuffer && visualHash ? visualAuditForBuffer(captureBuffer, visualHash) : null;
 
   return {
     requestedUrl: url,
@@ -284,7 +319,9 @@ async function driveCapture(client, url, outputPath, options) {
     height: clipHeight,
     fullPageHeight: pageHeight,
     truncated: options.fullPage ? pageHeight > clipHeight : false,
-    scrollInfo
+    scrollInfo,
+    visualHash,
+    visualAudit
   };
   } catch (error) {
     error.message = `${error.message} (stage: ${stage})`;
@@ -2723,26 +2760,7 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
           };
         });
       };
-      const mediaTrackDefinitions = [
-        {
-          key: "pioneer",
-          label: "Shokz | Open-Ear Audio Pioneer",
-          selector: ".co-number-swiper",
-          rootSelector: ".co-number-box-banner, section, .shopify-section"
-        },
-        {
-          key: "awards",
-          label: "Sports partnership & Awards",
-          selector: ".co-brand-swiper-left",
-          rootSelector: ".co-brand-box"
-        },
-        {
-          key: "reviews",
-          label: "Media Reviews",
-          selector: ".co-brand-swiper-right",
-          rootSelector: ".co-brand-box"
-        }
-      ];
+      const mediaTrackDefinitions = ${JSON.stringify(shokzMediaTrackDefinitions)};
       const mediaTrackForLabel = (label) =>
         mediaTrackDefinitions.find((track) => track.label === label) || null;
       const mediaTrackPanel = (track) => track ? document.querySelector(track.selector) : null;
@@ -4348,11 +4366,7 @@ async function activateShokzHomeRelatedState(client, definition, state) {
           visible: items.map((item) => item.key)
         }) : "";
       };
-      const mediaTrackDefinitions = [
-        { key: "pioneer", label: "Shokz | Open-Ear Audio Pioneer", selector: ".co-number-swiper", rootSelector: ".co-number-box-banner, section, .shopify-section" },
-        { key: "awards", label: "Sports partnership & Awards", selector: ".co-brand-swiper-left", rootSelector: ".co-brand-box" },
-        { key: "reviews", label: "Media Reviews", selector: ".co-brand-swiper-right", rootSelector: ".co-brand-box" }
-      ];
+      const mediaTrackDefinitions = ${JSON.stringify(shokzMediaTrackDefinitions)};
       const mediaTrackForState = () =>
         mediaTrackDefinitions.find((track) =>
           track.label === state.tabLabel ||
@@ -5674,11 +5688,7 @@ async function readShokzHomeRelatedState(client, definition, state) {
           visible: items.map((item) => item.key)
         }) : "";
       };
-      const mediaTrackDefinitions = [
-        { key: "pioneer", label: "Shokz | Open-Ear Audio Pioneer", selector: ".co-number-swiper", rootSelector: ".co-number-box-banner, section, .shopify-section" },
-        { key: "awards", label: "Sports partnership & Awards", selector: ".co-brand-swiper-left", rootSelector: ".co-brand-box" },
-        { key: "reviews", label: "Media Reviews", selector: ".co-brand-swiper-right", rootSelector: ".co-brand-box" }
-      ];
+      const mediaTrackDefinitions = ${JSON.stringify(shokzMediaTrackDefinitions)};
       const mediaTrackForState = () =>
         mediaTrackDefinitions.find((track) =>
           track.label === state.tabLabel ||
@@ -6621,186 +6631,6 @@ function scopedList(map, key) {
   return map.get(key);
 }
 
-function hashBuffer(buffer) {
-  return crypto.createHash("sha1").update(buffer).digest("hex");
-}
-
-function visualHashForBuffer(buffer) {
-  try {
-    const image = decodePng(buffer);
-    const samples = [];
-    for (let y = 0; y < 8; y += 1) {
-      const sourceY = Math.min(image.height - 1, Math.floor((y + 0.5) * image.height / 8));
-      for (let x = 0; x < 8; x += 1) {
-        const sourceX = Math.min(image.width - 1, Math.floor((x + 0.5) * image.width / 8));
-        const offset = (sourceY * image.width + sourceX) * 4;
-        const gray = Math.round(
-          image.rgba[offset] * 0.299 +
-          image.rgba[offset + 1] * 0.587 +
-          image.rgba[offset + 2] * 0.114
-        );
-        samples.push(gray);
-      }
-    }
-    const average = samples.reduce((sum, value) => sum + value, 0) / samples.length;
-    let bits = "";
-    for (const value of samples) {
-      bits += value >= average ? "1" : "0";
-    }
-    let hex = "";
-    for (let index = 0; index < bits.length; index += 4) {
-      hex += Number.parseInt(bits.slice(index, index + 4), 2).toString(16);
-    }
-    return hex;
-  } catch {
-    return hashBuffer(buffer).slice(0, 16);
-  }
-}
-
-function visualAuditForBuffer(buffer, visualHash, similar = null) {
-  const quality = imageQualityAuditForBuffer(buffer);
-  const audit = {
-    status: "ok",
-    visualHash,
-    sharpness: quality.sharpness,
-    contrast: quality.contrast
-  };
-  const messages = [];
-
-  if (similar && similar.distance <= 3) {
-    audit.similarTo = similar.label;
-    audit.distance = similar.distance;
-    messages.push(`Visual signature is very close to ${similar.label}.`);
-  }
-  if (quality.status === "warning") {
-    audit.qualityStatus = "warning";
-    messages.push(quality.message);
-  }
-
-  if (messages.length) {
-    audit.status = "warning";
-    audit.message = messages.join(" ");
-  }
-
-  return audit;
-}
-
-export function imageQualityAuditForBuffer(buffer) {
-  try {
-    const image = decodePng(buffer);
-    if (image.width < 3 || image.height < 3) {
-      return {
-        status: "warning",
-        sharpness: 0,
-        contrast: 0,
-        message: "Image is too small for quality audit."
-      };
-    }
-
-    const maxSamples = 60000;
-    const step = Math.max(1, Math.ceil(Math.sqrt((image.width * image.height) / maxSamples)));
-    let count = 0;
-    let sum = 0;
-    let sumSquares = 0;
-    let edgeCount = 0;
-    let edgeSum = 0;
-
-    for (let y = 0; y < image.height; y += step) {
-      for (let x = 0; x < image.width; x += step) {
-        const gray = grayAt(image, x, y);
-        count += 1;
-        sum += gray;
-        sumSquares += gray * gray;
-
-        if (x + step < image.width) {
-          edgeSum += Math.abs(gray - grayAt(image, x + step, y));
-          edgeCount += 1;
-        }
-        if (y + step < image.height) {
-          edgeSum += Math.abs(gray - grayAt(image, x, y + step));
-          edgeCount += 1;
-        }
-      }
-    }
-
-    const mean = sum / Math.max(1, count);
-    const variance = Math.max(0, (sumSquares / Math.max(1, count)) - mean * mean);
-    const contrast = Math.sqrt(variance);
-    const sharpness = edgeSum / Math.max(1, edgeCount);
-    const roundedSharpness = roundMetric(sharpness);
-    const roundedContrast = roundMetric(contrast);
-
-    if (sharpness < 4 && contrast < 18) {
-      return {
-        status: "warning",
-        sharpness: roundedSharpness,
-        contrast: roundedContrast,
-        message: "Image may be blurry or low detail."
-      };
-    }
-
-    return {
-      status: "ok",
-      sharpness: roundedSharpness,
-      contrast: roundedContrast
-    };
-  } catch (error) {
-    return {
-      status: "warning",
-      sharpness: null,
-      contrast: null,
-      message: `Image quality audit failed: ${error.message}`
-    };
-  }
-}
-
-function grayAt(image, x, y) {
-  const sourceX = Math.max(0, Math.min(image.width - 1, x));
-  const sourceY = Math.max(0, Math.min(image.height - 1, y));
-  const offset = (sourceY * image.width + sourceX) * 4;
-  return (
-    image.rgba[offset] * 0.299 +
-    image.rgba[offset + 1] * 0.587 +
-    image.rgba[offset + 2] * 0.114
-  );
-}
-
-function roundMetric(value) {
-  return Number.isFinite(value) ? Math.round(value * 100) / 100 : null;
-}
-
-function visualHashDistance(a, b) {
-  if (!a || !b || a.length !== b.length) {
-    return Number.POSITIVE_INFINITY;
-  }
-  let distance = 0;
-  for (let index = 0; index < a.length; index += 1) {
-    const left = Number.parseInt(a[index], 16);
-    const right = Number.parseInt(b[index], 16);
-    if (!Number.isFinite(left) || !Number.isFinite(right)) {
-      return Number.POSITIVE_INFINITY;
-    }
-    distance += bitCount(left ^ right);
-  }
-  return distance;
-}
-
-function nearestVisualHash(hash, previous) {
-  return previous
-    .map((item) => ({ ...item, distance: visualHashDistance(hash, item.hash) }))
-    .sort((a, b) => a.distance - b.distance)[0] || null;
-}
-
-function bitCount(value) {
-  let count = 0;
-  let number = value;
-  while (number) {
-    count += number & 1;
-    number >>= 1;
-  }
-  return count;
-}
-
 function safeFilePart(value) {
   return String(value || "state")
     .toLowerCase()
@@ -6810,9 +6640,8 @@ function safeFilePart(value) {
 }
 
 function compareRelatedCaptures(a, b) {
-  const sectionOrder = ["banner", "navigation", ...homeRelatedSectionDefinitions.map((definition) => definition.key)];
-  const sectionA = sectionOrder.indexOf(a.sectionKey);
-  const sectionB = sectionOrder.indexOf(b.sectionKey);
+  const sectionA = shokzRelatedSectionOrder.indexOf(a.sectionKey);
+  const sectionB = shokzRelatedSectionOrder.indexOf(b.sectionKey);
   const orderA = sectionA === -1 ? 1000 : sectionA;
   const orderB = sectionB === -1 ? 1000 : sectionB;
   return orderA - orderB ||
@@ -8049,7 +7878,9 @@ async function captureStitchedScreenshot(client, outputPath, options) {
     copySegment(image, rgba, width, height, y);
   }
 
-  await fs.writeFile(outputPath, encodePng(width, height, rgba));
+  const buffer = encodePng(width, height, rgba);
+  await fs.writeFile(outputPath, buffer);
+  return buffer;
 }
 
 async function captureFullPageClipScreenshot(client, outputPath, options) {
@@ -8066,6 +7897,7 @@ async function captureFullPageClipScreenshot(client, outputPath, options) {
     }
   });
   await fs.writeFile(outputPath, screenshot.data, "base64");
+  return Buffer.from(screenshot.data, "base64");
 }
 
 async function dismissObstructions(client, options = {}) {

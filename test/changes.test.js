@@ -89,6 +89,62 @@ test("prefers tab and page identity when state index shifts", async () => {
   assert.equal(changes[0].textChange.afterFragment, "OpenRun Pro 2 New");
 });
 
+test("skips low-confidence captures as future compare baselines", async () => {
+  const before = snapshot("snap-1", "2026-05-02T10:00:00.000Z", [{
+    file: "missing-before.png",
+    sectionKey: "product-showcase",
+    sectionLabel: "产品橱窗",
+    stateIndex: 1,
+    tabIndex: 1,
+    tabLabel: "Best Selling",
+    label: "Best Selling 1",
+    sectionState: {
+      text: "Stable copy",
+      textBlocks: [{ text: "Stable copy", x: 10, y: 8, width: 120, height: 24 }]
+    }
+  }]);
+  const lowConfidence = snapshot("snap-2", "2026-05-03T10:00:00.000Z", [{
+    file: "missing-low.png",
+    sectionKey: "product-showcase",
+    sectionLabel: "产品橱窗",
+    stateIndex: 1,
+    tabIndex: 1,
+    tabLabel: "Best Selling",
+    label: "Best Selling 1",
+    captureConfidence: {
+      level: "low",
+      baselineEligible: false,
+      reasons: ["Image may be blurry or low detail."],
+      issues: [{ code: "visual-audit-warning", severity: "low", message: "Image may be blurry or low detail." }]
+    },
+    sectionState: {
+      text: "Corrupted copy",
+      textBlocks: [{ text: "Corrupted copy", x: 10, y: 8, width: 132, height: 24 }]
+    }
+  }]);
+  const after = snapshot("snap-3", "2026-05-04T10:00:00.000Z", [{
+    file: "missing-after.png",
+    sectionKey: "product-showcase",
+    sectionLabel: "产品橱窗",
+    stateIndex: 1,
+    tabIndex: 1,
+    tabLabel: "Best Selling",
+    label: "Best Selling 1",
+    sectionState: {
+      text: "Stable copy updated",
+      textBlocks: [{ text: "Stable copy updated", x: 10, y: 8, width: 176, height: 24 }]
+    }
+  }]);
+
+  const changes = await compareSnapshots([before, lowConfidence, after], { writeDiffImages: false });
+
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].occurredBetween.from, "2026-05-02T10:00:00.000Z");
+  assert.equal(changes[0].occurredBetween.to, "2026-05-04T10:00:00.000Z");
+  assert.equal(changes[0].textChange.beforeFragment, "Stable copy");
+  assert.equal(changes[0].textChange.afterFragment, "Stable copy updated");
+});
+
 test("matches product showcase hover by product identity", async () => {
   const before = productHoverShot("hover-before.png", {
     stateIndex: 4,
