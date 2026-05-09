@@ -51,7 +51,8 @@ export const shokzHomeRelatedSectionDefinitions = [
     title: "用户心声轮播图",
     mode: "carousel",
     anchors: ["Real Stories, Inspiring Moments."],
-    labelPrefix: "心声"
+    labelPrefix: "心声",
+    expectedPages: 4
   }
 ];
 

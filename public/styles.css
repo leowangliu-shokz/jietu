@@ -761,12 +761,37 @@ select:focus {
   text-decoration: none;
 }
 
+.related-thumb-low-confidence {
+  border-color: rgba(196, 34, 34, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(196, 34, 34, 0.18);
+}
+
 .related-thumb img {
   width: 100%;
   height: 100%;
   display: block;
   object-fit: cover;
   object-position: top;
+}
+
+.related-thumb-flag {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 1;
+  border-radius: 999px;
+  background: rgba(122, 15, 15, 0.92);
+  color: transparent;
+  font-size: 0;
+  line-height: 1;
+  padding: 4px 6px;
+}
+
+.related-thumb-flag::before {
+  content: "Low";
+  color: #fff4df;
+  font-size: 10px;
+  font-weight: 750;
 }
 
 .related-thumb span {
@@ -819,6 +844,19 @@ select:focus {
 .pill.warn {
   background: #fff4df;
   color: var(--warm);
+}
+
+.pill.low-confidence {
+  background: #ffe1e1;
+  color: transparent;
+  font-size: 0;
+}
+
+.pill.low-confidence::before {
+  content: "Low confidence";
+  color: #8d1f1f;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .pill.device {

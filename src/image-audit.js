@@ -48,6 +48,7 @@ export function visualAuditForBuffer(buffer, visualHash, similar = null) {
   const messages = [];
 
   if (similar && similar.distance <= 3) {
+    audit.similarityStatus = "warning";
     audit.similarTo = similar.label;
     audit.distance = similar.distance;
     messages.push(`Visual signature is very close to ${similar.label}.`);
@@ -58,7 +59,7 @@ export function visualAuditForBuffer(buffer, visualHash, similar = null) {
   }
 
   if (messages.length) {
-    audit.status = "warning";
+    audit.status = quality.status === "warning" ? "warning" : "notice";
     audit.message = messages.join(" ");
   }
 

@@ -29,11 +29,17 @@ export function normalizeCaptureConfidence(value) {
 
 export function assessSnapshotConfidence(snapshot) {
   const issues = [];
-  if (snapshot?.visualAudit?.status === "warning") {
+  if (hasBlockingVisualAudit(snapshot?.visualAudit)) {
     issues.push({
       code: "visual-audit-warning",
       severity: "low",
       message: snapshot.visualAudit.message || "Page screenshot failed image quality audit."
+    });
+  } else if (hasSimilarityVisualAudit(snapshot?.visualAudit)) {
+    issues.push({
+      code: "visual-similarity-warning",
+      severity: "high",
+      message: snapshot.visualAudit.message || "Page screenshot looks very similar to another capture."
     });
   }
   if (snapshot?.urlCheck && snapshot.urlCheck.ok === false) {
@@ -75,17 +81,28 @@ export function relatedWarningsForShot(shot, validation) {
 export function assessRelatedShotConfidence(shot, validation) {
   const issues = [];
   const warnings = relatedWarningsForShot(shot, validation);
-  if (shot?.visualAudit?.status === "warning") {
+  if (hasBlockingVisualAudit(shot?.visualAudit)) {
+    const severity = toleratesLowDetailVisualAudit(shot, shot.visualAudit) ? "high" : "low";
     issues.push({
-      code: "visual-audit-warning",
-      severity: "low",
+      code: severity === "high" ? "visual-audit-notice" : "visual-audit-warning",
+      severity,
       message: shot.visualAudit.message || "Related screenshot failed image quality audit."
+    });
+  } else if (hasSimilarityVisualAudit(shot?.visualAudit)) {
+    issues.push({
+      code: "visual-similarity-warning",
+      severity: "high",
+      message: shot.visualAudit.message || "Related screenshot looks very similar to another capture."
     });
   }
   for (const warning of warnings.stateWarnings) {
+    const similarityOnly = visualAuditMatchesSimilarityWarning(shot?.visualAudit, warning.message);
+    const nonBlockingVisualAudit = visualAuditMatchesNonBlockingWarning(shot, warning.message);
     issues.push({
-      code: "state-warning",
-      severity: "low",
+      code: similarityOnly
+        ? "state-visual-similarity-warning"
+        : (nonBlockingVisualAudit ? "state-visual-audit-notice" : "state-warning"),
+      severity: similarityOnly || nonBlockingVisualAudit ? "high" : "low",
       message: String(warning.message || "Related screenshot has a capture warning."),
       sectionKey: warning.sectionKey || shot?.sectionKey || null,
       stateLabel: warning.stateLabel || shot?.stateLabel || shot?.label || null
@@ -141,4 +158,53 @@ function normalizeIssue(issue) {
     sectionKey: issue.sectionKey || null,
     stateLabel: issue.stateLabel || null
   };
+}
+
+function hasBlockingVisualAudit(visualAudit) {
+  if (!visualAudit || typeof visualAudit !== "object") {
+    return false;
+  }
+  return visualAudit.qualityStatus === "warning" || (visualAudit.status === "warning" && !visualAudit.similarityStatus);
+}
+
+function hasSimilarityVisualAudit(visualAudit) {
+  if (!visualAudit || typeof visualAudit !== "object") {
+    return false;
+  }
+  return visualAudit.similarityStatus === "warning";
+}
+
+function visualAuditMatchesSimilarityWarning(visualAudit, message) {
+  if (!hasSimilarityVisualAudit(visualAudit)) {
+    return false;
+  }
+  const left = String(visualAudit.message || "").trim();
+  const right = String(message || "").trim();
+  return Boolean(left) && left === right;
+}
+
+function visualAuditMatchesNonBlockingWarning(shot, message) {
+  if (!hasBlockingVisualAudit(shot?.visualAudit) || !toleratesLowDetailVisualAudit(shot, shot.visualAudit)) {
+    return false;
+  }
+  const left = String(shot.visualAudit?.message || "").trim();
+  const right = String(message || "").trim();
+  return Boolean(left) && left === right;
+}
+
+function toleratesLowDetailVisualAudit(shot, visualAudit) {
+  if (!visualAudit || visualAudit.qualityStatus !== "warning") {
+    return false;
+  }
+  const visibleItems = Array.isArray(shot?.visibleItems)
+    ? shot.visibleItems
+    : Array.isArray(shot?.sectionState?.visibleItems)
+      ? shot.sectionState.visibleItems
+      : [];
+  const textBlocks = Array.isArray(shot?.sectionState?.textBlocks) ? shot.sectionState.textBlocks : [];
+  const images = Array.isArray(shot?.sectionState?.images) ? shot.sectionState.images : [];
+  return shot?.sectionKey === "media" &&
+    visibleItems.length >= 5 &&
+    textBlocks.length >= 8 &&
+    images.length <= 2;
 }

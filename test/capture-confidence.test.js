@@ -11,6 +11,7 @@ test("marks visual-audit warnings as low-confidence baselines", () => {
   const confidence = assessSnapshotConfidence({
     visualAudit: {
       status: "warning",
+      qualityStatus: "warning",
       message: "Image may be blurry or low detail."
     }
   });
@@ -53,6 +54,71 @@ test("treats coverage-only section warnings as non-blocking confidence hints", (
 
   assert.equal(confidence.level, "high");
   assert.equal(confidence.baselineEligible, true);
+});
+
+test("keeps similarity-only visual audits as non-blocking hints", () => {
+  const confidence = assessRelatedShotConfidence({
+    sectionKey: "scene-explore",
+    stateLabel: "场景 2",
+    visualAudit: {
+      status: "notice",
+      similarityStatus: "warning",
+      message: "Visual signature is very close to 场景 1."
+    }
+  }, { warnings: [] });
+
+  assert.equal(confidence.level, "high");
+  assert.equal(confidence.baselineEligible, true);
+  assert.deepEqual(confidence.reasons, ["Visual signature is very close to 场景 1."]);
+});
+
+test("does not downgrade similarity warnings when validation echoes the same message", () => {
+  const confidence = assessRelatedShotConfidence({
+    sectionKey: "scene-explore",
+    stateLabel: "场景 2",
+    visualAudit: {
+      status: "notice",
+      similarityStatus: "warning",
+      message: "Visual signature is very close to 场景 1."
+    }
+  }, {
+    warnings: [{
+      sectionKey: "scene-explore",
+      stateLabel: "场景 2",
+      message: "Visual signature is very close to 场景 1."
+    }]
+  });
+
+  assert.equal(confidence.level, "high");
+  assert.equal(confidence.baselineEligible, true);
+  assert.deepEqual(confidence.reasons, ["Visual signature is very close to 场景 1."]);
+});
+
+test("keeps structured low-detail media panels as non-blocking hints", () => {
+  const confidence = assessRelatedShotConfidence({
+    sectionKey: "media",
+    stateLabel: "Shokz | Open-Ear Audio Pioneer 1",
+    visibleItems: new Array(5).fill(null).map((_, index) => ({ key: `item-${index + 1}` })),
+    visualAudit: {
+      status: "warning",
+      qualityStatus: "warning",
+      message: "Image may be blurry or low detail."
+    },
+    sectionState: {
+      textBlocks: new Array(8).fill(null).map((_, index) => ({ text: `block-${index + 1}` })),
+      images: ["hero.webp"]
+    }
+  }, {
+    warnings: [{
+      sectionKey: "media",
+      stateLabel: "Shokz | Open-Ear Audio Pioneer 1",
+      message: "Image may be blurry or low detail."
+    }]
+  });
+
+  assert.equal(confidence.level, "high");
+  assert.equal(confidence.baselineEligible, true);
+  assert.deepEqual(confidence.reasons, ["Image may be blurry or low detail."]);
 });
 
 test("normalizes missing confidence payloads to high confidence", () => {

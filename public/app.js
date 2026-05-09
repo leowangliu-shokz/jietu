@@ -1509,6 +1509,7 @@ function renderShotCard(card) {
         <span class="pill device">${escapeHtml(deviceNameForSnapshot(snapshot))}</span>
         <span class="pill">${snapshot.width}×${snapshot.height}</span>
         ${snapshot.truncated ? "<span class=\"pill warn\">已截断</span>" : ""}
+        ${isLowConfidenceCapture(snapshot.captureConfidence) ? `<span class="pill low-confidence" title="${escapeHtml(captureConfidenceTitle(snapshot.captureConfidence))}">低可信</span>` : ""}
       </p>
     </div>
     ${renderRelatedShots(card.relatedShots, card.relatedValidation, cardKey)}
@@ -1642,8 +1643,9 @@ function renderRelatedThumbGrid(shots) {
   return `
     <div class="related-grid">
       ${shots.map((shot) => `
-        <a class="related-thumb" href="${shot.imageUrl}" target="_blank" rel="noreferrer" title="${escapeHtml(relatedShotTitle(shot))}">
+        <a class="related-thumb ${isLowConfidenceCapture(shot.captureConfidence) ? "related-thumb-low-confidence" : ""}" href="${shot.imageUrl}" target="_blank" rel="noreferrer" title="${escapeHtml(relatedShotTitle(shot))}">
           <img src="${shot.imageUrl}" alt="${escapeHtml(relatedShotDisplayLabel(shot))}" loading="lazy">
+          ${isLowConfidenceCapture(shot.captureConfidence) ? `<span class="related-thumb-flag" title="${escapeHtml(captureConfidenceTitle(shot.captureConfidence))}">低可信</span>` : ""}
           <span>${escapeHtml(relatedThumbLabel(shot))}</span>
         </a>
       `).join("")}
@@ -1712,6 +1714,17 @@ function relatedWarnings(validation) {
   return Array.isArray(validation?.warnings) ? validation.warnings : [];
 }
 
+function isLowConfidenceCapture(captureConfidence) {
+  return captureConfidence?.baselineEligible === false;
+}
+
+function captureConfidenceTitle(captureConfidence) {
+  const reasons = Array.isArray(captureConfidence?.reasons)
+    ? captureConfidence.reasons.map((reason) => String(reason || "").trim()).filter(Boolean)
+    : [];
+  return reasons.length ? reasons.join("\n") : "This capture is marked low confidence.";
+}
+
 function relatedShotTitle(shot) {
   const pageIndex = relatedShotPageIndex(shot);
   if (shot.sectionKey === "navigation") {
@@ -1721,7 +1734,7 @@ function relatedShotTitle(shot) {
       shot.tabLabel,
       level,
       shot.hoverItemLabel || relatedShotDisplayLabel(shot),
-      shot.visualAudit?.status === "warning" ? shot.visualAudit.message : ""
+      shot.visualAudit?.status && shot.visualAudit.status !== "ok" ? shot.visualAudit.message : ""
     ].filter(Boolean).join(" · ");
   }
   if (shot.interactionState === "hover") {
@@ -1729,7 +1742,7 @@ function relatedShotTitle(shot) {
       shot.sectionLabel,
       shot.tabLabel,
       `Hover ${shot.hoverItemLabel || relatedShotDisplayLabel(shot)}`,
-      shot.visualAudit?.status === "warning" ? shot.visualAudit.message : ""
+      shot.visualAudit?.status && shot.visualAudit.status !== "ok" ? shot.visualAudit.message : ""
     ].filter(Boolean).join(" / ");
   }
   const detailLabel = shot.tabLabel && pageIndex
@@ -1739,7 +1752,7 @@ function relatedShotTitle(shot) {
     shot.sectionLabel,
     shot.tabLabel,
     detailLabel,
-    shot.visualAudit?.status === "warning" ? shot.visualAudit.message : ""
+    shot.visualAudit?.status && shot.visualAudit.status !== "ok" ? shot.visualAudit.message : ""
   ].filter(Boolean).join(" / ");
 }
 
@@ -1770,6 +1783,7 @@ function relatedShotFromSnapshot(snapshot) {
     visualSignature: snapshot.visualSignature,
     visualHash: snapshot.visualHash,
     visualAudit: snapshot.visualAudit,
+    captureConfidence: snapshot.captureConfidence || null,
     bannerClip: snapshot.bannerClip,
     bannerState: snapshot.bannerState,
     urlCheck: snapshot.urlCheck,
@@ -1821,6 +1835,7 @@ function normalizeRelatedShot(shot) {
     logicalSignature: shot.logicalSignature || shot.bannerSignature || null,
     visualHash: shot.visualHash || null,
     visualAudit: shot.visualAudit || null,
+    captureConfidence: shot.captureConfidence || null,
     clip: shot.clip || shot.bannerClip || null,
     isDefaultState: Boolean(shot.isDefaultState),
     coverageKey: shot.coverageKey || null,

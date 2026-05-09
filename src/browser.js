@@ -8,6 +8,7 @@ import { decodePng, encodePng } from "./png.js";
 import { hashBuffer, imageQualityAuditForBuffer, nearestVisualHash, visualAuditForBuffer, visualHashForBuffer } from "./image-audit.js";
 import {
   findShokzHomeRelatedSectionDefinition,
+  shokzHomeRelatedSectionDefinitions as importedShokzHomeRelatedSectionDefinitions,
   shokzMediaTrackDefinitions,
   shokzNavigationTopLabels,
   shokzProductsNavigationCategoryLabels,
@@ -449,7 +450,7 @@ async function captureShokzHomeRelated(client, outputPath, viewport) {
     });
   }
 
-  for (const definition of homeRelatedSectionDefinitions) {
+  for (const definition of importedShokzHomeRelatedSectionDefinitions) {
     try {
       const sectionCapture = await captureShokzHomeRelatedSection(client, outputPath, viewport, definition);
       captures.push(...sectionCapture.captures);
@@ -2090,7 +2091,7 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
 
     const similar = nearestVisualHash(visualHash, seenHashes);
     const visualAudit = visualAuditForBuffer(buffer, visualHash, similar);
-    if (visualAudit.status === "warning") {
+    if (visualAudit.status !== "ok") {
       warnings.push({
         sectionKey: definition.key,
         sectionLabel: definition.sectionLabel,
@@ -3897,9 +3898,9 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
         const seen = new Set();
         const bulletCount = findPageBullets(root).length;
         const expectedPages = Number(definition.expectedPages || 0);
-        const maxPages = bulletCount > 1
-          ? Math.max(bulletCount, expectedPages)
-          : (expectedPages || 12);
+        const maxPages = expectedPages > 0
+          ? (bulletCount > 1 ? Math.min(bulletCount, expectedPages) : expectedPages)
+          : (bulletCount > 1 ? bulletCount : 12);
         for (let pageIndex = 1; pageIndex <= maxPages; pageIndex += 1) {
           if (pageIndex > 1 && bulletCount > 1) {
             const moved = clickPageBullet(root, pageIndex);
@@ -3935,6 +3936,7 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
             stateIndex: states.length + 1,
             stateLabel: label,
             logicalSignature: definition.key + "|" + (tabLabel || "") + "|" + pageIndex + "|" + signature,
+            windowSignature: signature,
             fileId: (tabLabel || "state") + "-" + pageIndex,
             isDefaultState
           });
@@ -5375,6 +5377,41 @@ async function readShokzHomeRelatedState(client, definition, state) {
         }
         return sources;
       };
+      const textOf = (element, max = 360) => cleanText([
+        element?.innerText,
+        element?.textContent,
+        element?.getAttribute?.("aria-label"),
+        element?.getAttribute?.("title")
+      ].filter(Boolean).join(" "), max);
+      const backgroundSources = (element) => {
+        const sources = [];
+        for (const node of [element, ...element.querySelectorAll("*")].slice(0, 180)) {
+          const match = getComputedStyle(node).backgroundImage.match(/url\\(["']?([^"')]+)["']?\\)/);
+          if (match?.[1]) sources.push(match[1]);
+        }
+        return sources;
+      };
+      const visibleSignature = (root) => {
+        const rootRect = root.getBoundingClientRect();
+        const visibleImages = Array.from(root.querySelectorAll("img, source"))
+          .filter((node) => visible(node instanceof HTMLSourceElement ? node.parentElement : node))
+          .filter((node) => intersects((node instanceof HTMLSourceElement ? node.parentElement : node).getBoundingClientRect(), rootRect) > 80)
+          .flatMap((node) => imageSourcesForNode(node))
+          .filter(Boolean)
+          .slice(0, 20);
+        const visibleText = Array.from(root.querySelectorAll("a, button, h1, h2, h3, h4, p, li, article, [class*='card'], [class*='slide']"))
+          .filter(visible)
+          .filter((node) => intersects(node.getBoundingClientRect(), rootRect) > 80)
+          .map((node) => textOf(node, 140))
+          .filter(Boolean)
+          .filter((value, index, list) => list.indexOf(value) === index)
+          .slice(0, 24);
+        return JSON.stringify({
+          text: visibleText,
+          images: visibleImages,
+          backgrounds: backgroundSources(root).slice(0, 12)
+        });
+      };
       const productHref = (element) => {
         try {
           return new URL(element.getAttribute("href") || element.href || "", window.location.href).pathname;
@@ -5958,6 +5995,16 @@ async function readShokzHomeRelatedState(client, definition, state) {
           reason: "Visible athletes did not match planned athletes window " + state.stateLabel + "."
         };
       }
+      const genericSignature = visibleSignature(root);
+      if (!["product-showcase", "scene-explore", "athletes"].includes(definition.key) &&
+        state.windowSignature &&
+        genericSignature &&
+        genericSignature !== state.windowSignature) {
+        return {
+          ok: false,
+          reason: "Visible items did not match planned " + definition.sectionLabel + " window " + state.stateLabel + "."
+        };
+      }
       return {
         ok: true,
         clip,
@@ -5970,7 +6017,9 @@ async function readShokzHomeRelatedState(client, definition, state) {
             : (productSignature || state.logicalSignature))
           : (definition.key === "scene-explore"
             ? sceneSignature || state.logicalSignature
-            : (definition.key === "athletes" ? athleteSignature || state.logicalSignature : state.logicalSignature)),
+            : (definition.key === "athletes"
+              ? athleteSignature || state.logicalSignature
+              : (genericSignature || state.logicalSignature))),
         activeIndex: state.stateIndex,
         visibleItemCount: productVisibleItems.length || sceneVisibleItems.length || null,
         visibleItems: productVisibleItems.length ? productVisibleItems : (sceneVisibleItems.length ? sceneVisibleItems : null),
