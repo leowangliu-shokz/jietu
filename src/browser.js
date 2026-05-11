@@ -2091,7 +2091,7 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
 
     const similar = nearestVisualHash(visualHash, seenHashes);
     const visualAudit = visualAuditForBuffer(buffer, visualHash, similar);
-    if (visualAudit.status !== "ok") {
+    if (visualAudit.qualityStatus === "warning") {
       warnings.push({
         sectionKey: definition.key,
         sectionLabel: definition.sectionLabel,
@@ -2769,6 +2769,21 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
         const panel = mediaTrackPanel(track);
         return panel?.closest(track.rootSelector) || panel;
       };
+      const mediaTrackSlideContainer = (track) => {
+        const panel = mediaTrackPanel(track);
+        const trackRoot = mediaTrackRoot(track);
+        if (!panel) return trackRoot;
+        return panel.querySelector(".swiper-slide, [class*='swiper-slide']") ? panel : trackRoot;
+      };
+      const mediaTrackViewportRect = (track) => {
+        const panel = mediaTrackPanel(track);
+        const trackRoot = mediaTrackRoot(track);
+        const panelRect = panel?.getBoundingClientRect?.() || null;
+        if (panelRect && panelRect.width >= 24 && panelRect.height >= 18) {
+          return panelRect;
+        }
+        return trackRoot?.getBoundingClientRect?.() || panelRect || null;
+      };
       const firstImageSource = (element) => imageSources(element)[0] || "";
       const mediaImageFamily = (source) => {
         const first = String(source || "").split(",")[0].trim().split(/\\s+/)[0];
@@ -2829,15 +2844,16 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
       const mediaItems = (track, options = {}) => {
         const panel = mediaTrackPanel(track);
         const trackRoot = mediaTrackRoot(track);
-        if (!panel || !trackRoot) return [];
-        const panelRect = panel.getBoundingClientRect();
+        const slideContainer = mediaTrackSlideContainer(track);
+        const viewportRect = mediaTrackViewportRect(track);
+        if (!panel || !trackRoot || !slideContainer || !viewportRect) return [];
         const rootRect = trackRoot.getBoundingClientRect();
-        const slides = Array.from(panel.querySelectorAll(".swiper-slide, [class*='swiper-slide']"))
+        const slides = Array.from(slideContainer.querySelectorAll(".swiper-slide, [class*='swiper-slide']"))
           .filter((slide) => visible(slide))
           .map((slide, domIndex) => {
             const rect = slide.getBoundingClientRect();
             const area = Math.max(1, rect.width * rect.height);
-            const visibleArea = intersects(rect, panelRect);
+            const visibleArea = intersects(rect, viewportRect);
             const position = slidePosition(slide);
             const image = firstImageSource(slide);
             const imageFamily = mediaImageFamily(image);
@@ -2879,13 +2895,13 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
             item.key &&
             item.rect.width >= 24 &&
             item.rect.height >= 18 &&
-            item.centerY >= panelRect.top - 20 &&
-            item.centerY <= panelRect.bottom + 20 &&
+            item.centerY >= viewportRect.top - 20 &&
+            item.centerY <= viewportRect.bottom + 20 &&
             (!options.visibleOnly || (
               item.visibleArea > 120 &&
               item.visibleRatio >= 0.55 &&
-              item.rect.right > panelRect.left + 4 &&
-              item.rect.left < panelRect.right - 4
+              item.rect.right > viewportRect.left + 4 &&
+              item.rect.left < viewportRect.right - 4
             ))
           )
           .sort((a, b) =>
@@ -2919,6 +2935,60 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
           label: item.label,
           imageFamily: item.imageFamily
         }))) : "";
+      };
+      const genericCarouselPanel = (root) =>
+        [root, ...root.querySelectorAll(".swiper, [class*='swiper'], .slick-slider, [class*='slider'], [class*='carousel']")]
+          .filter((element) => visible(element) && element.querySelector(".swiper-slide, [class*='swiper-slide'], .slick-slide, [class*='slide']"))
+          .map((element) => {
+            const rect = element.getBoundingClientRect();
+            const area = rect.width * rect.height;
+            const activeCount = element.querySelectorAll(".swiper-slide-active, .slick-active, [class*='active']").length;
+            const visibleSlides = Array.from(element.querySelectorAll(".swiper-slide, [class*='swiper-slide'], .slick-slide, [class*='slide']"))
+              .filter((slide) => visible(slide))
+              .length;
+            const score = activeCount * 200 + visibleSlides * 40 + Math.min(area / 1000, 600);
+            return { element, rect, score };
+          })
+          .sort((a, b) => b.score - a.score || b.rect.width * b.rect.height - a.rect.width * a.rect.height)[0]?.element || null;
+      const genericCarouselSignature = (root) => {
+        const panel = genericCarouselPanel(root);
+        if (!panel) return "";
+        const rootRect = root.getBoundingClientRect();
+        const panelRect = panel.getBoundingClientRect();
+        const viewportRect = panelRect.width >= 24 && panelRect.height >= 18 ? panelRect : rootRect;
+        const centerX = viewportRect.left + viewportRect.width / 2;
+        const slides = Array.from(panel.querySelectorAll(".swiper-slide, [class*='swiper-slide'], .slick-slide, [class*='slide']"))
+          .filter((slide) => visible(slide))
+          .map((slide, index) => {
+            const rect = slide.getBoundingClientRect();
+            const visibleArea = intersects(rect, viewportRect);
+            const area = Math.max(1, rect.width * rect.height);
+            const image = firstImageSource(slide);
+            const imageFamily = mediaImageFamily(image);
+            const text = dedupeRepeatedText(textOf(slide, 260), 220);
+            const title = dedupeRepeatedText(
+              slide.querySelector("h1, h2, h3, h4, [class*='title'], [class*='name'], p")?.innerText || text,
+              120
+            );
+            const slideClass = classText(slide);
+            const activeScore = Number(/active|current|selected/i.test(slideClass)) * 10000 +
+              visibleArea -
+              Math.abs((rect.left + rect.width / 2) - centerX) * 2;
+            return {
+              key: [
+                title || "",
+                imageFamily ? "img:" + imageFamily : "",
+                slide.getAttribute("aria-label") || "",
+                !title && !imageFamily ? "dom:" + index : ""
+              ].filter(Boolean).join("|"),
+              visibleArea,
+              visibleRatio: visibleArea / area,
+              activeScore
+            };
+          })
+          .filter((slide) => slide.key && slide.visibleArea > 200 && slide.visibleRatio >= 0.08)
+          .sort((a, b) => b.activeScore - a.activeScore || b.visibleArea - a.visibleArea);
+        return slides[0]?.key || "";
       };
       const resetMediaTrack = async (track) => {
         const panel = mediaTrackPanel(track);
@@ -2954,7 +3024,7 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
         if (definition.key === "athletes") {
           return athleteWindowSignature(root) || visibleSignature(root);
         }
-        return visibleSignature(root);
+        return genericCarouselSignature(root) || visibleSignature(root);
       };
       const findRoots = () => {
         const roots = new Set();
@@ -3789,13 +3859,53 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
           const allItems = mediaItems(track);
           const firstWindowItems = mediaItems(track, { visibleOnly: true });
           const firstWindowSignature = mediaWindowSignature(track);
+          const fallbackSignature = () => genericCarouselSignature(trackRoot) || visibleSignature(trackRoot);
           if (!allItems.length || !firstWindowItems.length || !firstWindowSignature) {
-            warnings.push({
-              sectionKey: definition.key,
-              sectionLabel: definition.sectionLabel,
-              stateLabel: track.label,
-              message: "Could not read visible media items for " + track.label + "."
-            });
+            const startCount = states.length;
+            const seen = new Set();
+            const maxPages = Math.max(
+              4,
+              findPageBullets(trackRoot).length || 0,
+              Array.from((mediaTrackSlideContainer(track) || trackRoot).querySelectorAll(".swiper-slide, [class*='swiper-slide']")).length || 0
+            ) + 2;
+            for (let pageIndex = 1; pageIndex <= maxPages; pageIndex += 1) {
+              const signature = fallbackSignature();
+              if (!signature || seen.has(signature)) break;
+              seen.add(signature);
+              const label = track.label + " " + pageIndex;
+              states.push({
+                kind: "tab-carousel",
+                sectionKey: definition.key,
+                sectionLabel: definition.sectionLabel,
+                tabLabel: track.label,
+                tabIndex: trackIndex + 1,
+                trackLabel: track.label,
+                trackIndex: trackIndex + 1,
+                pageIndex,
+                stateIndex: states.length + 1,
+                stateLabel: label,
+                logicalSignature: definition.key + "|" + track.label + "|" + pageIndex + "|" + signature,
+                windowSignature: "",
+                itemCount: 0,
+                visibleItemCount: 0,
+                visibleItems: null,
+                itemRects: null,
+                fileId: track.label + "-" + pageIndex,
+                isDefaultState: pageIndex === 1
+              });
+              const before = signature;
+              const moved = await advanceMediaTrack(track);
+              const after = fallbackSignature();
+              if (!moved || !after || after === before || seen.has(after)) break;
+            }
+            if (states.length === startCount) {
+              warnings.push({
+                sectionKey: definition.key,
+                sectionLabel: definition.sectionLabel,
+                stateLabel: track.label,
+                message: "Could not read visible media items for " + track.label + "."
+              });
+            }
             continue;
           }
 
@@ -4380,6 +4490,21 @@ async function activateShokzHomeRelatedState(client, definition, state) {
         const panel = mediaTrackPanel(track);
         return panel?.closest(track.rootSelector) || panel;
       };
+      const mediaTrackSlideContainer = (track) => {
+        const panel = mediaTrackPanel(track);
+        const trackRoot = mediaTrackRoot(track);
+        if (!panel) return trackRoot;
+        return panel.querySelector(".swiper-slide, [class*='swiper-slide']") ? panel : trackRoot;
+      };
+      const mediaTrackViewportRect = (track) => {
+        const panel = mediaTrackPanel(track);
+        const trackRoot = mediaTrackRoot(track);
+        const panelRect = panel?.getBoundingClientRect?.() || null;
+        if (panelRect && panelRect.width >= 24 && panelRect.height >= 18) {
+          return panelRect;
+        }
+        return trackRoot?.getBoundingClientRect?.() || panelRect || null;
+      };
       const mediaImageFamily = (source) => {
         const first = String(source || "").split(",")[0].trim().split(/\\s+/)[0];
         if (!first) return "";
@@ -4431,14 +4556,15 @@ async function activateShokzHomeRelatedState(client, definition, state) {
       };
       const mediaItems = (track) => {
         const panel = mediaTrackPanel(track);
-        if (!panel) return [];
-        const panelRect = panel.getBoundingClientRect();
-        const slides = Array.from(panel.querySelectorAll(".swiper-slide, [class*='swiper-slide']"))
+        const slideContainer = mediaTrackSlideContainer(track);
+        const viewportRect = mediaTrackViewportRect(track);
+        if (!panel || !slideContainer || !viewportRect) return [];
+        const slides = Array.from(slideContainer.querySelectorAll(".swiper-slide, [class*='swiper-slide']"))
           .filter(visible)
           .map((slide, domIndex) => {
             const rect = slide.getBoundingClientRect();
             const area = Math.max(1, rect.width * rect.height);
-            const visibleArea = intersects(rect, panelRect);
+            const visibleArea = intersects(rect, viewportRect);
             const position = slidePosition(slide);
             const image = imageSources(slide)[0] || "";
             const imageFamily = mediaImageFamily(image);
@@ -4466,10 +4592,10 @@ async function activateShokzHomeRelatedState(client, definition, state) {
             item.rect.height >= 18 &&
             item.visibleArea > 120 &&
             item.visibleRatio >= 0.55 &&
-            item.rect.right > panelRect.left + 4 &&
-            item.rect.left < panelRect.right - 4 &&
-            item.centerY >= panelRect.top - 20 &&
-            item.centerY <= panelRect.bottom + 20
+            item.rect.right > viewportRect.left + 4 &&
+            item.rect.left < viewportRect.right - 4 &&
+            item.centerY >= viewportRect.top - 20 &&
+            item.centerY <= viewportRect.bottom + 20
           )
           .sort((a, b) => a.rect.left - b.rect.left || a.rect.top - b.rect.top);
         const deduped = [];
@@ -4488,6 +4614,60 @@ async function activateShokzHomeRelatedState(client, definition, state) {
           label: item.label,
           imageFamily: item.imageFamily
         }))) : "";
+      };
+      const genericCarouselPanelForRoot = (targetRoot) =>
+        [targetRoot, ...targetRoot.querySelectorAll(".swiper, [class*='swiper'], .slick-slider, [class*='slider'], [class*='carousel']")]
+          .filter((element) => visible(element) && element.querySelector(".swiper-slide, [class*='swiper-slide'], .slick-slide, [class*='slide']"))
+          .map((element) => {
+            const rect = element.getBoundingClientRect();
+            const area = rect.width * rect.height;
+            const activeCount = element.querySelectorAll(".swiper-slide-active, .slick-active, [class*='active']").length;
+            const visibleSlides = Array.from(element.querySelectorAll(".swiper-slide, [class*='swiper-slide'], .slick-slide, [class*='slide']"))
+              .filter((slide) => visible(slide))
+              .length;
+            const score = activeCount * 200 + visibleSlides * 40 + Math.min(area / 1000, 600);
+            return { element, rect, score };
+          })
+          .sort((a, b) => b.score - a.score || b.rect.width * b.rect.height - a.rect.width * a.rect.height)[0]?.element || null;
+      const genericCarouselSignatureForRoot = (targetRoot) => {
+        const panel = genericCarouselPanelForRoot(targetRoot);
+        if (!panel) return "";
+        const rootRect = targetRoot.getBoundingClientRect();
+        const panelRect = panel.getBoundingClientRect();
+        const viewportRect = panelRect.width >= 24 && panelRect.height >= 18 ? panelRect : rootRect;
+        const centerX = viewportRect.left + viewportRect.width / 2;
+        const slides = Array.from(panel.querySelectorAll(".swiper-slide, [class*='swiper-slide'], .slick-slide, [class*='slide']"))
+          .filter((slide) => visible(slide))
+          .map((slide, index) => {
+            const rect = slide.getBoundingClientRect();
+            const visibleArea = intersects(rect, viewportRect);
+            const area = Math.max(1, rect.width * rect.height);
+            const image = imageSources(slide)[0] || "";
+            const imageFamily = mediaImageFamily(image);
+            const text = dedupeRepeatedText(textOf(slide, 260), 220);
+            const title = dedupeRepeatedText(
+              slide.querySelector("h1, h2, h3, h4, [class*='title'], [class*='name'], p")?.innerText || text,
+              120
+            );
+            const slideClass = classText(slide);
+            const activeScore = Number(/active|current|selected/i.test(slideClass)) * 10000 +
+              visibleArea -
+              Math.abs((rect.left + rect.width / 2) - centerX) * 2;
+            return {
+              key: [
+                title || "",
+                imageFamily ? "img:" + imageFamily : "",
+                slide.getAttribute("aria-label") || "",
+                !title && !imageFamily ? "dom:" + index : ""
+              ].filter(Boolean).join("|"),
+              visibleArea,
+              visibleRatio: visibleArea / area,
+              activeScore
+            };
+          })
+          .filter((slide) => slide.key && slide.visibleArea > 200 && slide.visibleRatio >= 0.08)
+          .sort((a, b) => b.activeScore - a.activeScore || b.visibleArea - a.visibleArea);
+        return slides[0]?.key || "";
       };
       const resetMediaTrack = async (track) => {
         const swiper = mediaTrackPanel(track)?.swiper;
@@ -4916,7 +5096,8 @@ async function activateShokzHomeRelatedState(client, definition, state) {
           const targetSignature = state.windowSignature || "";
           const maxAttempts = Math.max(12, Number(state.pageIndex || 1) + Number(state.itemCount || 0) + 2);
           for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-            const currentSignature = mediaWindowSignature(track);
+            const currentSignature = mediaWindowSignature(track) ||
+              genericCarouselSignatureForRoot(trackRoot);
             if (targetSignature && currentSignature === targetSignature) {
               trackRoot.scrollIntoView({ block: "center", inline: "nearest" });
               await sleep(220);
@@ -4929,7 +5110,8 @@ async function activateShokzHomeRelatedState(client, definition, state) {
             }
             const before = currentSignature;
             const moved = await advanceMediaTrack(track);
-            const after = mediaWindowSignature(track);
+            const after = mediaWindowSignature(track) ||
+              genericCarouselSignatureForRoot(trackRoot);
             if (!moved || !after || after === before) break;
           }
           return { ok: false, reason: "Could not activate media window " + state.stateLabel + "." };
@@ -5058,6 +5240,13 @@ async function activateShokzHomeRelatedState(client, definition, state) {
     awaitPromise: true,
     returnByValue: true
   });
+  if (result.exceptionDetails) {
+    throw new Error(
+      result.exceptionDetails.exception?.description ||
+      result.exceptionDetails.text ||
+      `Could not activate ${definition.sectionLabel} ${state.stateLabel}.`
+    );
+  }
   const value = result.result?.value || {};
   if (!value.ok) {
     throw new Error(value.reason || `Could not activate ${definition.sectionLabel} ${state.stateLabel}.`);
@@ -5737,6 +5926,21 @@ async function readShokzHomeRelatedState(client, definition, state) {
         const panel = mediaTrackPanel(track);
         return panel?.closest(track.rootSelector) || panel;
       };
+      const mediaTrackSlideContainer = (track) => {
+        const panel = mediaTrackPanel(track);
+        const trackRoot = mediaTrackRoot(track);
+        if (!panel) return trackRoot;
+        return panel.querySelector(".swiper-slide, [class*='swiper-slide']") ? panel : trackRoot;
+      };
+      const mediaTrackViewportRect = (track) => {
+        const panel = mediaTrackPanel(track);
+        const trackRoot = mediaTrackRoot(track);
+        const panelRect = panel?.getBoundingClientRect?.() || null;
+        if (panelRect && panelRect.width >= 24 && panelRect.height >= 18) {
+          return panelRect;
+        }
+        return trackRoot?.getBoundingClientRect?.() || panelRect || null;
+      };
       const imageSourcesForElement = (element) => Array.from(element.querySelectorAll("img, source"))
         .flatMap((node) => imageSourcesForNode(node))
         .filter(Boolean);
@@ -5792,15 +5996,16 @@ async function readShokzHomeRelatedState(client, definition, state) {
       const mediaItems = (track) => {
         const panel = mediaTrackPanel(track);
         const trackRoot = mediaTrackRoot(track);
-        if (!panel || !trackRoot) return [];
-        const panelRect = panel.getBoundingClientRect();
+        const slideContainer = mediaTrackSlideContainer(track);
+        const viewportRect = mediaTrackViewportRect(track);
+        if (!panel || !trackRoot || !slideContainer || !viewportRect) return [];
         const rootRect = trackRoot.getBoundingClientRect();
-        const slides = Array.from(panel.querySelectorAll(".swiper-slide, [class*='swiper-slide']"))
+        const slides = Array.from(slideContainer.querySelectorAll(".swiper-slide, [class*='swiper-slide']"))
           .filter(visible)
           .map((slide, domIndex) => {
             const rect = slide.getBoundingClientRect();
             const area = Math.max(1, rect.width * rect.height);
-            const visibleArea = intersects(rect, panelRect);
+            const visibleArea = intersects(rect, viewportRect);
             const position = slidePosition(slide);
             const image = imageSourcesForElement(slide)[0] || "";
             const imageFamily = mediaImageFamily(image);
@@ -5843,10 +6048,10 @@ async function readShokzHomeRelatedState(client, definition, state) {
             item.rect.height >= 18 &&
             item.visibleArea > 120 &&
             item.visibleRatio >= 0.55 &&
-            item.rect.right > panelRect.left + 4 &&
-            item.rect.left < panelRect.right - 4 &&
-            item.centerY >= panelRect.top - 20 &&
-            item.centerY <= panelRect.bottom + 20
+            item.rect.right > viewportRect.left + 4 &&
+            item.rect.left < viewportRect.right - 4 &&
+            item.centerY >= viewportRect.top - 20 &&
+            item.centerY <= viewportRect.bottom + 20
           )
           .sort((a, b) => a.rect.left - b.rect.left || a.rect.top - b.rect.top);
         const deduped = [];
@@ -5876,6 +6081,114 @@ async function readShokzHomeRelatedState(client, definition, state) {
           imageFamily: item.imageFamily
         }))) : "";
       };
+      const genericCarouselPanelForRoot = (targetRoot) =>
+        [targetRoot, ...targetRoot.querySelectorAll(".swiper, [class*='swiper'], .slick-slider, [class*='slider'], [class*='carousel']")]
+          .filter((element) => visible(element) && element.querySelector(".swiper-slide, [class*='swiper-slide'], .slick-slide, [class*='slide']"))
+          .map((element) => {
+            const rect = element.getBoundingClientRect();
+            const area = rect.width * rect.height;
+            const activeCount = element.querySelectorAll(".swiper-slide-active, .slick-active, [class*='active']").length;
+            const visibleSlides = Array.from(element.querySelectorAll(".swiper-slide, [class*='swiper-slide'], .slick-slide, [class*='slide']"))
+              .filter((slide) => visible(slide))
+              .length;
+            const score = activeCount * 200 + visibleSlides * 40 + Math.min(area / 1000, 600);
+            return { element, rect, score };
+          })
+          .sort((a, b) => b.score - a.score || b.rect.width * b.rect.height - a.rect.width * a.rect.height)[0]?.element || null;
+      const genericCarouselSignatureForRoot = (targetRoot) => {
+        const panel = genericCarouselPanelForRoot(targetRoot);
+        if (!panel) return "";
+        const rootRect = targetRoot.getBoundingClientRect();
+        const panelRect = panel.getBoundingClientRect();
+        const viewportRect = panelRect.width >= 24 && panelRect.height >= 18 ? panelRect : rootRect;
+        const centerX = viewportRect.left + viewportRect.width / 2;
+        const slides = Array.from(panel.querySelectorAll(".swiper-slide, [class*='swiper-slide'], .slick-slide, [class*='slide']"))
+          .filter((slide) => visible(slide))
+          .map((slide, index) => {
+            const rect = slide.getBoundingClientRect();
+            const visibleArea = intersects(rect, viewportRect);
+            const area = Math.max(1, rect.width * rect.height);
+            const image = imageSources(slide)[0] || "";
+            const imageFamily = mediaImageFamily(image);
+            const text = dedupeRepeatedText(textOf(slide, 260), 220);
+            const title = dedupeRepeatedText(
+              slide.querySelector("h1, h2, h3, h4, [class*='title'], [class*='name'], p")?.innerText || text,
+              120
+            );
+            const slideClass = classText(slide);
+            const activeScore = Number(/active|current|selected/i.test(slideClass)) * 10000 +
+              visibleArea -
+              Math.abs((rect.left + rect.width / 2) - centerX) * 2;
+            return {
+              key: [
+                title || "",
+                imageFamily ? "img:" + imageFamily : "",
+                slide.getAttribute("aria-label") || "",
+                !title && !imageFamily ? "dom:" + index : ""
+              ].filter(Boolean).join("|"),
+              visibleArea,
+              visibleRatio: visibleArea / area,
+              activeScore
+            };
+          })
+          .filter((slide) => slide.key && slide.visibleArea > 200 && slide.visibleRatio >= 0.08)
+          .sort((a, b) => b.activeScore - a.activeScore || b.visibleArea - a.visibleArea);
+        return slides[0]?.key || "";
+      };
+      const genericCarouselPanel = (targetRoot = root) =>
+        [targetRoot, ...targetRoot.querySelectorAll(".swiper, [class*='swiper'], .slick-slider, [class*='slider'], [class*='carousel']")]
+          .filter((element) => visible(element) && element.querySelector(".swiper-slide, [class*='swiper-slide'], .slick-slide, [class*='slide']"))
+          .map((element) => {
+            const rect = element.getBoundingClientRect();
+            const area = rect.width * rect.height;
+            const activeCount = element.querySelectorAll(".swiper-slide-active, .slick-active, [class*='active']").length;
+            const visibleSlides = Array.from(element.querySelectorAll(".swiper-slide, [class*='swiper-slide'], .slick-slide, [class*='slide']"))
+              .filter((slide) => visible(slide))
+              .length;
+            const score = activeCount * 200 + visibleSlides * 40 + Math.min(area / 1000, 600);
+            return { element, rect, score };
+          })
+          .sort((a, b) => b.score - a.score || b.rect.width * b.rect.height - a.rect.width * a.rect.height)[0]?.element || null;
+      const genericCarouselSignature = (targetRoot = root) => {
+        const panel = genericCarouselPanel(targetRoot);
+        if (!panel) return "";
+        const rootRect = targetRoot.getBoundingClientRect();
+        const panelRect = panel.getBoundingClientRect();
+        const viewportRect = panelRect.width >= 24 && panelRect.height >= 18 ? panelRect : rootRect;
+        const centerX = viewportRect.left + viewportRect.width / 2;
+        const slides = Array.from(panel.querySelectorAll(".swiper-slide, [class*='swiper-slide'], .slick-slide, [class*='slide']"))
+          .filter((slide) => visible(slide))
+          .map((slide, index) => {
+            const rect = slide.getBoundingClientRect();
+            const visibleArea = intersects(rect, viewportRect);
+            const area = Math.max(1, rect.width * rect.height);
+            const image = imageSourcesForElement(slide)[0] || "";
+            const imageFamily = mediaImageFamily(image);
+            const text = dedupeRepeatedText(textOf(slide, 260), 220);
+            const title = dedupeRepeatedText(
+              slide.querySelector("h1, h2, h3, h4, [class*='title'], [class*='name'], p")?.innerText || text,
+              120
+            );
+            const slideClass = classText(slide);
+            const activeScore = Number(/active|current|selected/i.test(slideClass)) * 10000 +
+              visibleArea -
+              Math.abs((rect.left + rect.width / 2) - centerX) * 2;
+            return {
+              key: [
+                title || "",
+                imageFamily ? "img:" + imageFamily : "",
+                slide.getAttribute("aria-label") || "",
+                !title && !imageFamily ? "dom:" + index : ""
+              ].filter(Boolean).join("|"),
+              visibleArea,
+              visibleRatio: visibleArea / area,
+              activeScore
+            };
+          })
+          .filter((slide) => slide.key && slide.visibleArea > 200 && slide.visibleRatio >= 0.08)
+          .sort((a, b) => b.activeScore - a.activeScore || b.visibleArea - a.visibleArea);
+        return slides[0]?.key || "";
+      };
       if (definition.key === "media") {
         const track = mediaTrackForState();
         const trackRoot = mediaTrackRoot(track);
@@ -5884,7 +6197,9 @@ async function readShokzHomeRelatedState(client, definition, state) {
         }
         const trackRect = trackRoot.getBoundingClientRect();
         const visibleItems = mediaItems(track);
-        const mediaSignature = mediaWindowSignature(track);
+        const mediaSignature = mediaWindowSignature(track) ||
+          genericCarouselSignature(trackRoot) ||
+          visibleSignature(trackRoot);
         if (state.windowSignature && mediaSignature !== state.windowSignature) {
           return {
             ok: false,
@@ -5995,7 +6310,7 @@ async function readShokzHomeRelatedState(client, definition, state) {
           reason: "Visible athletes did not match planned athletes window " + state.stateLabel + "."
         };
       }
-      const genericSignature = visibleSignature(root);
+      const genericSignature = genericCarouselSignature() || visibleSignature(root);
       if (!["product-showcase", "scene-explore", "athletes"].includes(definition.key) &&
         state.windowSignature &&
         genericSignature &&
