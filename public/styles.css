@@ -916,6 +916,15 @@ select:focus {
   align-items: center;
   gap: 8px;
   min-width: 0;
+  order: 1;
+}
+
+.image-preview-nav-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  order: 2;
 }
 
 .image-preview-tool,
@@ -932,8 +941,17 @@ select:focus {
   min-width: 34px;
 }
 
+.image-preview-nav-controls .image-preview-tool {
+  min-width: 72px;
+}
+
 .image-preview-fit {
   white-space: nowrap;
+}
+
+.image-preview-close {
+  order: 3;
+  margin-left: auto;
 }
 
 .image-preview-tool:hover,
@@ -1271,6 +1289,11 @@ select:focus {
   .image-preview-zoom-controls {
     flex: 1 1 210px;
     flex-wrap: wrap;
+  }
+
+  .image-preview-nav-controls {
+    flex: 1 1 100%;
+    justify-content: flex-start;
   }
 
   .image-preview-tool,

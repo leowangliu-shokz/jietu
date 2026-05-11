@@ -44,6 +44,9 @@ const elements = {
   imagePreviewZoomValue: document.querySelector("#imagePreviewZoomValue"),
   imagePreviewZoomIn: document.querySelector("#imagePreviewZoomIn"),
   imagePreviewZoomFit: document.querySelector("#imagePreviewZoomFit"),
+  imagePreviewNavControls: document.querySelector("#imagePreviewNavControls"),
+  imagePreviewPrev: document.querySelector("#imagePreviewPrev"),
+  imagePreviewNext: document.querySelector("#imagePreviewNext"),
   imagePreviewClose: document.querySelector("#imagePreviewClose"),
   warningPreview: document.querySelector("#warningPreview"),
   warningPreviewTitle: document.querySelector("#warningPreviewTitle"),
@@ -70,6 +73,7 @@ let changesPage = 1;
 let imagePreviewReturnFocus = null;
 let imagePreviewPreviousOverflow = "";
 let imagePreviewZoomState = createImagePreviewZoomState();
+let imagePreviewNavigationState = createImagePreviewNavigationState();
 let warningPreviewReturnFocus = null;
 let warningPreviewPreviousOverflow = "";
 const changesPageSize = 10;
@@ -121,11 +125,14 @@ elements.imagePreviewViewport.addEventListener("pointercancel", endImagePreviewD
 elements.imagePreviewZoomOut.addEventListener("click", () => changeImagePreviewZoom(-1));
 elements.imagePreviewZoomIn.addEventListener("click", () => changeImagePreviewZoom(1));
 elements.imagePreviewZoomFit.addEventListener("click", fitImagePreviewToViewport);
+elements.imagePreviewPrev.addEventListener("click", () => stepImagePreviewNavigation(-1));
+elements.imagePreviewNext.addEventListener("click", () => stepImagePreviewNavigation(1));
 elements.imagePreviewClose.addEventListener("click", closeImagePreview);
 elements.warningPreview.addEventListener("click", handleWarningPreviewBackdropClick);
 elements.warningPreviewClose.addEventListener("click", closeWarningPreview);
 document.addEventListener("click", closeDeviceFilterOnOutsideClick);
 document.addEventListener("keydown", closeDeviceFilterOnEscape);
+document.addEventListener("keydown", handleImagePreviewNavigationKeydown);
 document.addEventListener("keydown", closeImagePreviewOnEscape);
 document.addEventListener("keydown", closeWarningPreviewOnEscape);
 window.addEventListener("resize", handleImagePreviewResize);
@@ -354,9 +361,8 @@ function handleImagePreviewClick(event) {
 
   event.preventDefault();
   openImagePreview({
-    src: link.href,
-    caption: imagePreviewCaptionForLink(link),
-    snapshot: link.classList.contains("shot-main-image") ? snapshotForPreviewLink(link) : null,
+    item: imagePreviewItemFromLink(link),
+    navigation: link.classList.contains("related-thumb") ? imagePreviewNavigationForRelatedThumb(link) : null,
     trigger: link
   });
 }
@@ -364,6 +370,31 @@ function handleImagePreviewClick(event) {
 function imagePreviewCaptionForLink(link) {
   const image = link.querySelector("img");
   return image?.getAttribute("alt") || link.getAttribute("title") || link.href;
+}
+
+function imagePreviewItemFromLink(link) {
+  return {
+    src: link.href,
+    caption: imagePreviewCaptionForLink(link),
+    snapshot: link.classList.contains("shot-main-image") ? snapshotForPreviewLink(link) : null
+  };
+}
+
+function imagePreviewNavigationForRelatedThumb(link) {
+  const card = link.closest(".shot");
+  if (!card) {
+    return null;
+  }
+
+  const links = [...card.querySelectorAll(".related-thumb[href]")];
+  if (!links.length) {
+    return null;
+  }
+
+  return {
+    items: links.map((item) => imagePreviewItemFromLink(item)),
+    index: Math.max(0, links.indexOf(link))
+  };
 }
 
 function createImagePreviewZoomState() {
@@ -384,23 +415,122 @@ function createImagePreviewZoomState() {
   };
 }
 
-function openImagePreview({ src, caption, snapshot = null, trigger }) {
+function createImagePreviewNavigationState() {
+  return {
+    items: [],
+    index: -1
+  };
+}
+
+function openImagePreview({ item, navigation = null, trigger }) {
   imagePreviewReturnFocus = trigger instanceof HTMLElement ? trigger : null;
-  imagePreviewPreviousOverflow = document.body.style.overflow || "";
-  resetImagePreviewZoom();
-  imagePreviewZoomState.snapshot = snapshot;
-  elements.imagePreviewImage.src = src;
+  const wasHidden = elements.imagePreview.hidden;
+  const caption = item?.caption || "";
   elements.imagePreviewImage.alt = caption || "图片预览";
   elements.imagePreviewCaption.textContent = caption || "";
-  elements.imagePreview.hidden = false;
-  elements.imagePreview.setAttribute("aria-hidden", "false");
-  document.body.style.overflow = "hidden";
+  if (wasHidden) {
+    imagePreviewPreviousOverflow = document.body.style.overflow || "";
+    elements.imagePreview.hidden = false;
+    elements.imagePreview.setAttribute("aria-hidden", "false");
+    document.body.style.overflow = "hidden";
+  }
+
+  setImagePreviewNavigation(navigation);
+  showImagePreviewItem(currentImagePreviewNavigationItem() || item);
+
+  if (wasHidden) {
+    elements.imagePreviewClose.focus();
+  }
+}
+
+function showImagePreviewItem(item) {
+  resetImagePreviewZoom();
+  imagePreviewZoomState.snapshot = item?.snapshot || null;
+  elements.imagePreviewImage.src = item?.src || "";
+  elements.imagePreviewImage.alt = item?.caption || "鍥剧墖棰勮";
+  elements.imagePreviewCaption.textContent = item?.caption || "";
+  syncImagePreviewNavigationControls();
   requestAnimationFrame(() => {
     if (elements.imagePreviewImage.complete && elements.imagePreviewImage.naturalWidth) {
       handleImagePreviewImageLoad();
     }
   });
-  elements.imagePreviewClose.focus();
+}
+
+function setImagePreviewNavigation(navigation = null) {
+  const items = Array.isArray(navigation?.items)
+    ? navigation.items.filter((item) => item?.src)
+    : [];
+  const total = items.length;
+  imagePreviewNavigationState = {
+    items,
+    index: total ? wrapImagePreviewNavigationIndex(Number(navigation?.index || 0), total) : -1
+  };
+  syncImagePreviewNavigationControls();
+}
+
+function clearImagePreviewNavigation() {
+  imagePreviewNavigationState = createImagePreviewNavigationState();
+  syncImagePreviewNavigationControls();
+}
+
+function currentImagePreviewNavigationItem() {
+  if (!hasImagePreviewNavigation()) {
+    return null;
+  }
+  return imagePreviewNavigationState.items[imagePreviewNavigationState.index] || null;
+}
+
+function hasImagePreviewNavigation() {
+  return imagePreviewNavigationState.items.length > 0;
+}
+
+function canStepImagePreviewNavigation() {
+  return imagePreviewNavigationState.items.length > 1;
+}
+
+function syncImagePreviewNavigationControls() {
+  const hasNavigation = hasImagePreviewNavigation();
+  const canStep = canStepImagePreviewNavigation();
+  elements.imagePreviewNavControls.hidden = !hasNavigation;
+  elements.imagePreviewPrev.disabled = !canStep;
+  elements.imagePreviewNext.disabled = !canStep;
+}
+
+function stepImagePreviewNavigation(delta) {
+  if (!canStepImagePreviewNavigation()) {
+    return;
+  }
+
+  const total = imagePreviewNavigationState.items.length;
+  imagePreviewNavigationState.index = wrapImagePreviewNavigationIndex(imagePreviewNavigationState.index + delta, total);
+  showImagePreviewItem(imagePreviewNavigationState.items[imagePreviewNavigationState.index]);
+}
+
+function wrapImagePreviewNavigationIndex(index, total) {
+  if (!Number.isFinite(total) || total <= 0) {
+    return -1;
+  }
+
+  const value = Number(index || 0);
+  return ((value % total) + total) % total;
+}
+
+function handleImagePreviewNavigationKeydown(event) {
+  if (elements.imagePreview.hidden || event.defaultPrevented) {
+    return;
+  }
+
+  if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+    return;
+  }
+
+  if (!canStepImagePreviewNavigation()) {
+    return;
+  }
+
+  event.preventDefault();
+  stepImagePreviewNavigation(event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1);
 }
 
 function closeImagePreview() {
@@ -414,6 +544,7 @@ function closeImagePreview() {
   elements.imagePreviewImage.removeAttribute("src");
   elements.imagePreviewImage.removeAttribute("style");
   elements.imagePreviewCaption.textContent = "";
+  clearImagePreviewNavigation();
   resetImagePreviewZoom();
   document.body.style.overflow = imagePreviewPreviousOverflow;
   const returnFocus = imagePreviewReturnFocus;
