@@ -66,7 +66,8 @@ export async function captureOne(inputTarget, config = null) {
       width: capture.width || null,
       height: capture.height || null,
       visualAudit: capture.visualAudit || null,
-      urlCheck: capture.urlCheck || null
+      urlCheck: capture.urlCheck || null,
+      captureValidation: capture.captureValidation || null
     });
     const relatedCapture = await captureRelatedShotsForTarget(
       target,
@@ -177,7 +178,8 @@ export async function captureOne(inputTarget, config = null) {
       error: error.message,
       requestedUrl: error.requestedUrl || normalizedUrl,
       finalUrl: error.finalUrl || null,
-      urlCheck: error.urlCheck || null
+      urlCheck: error.urlCheck || null,
+      captureValidation: error.captureValidation || null
     });
     await finalizeCaptureDiagnostic(diagnosticRun, {
       ok: false,
@@ -255,7 +257,8 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
       sectionKey: relatedMode === "shokz-products-nav-related" ? "navigation" : "related",
       sectionLabel: relatedMode === "shokz-products-nav-related" ? "Navigation" : "More screenshots",
       captureMode: relatedMode,
-      error: error.message
+      error: error.message,
+      captureValidation: error.captureValidation || null
     });
     return {
       shots: [],
@@ -346,7 +349,8 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
     captureMode: relatedMode,
     shotCount: relatedShots.length,
     warningCount: Array.isArray(validation?.warnings) ? validation.warnings.length : 0,
-    lowConfidenceShotCount: relatedShots.filter((shot) => shot.captureConfidence?.baselineEligible === false).length
+    lowConfidenceShotCount: relatedShots.filter((shot) => shot.captureConfidence?.baselineEligible === false).length,
+    captureValidation: summarizeCaptureValidationEntries(relatedCapture.captures || [])
   });
   return {
     shots: relatedShots.sort(compareRelatedShots),
@@ -406,7 +410,8 @@ async function captureIsolatedRelatedSection(normalizedUrl, baseOutputPath, capt
       sectionKey: descriptor.sectionKey,
       sectionLabel: descriptor.sectionLabel,
       captureMode: descriptor.captureMode,
-      error: error.message
+      error: error.message,
+      captureValidation: error.captureValidation || null
     });
     return {
       shots: [],
@@ -442,7 +447,8 @@ async function captureIsolatedRelatedSection(normalizedUrl, baseOutputPath, capt
     captureMode: descriptor.captureMode,
     shotCount: shots.length,
     warningCount: Array.isArray(validation?.warnings) ? validation.warnings.length : 0,
-    lowConfidenceShotCount: shots.filter((shot) => shot.captureConfidence?.baselineEligible === false).length
+    lowConfidenceShotCount: shots.filter((shot) => shot.captureConfidence?.baselineEligible === false).length,
+    captureValidation: summarizeCaptureValidationEntries(relatedCapture.captures || [])
   });
   return { shots, validation };
 }
@@ -533,6 +539,22 @@ function validationForRelatedCaptureResult(relatedCapture, descriptor) {
       status: "ok"
     }]
   };
+}
+
+function summarizeCaptureValidationEntries(items = []) {
+  const validations = [];
+  for (const item of items) {
+    if (!item?.captureValidation) {
+      continue;
+    }
+    validations.push({
+      itemLabel: item.stateLabel || item.label || item.sectionKey || item.kind || null,
+      sectionKey: item.sectionKey || null,
+      kind: item.kind || null,
+      ...item.captureValidation
+    });
+  }
+  return validations.length ? validations : null;
 }
 
 function archiveRelativePath(absolutePath) {

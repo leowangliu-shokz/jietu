@@ -5,7 +5,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { CdpClient } from "./cdp.js";
 import { decodePng, encodePng } from "./png.js";
-import { hashBuffer, imageQualityAuditForBuffer, nearestVisualHash, visualAuditForBuffer, visualHashForBuffer } from "./image-audit.js";
+import { blankImageAuditForBuffer, hashBuffer, imageQualityAuditForBuffer, nearestVisualHash, visualAuditForBuffer, visualHashForBuffer } from "./image-audit.js";
 import {
   findShokzHomeRelatedSectionDefinition,
   shokzHomeRelatedSectionDefinitions as importedShokzHomeRelatedSectionDefinitions,
@@ -14,7 +14,7 @@ import {
   shokzProductsNavigationCategoryLabels,
   shokzRelatedSectionOrder
 } from "./shokz-capture-specs.js";
-export { imageQualityAuditForBuffer } from "./image-audit.js";
+export { blankImageAuditForBuffer, imageQualityAuditForBuffer } from "./image-audit.js";
 
 const defaultTimeoutMs = 45000;
 
@@ -236,58 +236,59 @@ async function driveCapture(client, url, outputPath, options) {
   const metrics = await client.send("Page.getLayoutMetrics");
   const contentSize = metrics.cssContentSize || metrics.contentSize || {};
   const pageWidth = Math.max(viewport.width, Math.ceil(contentSize.width || viewport.width));
-  const pageHeight = Math.max(viewport.height, Math.ceil(contentSize.height || viewport.height));
+  let pageHeight = Math.max(viewport.height, Math.ceil(contentSize.height || viewport.height));
+  if (options.fullPage && Number.isFinite(scrollInfo?.reachableHeight)) {
+    pageHeight = Math.min(pageHeight, Math.max(viewport.height, Math.ceil(scrollInfo.reachableHeight)));
+  }
   const maxHeight = options.maxFullPageHeight || 16000;
   const clipHeight = options.fullPage ? Math.min(pageHeight, maxHeight) : viewport.height;
   const clipWidth = options.fullPage ? pageWidth : viewport.width;
+  let captureHeight = clipHeight;
 
   stage = "capturing screenshot";
   let captureBuffer = null;
+  let captureValidation = null;
   if (options.fullPage) {
     const guardShokzSearchOverlay = shouldGuardShokzSearchOverlay(url, viewport, options);
     if (guardShokzSearchOverlay) {
       await ensureShokzSearchOverlayClosed(client, "before screenshot capture");
     }
-    const beforeSegmentCapture = () => prepareForScreenshotCapture(client, {
-      rounds: 2,
-      shokzKnownPopups: cleanShokzKnownPopups,
-      guardSearchOverlay: guardShokzSearchOverlay,
-      stage: "before stitched segment screenshot capture"
+    const beforeSegmentCapture = async ({ attempt } = {}) => {
+      if (viewport.mobile && attempt > 1) {
+        await materializeFullPageContent(client);
+        await prepareForScreenshotCapture(client, {
+          rounds: 5,
+          shokzKnownPopups: cleanShokzKnownPopups,
+          guardSearchOverlay: guardShokzSearchOverlay,
+          stage: "after mobile full-page content materialization"
+        });
+        await sleep(220);
+      }
+      await prepareForScreenshotCapture(client, {
+        rounds: viewport.mobile ? 5 : 2,
+        shokzKnownPopups: cleanShokzKnownPopups,
+        guardSearchOverlay: guardShokzSearchOverlay,
+        stage: viewport.mobile
+          ? "before mobile stitched segment screenshot capture"
+          : "before stitched segment screenshot capture"
+      });
+    };
+    const stitchedCapture = await captureStitchedScreenshot(client, outputPath, {
+      width: clipWidth,
+      height: clipHeight,
+      viewportHeight: viewport.height,
+      stepDelay: options.scrollStepMs ?? 350,
+      dismissObstructionsBeforeSegment: !cleanShokzKnownPopups,
+      hideFixedElementsAfterFirstSegment: options.hideFixedElementsAfterFirstSegment !== false,
+      beforeSegmentCapture,
+      beforeFirstSegmentCapture: guardShokzSearchOverlay
+        ? () => ensureShokzSearchOverlayClosed(client, "before first segment screenshot capture")
+        : null,
+      viewportRelativeCapture: false
     });
-    if (viewport.mobile) {
-      await beforeSegmentCapture();
-      await materializeFullPageContent(client);
-      await prepareForScreenshotCapture(client, {
-        rounds: 5,
-        shokzKnownPopups: cleanShokzKnownPopups,
-        guardSearchOverlay: guardShokzSearchOverlay,
-        stage: "after mobile full-page content materialization"
-      });
-      await sleep(450);
-      await prepareForScreenshotCapture(client, {
-        rounds: 5,
-        shokzKnownPopups: cleanShokzKnownPopups,
-        guardSearchOverlay: guardShokzSearchOverlay,
-        stage: "immediately before mobile full-page screenshot capture"
-      });
-      captureBuffer = await captureFullPageClipScreenshot(client, outputPath, {
-        width: clipWidth,
-        height: clipHeight
-      });
-    } else {
-      captureBuffer = await captureStitchedScreenshot(client, outputPath, {
-        width: clipWidth,
-        height: clipHeight,
-        viewportHeight: viewport.height,
-        stepDelay: options.scrollStepMs ?? 350,
-        dismissObstructionsBeforeSegment: !cleanShokzKnownPopups,
-        hideFixedElementsAfterFirstSegment: options.hideFixedElementsAfterFirstSegment !== false,
-        beforeSegmentCapture,
-        beforeFirstSegmentCapture: guardShokzSearchOverlay
-          ? () => ensureShokzSearchOverlayClosed(client, "before first segment screenshot capture")
-          : null
-      });
-    }
+    captureBuffer = stitchedCapture.buffer;
+    captureValidation = stitchedCapture.captureValidation;
+    captureHeight = stitchedCapture.height || clipHeight;
   } else {
     if (options.captureMode === "shokz-products-nav") {
       await prepareShokzNavigationMainScreenshot(client, viewport);
@@ -299,12 +300,30 @@ async function driveCapture(client, url, outputPath, options) {
         stage: "before screenshot capture"
       });
     }
-    const screenshot = await client.send("Page.captureScreenshot", {
+    const screenshotCapture = await captureScreenshotWithValidation(client, {
       format: "png",
       fromSurface: true
+    }, {
+      label: options.captureMode || "page screenshot",
+      beforeAttempt: async ({ attempt }) => {
+        if (attempt === 1) {
+          return;
+        }
+        if (options.captureMode === "shokz-products-nav") {
+          await prepareShokzNavigationMainScreenshot(client, viewport);
+          return;
+        }
+        await prepareForScreenshotCapture(client, {
+          rounds: 2,
+          shokzKnownPopups: cleanShokzKnownPopups,
+          guardSearchOverlay: shouldGuardShokzSearchOverlay(url, viewport, options),
+          stage: "retrying screenshot capture after blank validation"
+        });
+      }
     });
-    captureBuffer = Buffer.from(screenshot.data, "base64");
-    await fs.writeFile(outputPath, screenshot.data, "base64");
+    captureBuffer = screenshotCapture.buffer;
+    captureValidation = screenshotCapture.captureValidation;
+    await fs.writeFile(outputPath, captureBuffer);
   }
   const finalUrl = await verifyCurrentUrl(client, url, "after screenshot capture", urlCheck);
   urlCheck.ok = true;
@@ -317,12 +336,13 @@ async function driveCapture(client, url, outputPath, options) {
     urlCheck,
     title: titleResult,
     width: clipWidth,
-    height: clipHeight,
+    height: captureHeight,
     fullPageHeight: pageHeight,
-    truncated: options.fullPage ? pageHeight > clipHeight : false,
+    truncated: options.fullPage ? pageHeight > captureHeight : false,
     scrollInfo,
     visualHash,
-    visualAudit
+    visualAudit,
+    captureValidation
   };
   } catch (error) {
     error.message = `${error.message} (stage: ${stage})`;
@@ -721,11 +741,23 @@ async function saveShokzNavigationCapture(client, outputPath, viewport, state, c
     await restoreShokzNavigationHover(client, state, viewport);
   }
 
-  const screenshot = await client.send("Page.captureScreenshot", {
+  const screenshotCapture = await captureScreenshotWithValidation(client, {
     format: "png",
     fromSurface: true
+  }, {
+    label: `navigation ${state.stateLabel}`,
+    beforeAttempt: async ({ attempt }) => {
+      if (attempt === 1) {
+        return;
+      }
+      await prepareShokzNavigationRelatedScreenshot(client, state, viewport);
+      const retryCleanup = await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 5, hideOnly: true });
+      if (!retryCleanup.ok) {
+        throw new Error(`Known popup remained before navigation retry screenshot: ${formatKnownPopupRemaining(retryCleanup)}.`);
+      }
+    }
   });
-  const buffer = Buffer.from(screenshot.data, "base64");
+  const buffer = screenshotCapture.buffer;
   const visualSignature = hashBuffer(buffer);
   const visualHash = visualHashForBuffer(buffer);
   const visualAudit = visualAuditForBuffer(buffer, visualHash);
@@ -785,6 +817,7 @@ async function saveShokzNavigationCapture(client, outputPath, viewport, state, c
     visualSignature,
     visualHash,
     visualAudit,
+    captureValidation: screenshotCapture.captureValidation,
     clip: {
       x: 0,
       y: 0,
@@ -1888,13 +1921,30 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
       stage: `before Shokz banner ${index + 1} screenshot capture`
     });
 
-    const screenshot = await client.send("Page.captureScreenshot", {
+    const screenshotCapture = await captureScreenshotWithValidation(client, {
       format: "png",
       fromSurface: true,
       captureBeyondViewport: true,
       clip
+    }, {
+      label: `banner ${index + 1}`,
+      beforeAttempt: async ({ attempt }) => {
+        if (attempt === 1) {
+          return;
+        }
+        await activateShokzHomeBanner(client, slide, index);
+        await sleep(900);
+        await waitForBannerImages(client);
+        await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 5 });
+        await sleep(300);
+        await prepareForScreenshotCapture(client, {
+          rounds: 2,
+          shokzKnownPopups: true,
+          stage: `retrying Shokz banner ${index + 1} screenshot capture`
+        });
+      }
     });
-    const buffer = Buffer.from(screenshot.data, "base64");
+    const buffer = screenshotCapture.buffer;
     const visualSignature = hashBuffer(buffer);
     const visualHash = visualHashForBuffer(buffer);
     const visualAudit = visualAuditForBuffer(buffer, visualHash);
@@ -1944,6 +1994,7 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
         width: Math.round(clip.width),
         height: Math.round(clip.height)
       },
+      captureValidation: screenshotCapture.captureValidation,
       bannerState: {
         activeIndex: state.activeIndex,
         realIndex: state.realIndex,
@@ -2065,13 +2116,50 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
       await waitForRelatedHoverSettled(client, definition, state);
       await sleep(120);
     }
-    const screenshot = await client.send("Page.captureScreenshot", {
+    const screenshotCapture = await captureScreenshotWithValidation(client, {
       format: "png",
       fromSurface: true,
       captureBeyondViewport: true,
       clip
+    }, {
+      label: `${definition.key} ${state.stateLabel}`,
+      beforeAttempt: async ({ attempt }) => {
+        if (attempt === 1) {
+          return;
+        }
+        await clearRelatedHover(client);
+        const retryActivation = skipActivation
+          ? { ok: true }
+          : await activateShokzHomeRelatedState(client, definition, state);
+        await sleep(650);
+        await waitForRelatedSectionImages(client, definition.key);
+        await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2 });
+        if (retryActivation?.hoverPoint) {
+          await moveMouseToPoint(client, retryActivation.hoverPoint);
+          await waitForRelatedHoverSettled(client, definition, state);
+          await suppressRelatedHoverDefaultLayer(client, definition, state);
+          await sleep(120);
+        }
+        await prepareForScreenshotCapture(client, {
+          rounds: 2,
+          shokzKnownPopups: true,
+          stage: `retrying Shokz ${definition.sectionLabel} screenshot capture`
+        });
+        const retryCleanup = await dismissShokzKnownPopupsBeforeScreenshot(client, {
+          rounds: 5,
+          hideOnly: Boolean(retryActivation?.hoverPoint)
+        });
+        if (!retryCleanup.ok) {
+          throw new Error(`Known popup remained before ${definition.sectionLabel} retry screenshot: ${formatKnownPopupRemaining(retryCleanup)}.`);
+        }
+        if ((retryCleanup.hidden.length || retryCleanup.clicked.length) && retryActivation?.hoverPoint) {
+          await moveMouseToPoint(client, retryActivation.hoverPoint);
+          await waitForRelatedHoverSettled(client, definition, state);
+          await sleep(120);
+        }
+      }
     });
-    const buffer = Buffer.from(screenshot.data, "base64");
+    const buffer = screenshotCapture.buffer;
     const visualSignature = hashBuffer(buffer);
     const visualHash = visualHashForBuffer(buffer);
     const logicalSignature = current.logicalSignature || state.logicalSignature || `${definition.key}:${state.stateIndex}`;
@@ -2143,6 +2231,7 @@ async function captureShokzHomeRelatedSection(client, outputPath, viewport, defi
       visualSignature,
       visualHash,
       visualAudit,
+      captureValidation: screenshotCapture.captureValidation,
       clip: {
         x: Math.round(clip.x),
         y: Math.round(clip.y),
@@ -8201,54 +8290,225 @@ function normalizePathname(pathname) {
   return clean || "/";
 }
 
+function captureAreaFromOptions(options = {}) {
+  const clip = options?.clip;
+  if (!clip) {
+    return { viewportRelative: true };
+  }
+  return {
+    x: Math.round(Number(clip.x) || 0),
+    y: Math.round(Number(clip.y) || 0),
+    width: Math.round(Number(clip.width) || 0),
+    height: Math.round(Number(clip.height) || 0),
+    scale: Number(clip.scale) || 1,
+    viewportRelative: false
+  };
+}
+
+function normalizeSegmentCaptureY(y, height, segmentHeight) {
+  const maxY = Math.max(0, height - segmentHeight);
+  const numericY = Number.isFinite(Number(y)) ? Math.round(Number(y)) : 0;
+  return Math.max(0, Math.min(maxY, numericY));
+}
+
+export async function captureScreenshotWithValidation(client, captureOptions, options = {}) {
+  const maxAttempts = Math.max(1, Math.min(6, Number(options.maxAttempts) || 3));
+  const attempts = [];
+  const label = String(options.label || "screenshot");
+  let lastBuffer = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (typeof options.beforeAttempt === "function") {
+      await options.beforeAttempt({ attempt, maxAttempts, label, attempts });
+    }
+
+    const resolvedOptions = typeof captureOptions === "function"
+      ? await captureOptions({ attempt, maxAttempts, label, attempts })
+      : captureOptions;
+    const screenshot = await client.send("Page.captureScreenshot", resolvedOptions);
+    const buffer = Buffer.from(screenshot.data, "base64");
+    lastBuffer = buffer;
+    const blankAudit = blankImageAuditForBuffer(buffer);
+    const attemptSummary = {
+      attempt,
+      ok: blankAudit.status === "ok",
+      message: blankAudit.message || null,
+      target: captureAreaFromOptions(resolvedOptions),
+      blankAudit
+    };
+    attempts.push(attemptSummary);
+
+    if (blankAudit.status === "ok") {
+      return {
+        buffer,
+        captureValidation: {
+          ok: true,
+          label,
+          maxAttempts,
+          retries: attempt - 1,
+          attempts
+        }
+      };
+    }
+
+    if (attempt < maxAttempts && typeof options.beforeRetry === "function") {
+      await options.beforeRetry({ attempt, maxAttempts, label, attempts, blankAudit, buffer });
+    }
+    if (attempt < maxAttempts) {
+      await sleep(options.retryDelayMs ?? 350);
+    }
+  }
+
+  const failure = attempts[attempts.length - 1] || { blankAudit: { message: "Image validation failed." } };
+  const error = new Error(
+    `${label} failed blank-image validation after ${maxAttempts} attempts. ${failure.blankAudit.message || ""}`.trim()
+  );
+  error.code = "BLANK_SCREENSHOT";
+  error.captureBuffer = lastBuffer;
+  error.captureValidation = {
+    ok: false,
+    label,
+    maxAttempts,
+    retries: Math.max(0, maxAttempts - 1),
+    attempts
+  };
+  throw error;
+}
+
 async function captureStitchedScreenshot(client, outputPath, options) {
   const width = Math.ceil(options.width);
   const height = Math.ceil(options.height);
   const viewportHeight = Math.max(320, Math.min(Math.ceil(options.viewportHeight), height));
   const rgba = new Uint8Array(width * height * 4);
   const positions = createSegmentPositions(height, viewportHeight);
+  const segmentValidations = [];
+  let finalHeight = height;
 
   for (let index = 0; index < positions.length; index += 1) {
     const y = positions[index];
-    if (index > 0 && options.hideFixedElementsAfterFirstSegment) {
-      await hideFixedElements(client);
-    }
-    await scrollTo(client, y);
-    await sleep(Math.max(120, Math.min(700, options.stepDelay)));
-    if (options.dismissObstructionsBeforeSegment !== false) {
-      await dismissObstructions(client, { rounds: index === 0 ? 4 : 2 });
-    }
-    await sleep(160);
-    if (index === 0 && typeof options.beforeFirstSegmentCapture === "function") {
-      await options.beforeFirstSegmentCapture();
-    }
-    if (typeof options.beforeSegmentCapture === "function") {
-      await options.beforeSegmentCapture(index);
-    }
     const segmentHeight = Math.min(viewportHeight, height - y);
-    const screenshot = await client.send("Page.captureScreenshot", {
-      format: "png",
-      fromSurface: true,
-      captureBeyondViewport: true,
-      clip: {
-        x: 0,
-        y,
-        width,
-        height: segmentHeight,
-        scale: 1
+    let captureY = y;
+    let screenshotCapture;
+    try {
+      screenshotCapture = await captureScreenshotWithValidation(client, () => {
+        if (options.viewportRelativeCapture) {
+          return {
+            format: "png",
+            fromSurface: true
+          };
+        }
+        return {
+          format: "png",
+          fromSurface: true,
+          captureBeyondViewport: true,
+          clip: {
+            x: 0,
+            y: captureY,
+            width,
+            height: segmentHeight,
+            scale: 1
+          }
+        };
+      }, {
+        label: `full-page segment ${index + 1}/${positions.length}`,
+        beforeAttempt: async ({ attempt }) => {
+          if (index > 0 && options.hideFixedElementsAfterFirstSegment) {
+            await hideFixedElements(client);
+          }
+          await scrollTo(client, y);
+          await sleep(Math.max(120, Math.min(700, options.stepDelay)));
+          if (options.dismissObstructionsBeforeSegment !== false) {
+            await dismissObstructions(client, { rounds: index === 0 ? 4 : 2 });
+          }
+          await sleep(160);
+          if (index === 0 && typeof options.beforeFirstSegmentCapture === "function") {
+            await options.beforeFirstSegmentCapture({ attempt, index, y, segmentHeight });
+          }
+          if (typeof options.beforeSegmentCapture === "function") {
+            await options.beforeSegmentCapture({ attempt, index, y, segmentHeight });
+          }
+          if (options.viewportRelativeCapture) {
+            await scrollTo(client, y);
+            await sleep(120);
+            const pageState = await getPageState(client);
+            captureY = normalizeSegmentCaptureY(pageState.y, height, segmentHeight);
+          } else {
+            await scrollTo(client, y);
+            captureY = y;
+          }
+        }
+      });
+    } catch (error) {
+      const lastAttempt = error.captureValidation?.attempts?.[error.captureValidation.attempts.length - 1] || null;
+      const blankAudit = lastAttempt?.blankAudit || null;
+      const trailingBlankTail = Boolean(
+        index === positions.length - 1 &&
+        error.captureBuffer &&
+        blankAudit &&
+        blankAudit.status === "blank" &&
+        Number(blankAudit.longestNearWhiteBandStart) > 0 &&
+        Number(blankAudit.longestNearWhiteBandEnd) >= segmentHeight - 1
+      );
+      if (trailingBlankTail) {
+        const image = decodePng(error.captureBuffer);
+        const visibleHeight = Math.max(0, Math.floor(Number(blankAudit.longestNearWhiteBandStart) || 0));
+        copySegment(image, rgba, width, height, y, visibleHeight);
+        finalHeight = Math.max(1, y + visibleHeight);
+        segmentValidations.push({
+          index,
+          plannedY: y,
+          y,
+          height: visibleHeight,
+          ok: true,
+          label: error.captureValidation.label,
+          maxAttempts: error.captureValidation.maxAttempts,
+          retries: error.captureValidation.retries,
+          attempts: error.captureValidation.attempts,
+          trimmedTrailingBlankTail: segmentHeight - visibleHeight
+        });
+        break;
       }
+      if (error.captureValidation) {
+        error.captureValidation.segment = {
+          index,
+          plannedY: y,
+          y: captureY,
+          height: segmentHeight
+        };
+      }
+      throw error;
+    }
+    segmentValidations.push({
+      index,
+      plannedY: y,
+      y: captureY,
+      height: segmentHeight,
+      ...screenshotCapture.captureValidation
     });
-    const image = decodePng(Buffer.from(screenshot.data, "base64"));
-    copySegment(image, rgba, width, height, y);
+    const image = decodePng(screenshotCapture.buffer);
+    copySegment(image, rgba, width, height, captureY);
   }
 
-  const buffer = encodePng(width, height, rgba);
+  const finalRgba = finalHeight === height
+    ? rgba
+    : rgba.subarray(0, width * finalHeight * 4);
+  const buffer = encodePng(width, finalHeight, finalRgba);
   await fs.writeFile(outputPath, buffer);
-  return buffer;
+  return {
+    buffer,
+    height: finalHeight,
+    captureValidation: {
+      ok: true,
+      label: "full-page screenshot",
+      maxAttempts: Math.max(...segmentValidations.map((item) => Number(item.maxAttempts) || 1), 1),
+      retries: segmentValidations.reduce((sum, item) => sum + (Number(item.retries) || 0), 0),
+      attempts: segmentValidations
+    }
+  };
 }
 
 async function captureFullPageClipScreenshot(client, outputPath, options) {
-  const screenshot = await client.send("Page.captureScreenshot", {
+  const screenshotCapture = await captureScreenshotWithValidation(client, {
     format: "png",
     fromSurface: true,
     captureBeyondViewport: true,
@@ -8260,8 +8520,8 @@ async function captureFullPageClipScreenshot(client, outputPath, options) {
       scale: 1
     }
   });
-  await fs.writeFile(outputPath, screenshot.data, "base64");
-  return Buffer.from(screenshot.data, "base64");
+  await fs.writeFile(outputPath, screenshotCapture.buffer);
+  return screenshotCapture;
 }
 
 async function dismissObstructions(client, options = {}) {
@@ -8460,19 +8720,23 @@ async function hideFixedElements(client) {
 
 function createSegmentPositions(height, segmentHeight) {
   const positions = [];
-  for (let y = 0; y < height; y += segmentHeight) {
+  const finalStart = Math.max(0, height - segmentHeight);
+  for (let y = 0; y < finalStart; y += segmentHeight) {
     positions.push(y);
   }
-  const finalStart = Math.max(0, height - segmentHeight);
   if (!positions.includes(finalStart)) {
     positions.push(finalStart);
   }
   return positions.sort((a, b) => a - b);
 }
 
-function copySegment(image, target, targetWidth, targetHeight, targetY) {
+function copySegment(image, target, targetWidth, targetHeight, targetY, maxRows = Number.POSITIVE_INFINITY) {
   const copyWidth = Math.min(image.width, targetWidth);
-  const copyHeight = Math.min(image.height, targetHeight - targetY);
+  const copyHeight = Math.min(
+    image.height,
+    targetHeight - targetY,
+    Number.isFinite(Number(maxRows)) ? Math.max(0, Math.floor(Number(maxRows))) : Number.POSITIVE_INFINITY
+  );
   for (let row = 0; row < copyHeight; row += 1) {
     const sourceStart = row * image.width * 4;
     const targetStart = (targetY + row) * targetWidth * 4;
@@ -8518,12 +8782,17 @@ async function prepareFullPage(client, options) {
 
   await scrollTo(client, state.height);
   await sleep(Math.max(stepDelay, 700));
+  const bottomState = await getPageState(client);
+  const reachableHeight = Math.max(
+    viewportHeightForState(bottomState),
+    Number(bottomState.y || 0) + viewportHeightForState(bottomState)
+  );
   await scrollTo(client, 0);
   await sleep(Math.max(stepDelay, 1200));
   await materializeFullPageContent(client);
   state = await getPageState(client);
 
-  return { ...state, scrolls };
+  return { ...state, scrolls, reachableHeight };
 }
 
 async function materializeFullPageContent(client) {
@@ -8654,6 +8923,10 @@ async function scrollTo(client, y) {
   await client.send("Runtime.evaluate", {
     expression: `window.scrollTo(0, ${Math.max(0, Math.floor(y))}); window.dispatchEvent(new Event("scroll"));`
   });
+}
+
+function viewportHeightForState(state = {}) {
+  return Math.max(0, Number(state.viewportHeight || 0));
 }
 
 async function waitForDebugPort(userDataDir, timeoutMs) {

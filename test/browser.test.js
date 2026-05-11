@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { imageQualityAuditForBuffer } from "../src/browser.js";
+import { blankImageAuditForBuffer, captureScreenshotWithValidation, imageQualityAuditForBuffer } from "../src/browser.js";
 import { encodePng } from "../src/png.js";
 
 test("flags flat images as low-detail quality warnings", () => {
@@ -21,6 +21,87 @@ test("passes high-contrast detailed images", () => {
   assert.ok(audit.contrast > 18);
 });
 
+test("flags near-white images as blank", () => {
+  const buffer = encodePng(200, 200, solidImage(200, 200, [255, 255, 255, 255]));
+  const audit = blankImageAuditForBuffer(buffer);
+
+  assert.equal(audit.status, "blank");
+  assert.equal(audit.fullImageNearWhite, true);
+});
+
+test("flags large near-white bands as blank", () => {
+  const buffer = encodePng(220, 240, whiteBandImage(220, 240, 48, 168));
+  const audit = blankImageAuditForBuffer(buffer);
+
+  assert.equal(audit.status, "blank");
+  assert.ok(audit.longestNearWhiteBand >= audit.minBlankBandHeight);
+});
+
+test("allows bright images with visible detail", () => {
+  const buffer = encodePng(220, 240, brightDetailedImage(220, 240));
+  const audit = blankImageAuditForBuffer(buffer);
+
+  assert.equal(audit.status, "ok");
+  assert.ok(audit.longestNearWhiteBand < audit.minBlankBandHeight);
+});
+
+test("retries blank screenshots until a valid image is captured", async () => {
+  let captures = 0;
+  const client = {
+    async send(method) {
+      assert.equal(method, "Page.captureScreenshot");
+      captures += 1;
+      const buffer = captures === 1
+        ? encodePng(200, 200, solidImage(200, 200, [255, 255, 255, 255]))
+        : encodePng(200, 200, checkerImage(200, 200));
+      return { data: buffer.toString("base64") };
+    }
+  };
+
+  const result = await captureScreenshotWithValidation(client, {
+    format: "png",
+    fromSurface: true
+  }, {
+    label: "retry-test"
+  });
+
+  assert.equal(captures, 2);
+  assert.equal(result.captureValidation.ok, true);
+  assert.equal(result.captureValidation.retries, 1);
+  assert.equal(result.captureValidation.attempts.length, 2);
+  assert.equal(result.captureValidation.attempts[0].ok, false);
+  assert.equal(result.captureValidation.attempts[1].ok, true);
+});
+
+test("fails after repeated blank screenshots", async () => {
+  let captures = 0;
+  const client = {
+    async send() {
+      captures += 1;
+      const buffer = encodePng(200, 200, solidImage(200, 200, [255, 255, 255, 255]));
+      return { data: buffer.toString("base64") };
+    }
+  };
+
+  await assert.rejects(
+    () => captureScreenshotWithValidation(client, {
+      format: "png",
+      fromSurface: true
+    }, {
+      label: "always-blank",
+      maxAttempts: 3,
+      retryDelayMs: 1
+    }),
+    (error) => {
+      assert.equal(error.code, "BLANK_SCREENSHOT");
+      assert.equal(error.captureValidation.ok, false);
+      assert.equal(error.captureValidation.attempts.length, 3);
+      return true;
+    }
+  );
+  assert.equal(captures, 3);
+});
+
 function solidImage(width, height, color) {
   const rgba = new Uint8Array(width * height * 4);
   for (let offset = 0; offset < rgba.length; offset += 4) {
@@ -35,6 +116,41 @@ function checkerImage(width, height) {
     for (let x = 0; x < width; x += 1) {
       const offset = (y * width + x) * 4;
       const value = (x + y) % 2 === 0 ? 0 : 255;
+      rgba[offset] = value;
+      rgba[offset + 1] = value;
+      rgba[offset + 2] = value;
+      rgba[offset + 3] = 255;
+    }
+  }
+  return rgba;
+}
+
+function whiteBandImage(width, height, startY, endY) {
+  const rgba = brightDetailedImage(width, height);
+  for (let y = Math.max(0, startY); y < Math.min(height, endY); y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      rgba[offset] = 255;
+      rgba[offset + 1] = 255;
+      rgba[offset + 2] = 255;
+      rgba[offset + 3] = 255;
+    }
+  }
+  return rgba;
+}
+
+function brightDetailedImage(width, height) {
+  const rgba = new Uint8Array(width * height * 4);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      let value = 252;
+      if (y % 18 === 0 || x % 24 === 0) {
+        value = 210;
+      }
+      if ((x + y) % 37 === 0) {
+        value = 96;
+      }
       rgba[offset] = value;
       rgba[offset + 1] = value;
       rgba[offset + 2] = value;

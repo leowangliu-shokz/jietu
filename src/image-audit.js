@@ -1,6 +1,12 @@
 import crypto from "node:crypto";
 import { decodePng } from "./png.js";
 
+const nearWhitePixelThreshold = 245;
+const nearWhiteRowRatioThreshold = 0.95;
+const nearWhiteCoverageThreshold = 0.98;
+const minBlankBandFloor = 80;
+const minBlankBandRatio = 0.22;
+
 export function hashBuffer(buffer) {
   return crypto.createHash("sha1").update(buffer).digest("hex");
 }
@@ -135,6 +141,112 @@ export function imageQualityAuditForBuffer(buffer) {
   }
 }
 
+export function blankImageAuditForBuffer(buffer) {
+  try {
+    const image = decodePng(buffer);
+    if (image.width < 3 || image.height < 3) {
+      return {
+        status: "blank",
+        fullImageNearWhite: false,
+        nearWhiteCoverage: 0,
+        longestNearWhiteBand: image.height,
+        longestNearWhiteBandStart: 0,
+        longestNearWhiteBandEnd: Math.max(0, image.height - 1),
+        minBlankBandHeight: Math.max(minBlankBandFloor, Math.floor(image.height * minBlankBandRatio)),
+        message: "Image is too small for blank-image validation."
+      };
+    }
+
+    const minBlankBandHeight = Math.max(minBlankBandFloor, Math.floor(image.height * minBlankBandRatio));
+    let nearWhitePixels = 0;
+    let longestNearWhiteBand = 0;
+    let longestNearWhiteBandStart = 0;
+    let longestNearWhiteBandEnd = -1;
+    let currentBand = 0;
+    let currentBandStart = 0;
+
+    for (let y = 0; y < image.height; y += 1) {
+      let nearWhiteInRow = 0;
+      for (let x = 0; x < image.width; x += 1) {
+        const offset = (y * image.width + x) * 4;
+        if (isNearWhitePixel(
+          image.rgba[offset],
+          image.rgba[offset + 1],
+          image.rgba[offset + 2],
+          image.rgba[offset + 3]
+        )) {
+          nearWhiteInRow += 1;
+        }
+      }
+
+      nearWhitePixels += nearWhiteInRow;
+      const rowNearWhiteRatio = nearWhiteInRow / image.width;
+      if (rowNearWhiteRatio >= nearWhiteRowRatioThreshold) {
+        if (currentBand === 0) {
+          currentBandStart = y;
+        }
+        currentBand += 1;
+        if (currentBand > longestNearWhiteBand) {
+          longestNearWhiteBand = currentBand;
+          longestNearWhiteBandStart = currentBandStart;
+          longestNearWhiteBandEnd = y;
+        }
+      } else {
+        currentBand = 0;
+      }
+    }
+
+    const nearWhiteCoverage = nearWhitePixels / Math.max(1, image.width * image.height);
+    const fullImageNearWhite = nearWhiteCoverage >= nearWhiteCoverageThreshold;
+    if (fullImageNearWhite) {
+      return {
+        status: "blank",
+        fullImageNearWhite,
+        nearWhiteCoverage: roundMetric(nearWhiteCoverage),
+        longestNearWhiteBand,
+        longestNearWhiteBandStart,
+        longestNearWhiteBandEnd,
+        minBlankBandHeight,
+        message: "Image is almost entirely near-white."
+      };
+    }
+
+    if (longestNearWhiteBand >= minBlankBandHeight) {
+      return {
+        status: "blank",
+        fullImageNearWhite,
+        nearWhiteCoverage: roundMetric(nearWhiteCoverage),
+        longestNearWhiteBand,
+        longestNearWhiteBandStart,
+        longestNearWhiteBandEnd,
+        minBlankBandHeight,
+        message: `Image contains a near-white blank band ${longestNearWhiteBand}px tall.`
+      };
+    }
+
+    return {
+      status: "ok",
+      fullImageNearWhite,
+      nearWhiteCoverage: roundMetric(nearWhiteCoverage),
+      longestNearWhiteBand,
+      longestNearWhiteBandStart,
+      longestNearWhiteBandEnd,
+      minBlankBandHeight
+    };
+  } catch (error) {
+    return {
+      status: "blank",
+      fullImageNearWhite: false,
+      nearWhiteCoverage: null,
+      longestNearWhiteBand: null,
+      longestNearWhiteBandStart: null,
+      longestNearWhiteBandEnd: null,
+      minBlankBandHeight: null,
+      message: `Image blank audit failed: ${error.message}`
+    };
+  }
+}
+
 export function nearestVisualHash(hash, previous) {
   return previous
     .map((item) => ({ ...item, distance: visualHashDistance(hash, item.hash) }))
@@ -154,6 +266,13 @@ function grayAt(image, x, y) {
 
 function roundMetric(value) {
   return Number.isFinite(value) ? Math.round(value * 100) / 100 : null;
+}
+
+function isNearWhitePixel(r, g, b, a) {
+  return a >= nearWhitePixelThreshold &&
+    r >= nearWhitePixelThreshold &&
+    g >= nearWhitePixelThreshold &&
+    b >= nearWhitePixelThreshold;
 }
 
 function visualHashDistance(a, b) {
