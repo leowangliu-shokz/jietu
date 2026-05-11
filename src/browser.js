@@ -288,12 +288,34 @@ async function driveCapture(client, url, outputPath, options) {
         beforeFirstSegmentCapture: guardShokzSearchOverlay
           ? () => ensureShokzSearchOverlayClosed(client, "before first segment screenshot capture")
           : null,
-        afterSegmentPositioned: () => freezePageMotion(client),
-        viewportRelativeCapture: false
+        afterSegmentPositioned: async ({ isLastSegment }) => {
+          if (cleanShokzKnownPopups) {
+            await dismissShokzKnownPopupsBeforeScreenshot(client, {
+              rounds: isLastSegment ? 4 : 2,
+              hideOnly: true
+            });
+          }
+          if (guardShokzSearchOverlay) {
+            await ensureShokzSearchOverlayClosed(client, "after stitched segment positioning");
+          }
+          await freezePageMotion(client);
+          await settlePositionedViewport(client, {
+            delayMs: isLastSegment ? 520 : 140,
+            frames: isLastSegment ? 4 : 2
+          });
+        }
       });
-      captureBuffer = stitchedCapture.buffer;
-      captureValidation = stitchedCapture.captureValidation;
-      captureHeight = stitchedCapture.height || clipHeight;
+      const finalizedCapture = viewport.mobile && cleanShokzKnownPopups
+        ? await patchShokzMobileFooterInStitchedCapture(client, url, stitchedCapture, {
+          outputPath,
+          viewportHeight: viewport.height,
+          waitAfterLoadMs: options.waitAfterLoadMs ?? 2500,
+          guardSearchOverlay: guardShokzSearchOverlay
+        })
+        : stitchedCapture;
+      captureBuffer = finalizedCapture.buffer;
+      captureValidation = finalizedCapture.captureValidation;
+      captureHeight = finalizedCapture.height || clipHeight;
     } finally {
       await restorePageMotion(client);
     }
@@ -7502,8 +7524,8 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
             /(privacy|accept all|necessary cookies|preferences|consent|personalized features)/i.test(value);
           if (cookie) return "cookie";
 
-          const email = /(don.?t miss out|dont miss out|subscribe now|enter your email|email address|newsletter|sign up|primary use case)/i.test(value) &&
-            /(email|subscribe|newsletter|great deals|primary use case)/i.test(value);
+          const email = /(don.?t miss out|dont miss out|subscribe now|enter your email|email address|newsletter|sign up|primary use case|get\\s*\\d+%\\s*off|\\b\\d+%\\s*off\\b)/i.test(value) &&
+            /(email|subscribe|newsletter|great deals|primary use case|get\\s*\\d+%\\s*off|\\b\\d+%\\s*off\\b)/i.test(value);
           if (email) return "email";
 
           const region = /(redirect|wrong site|ip address|your ip|detected.{0,80}(region|country|location)|shopping from|looks like.{0,80}(country|region|location)|stay on.{0,40}site|continue to.{0,80}(site|store|shokz))/i.test(value);
@@ -8555,16 +8577,27 @@ export async function captureScreenshotWithValidation(client, captureOptions, op
     const buffer = Buffer.from(screenshot.data, "base64");
     lastBuffer = buffer;
     const blankAudit = blankImageAuditForBuffer(buffer);
+    const acceptedBlankAudit = blankAudit.status !== "ok" &&
+      typeof options.acceptBlankAudit === "function" &&
+      options.acceptBlankAudit(blankAudit, {
+        attempt,
+        maxAttempts,
+        label,
+        attempts,
+        resolvedOptions,
+        buffer
+      });
     const attemptSummary = {
       attempt,
-      ok: blankAudit.status === "ok",
-      message: blankAudit.message || null,
+      ok: blankAudit.status === "ok" || acceptedBlankAudit,
+      message: blankAudit.status === "ok" || acceptedBlankAudit ? null : (blankAudit.message || null),
       target: captureAreaFromOptions(resolvedOptions),
-      blankAudit
+      blankAudit,
+      acceptedBlankAudit: Boolean(acceptedBlankAudit)
     };
     attempts.push(attemptSummary);
 
-    if (blankAudit.status === "ok") {
+    if (blankAudit.status === "ok" || acceptedBlankAudit) {
       return {
         buffer,
         captureValidation: {
@@ -8616,13 +8649,8 @@ async function captureStitchedScreenshot(client, outputPath, options) {
     let captureY = y;
     let screenshotCapture;
     try {
+      const isLastSegment = index === positions.length - 1;
       screenshotCapture = await captureScreenshotWithValidation(client, () => {
-        if (options.viewportRelativeCapture) {
-          return {
-            format: "png",
-            fromSurface: true
-          };
-        }
         return {
           format: "png",
           fromSurface: true,
@@ -8637,6 +8665,9 @@ async function captureStitchedScreenshot(client, outputPath, options) {
         };
       }, {
         label: `full-page segment ${index + 1}/${positions.length}`,
+        acceptBlankAudit: isLastSegment
+          ? (blankAudit) => isAcceptableTrailingSegmentBlankAudit(blankAudit, segmentHeight)
+          : null,
         beforeAttempt: async ({ attempt }) => {
           if (index > 0 && options.hideFixedElementsAfterFirstSegment) {
             await hideFixedElements(client);
@@ -8653,50 +8684,21 @@ async function captureStitchedScreenshot(client, outputPath, options) {
           if (typeof options.beforeSegmentCapture === "function") {
             await options.beforeSegmentCapture({ attempt, index, y, segmentHeight });
           }
-          if (options.viewportRelativeCapture) {
-            await scrollTo(client, y);
-            await sleep(120);
-            const pageState = await getPageState(client);
-            captureY = normalizeSegmentCaptureY(pageState.y, height, segmentHeight);
-          } else {
-            await scrollTo(client, y);
-            captureY = y;
-          }
+          await scrollTo(client, y);
+          captureY = y;
           if (typeof options.afterSegmentPositioned === "function") {
-            await options.afterSegmentPositioned({ attempt, index, y: captureY, plannedY: y, segmentHeight });
+            await options.afterSegmentPositioned({
+              attempt,
+              index,
+              y: captureY,
+              plannedY: y,
+              segmentHeight,
+              isLastSegment: index === positions.length - 1
+            });
           }
         }
       });
     } catch (error) {
-      const lastAttempt = error.captureValidation?.attempts?.[error.captureValidation.attempts.length - 1] || null;
-      const blankAudit = lastAttempt?.blankAudit || null;
-      const trailingBlankTail = Boolean(
-        index === positions.length - 1 &&
-        error.captureBuffer &&
-        blankAudit &&
-        blankAudit.status === "blank" &&
-        Number(blankAudit.longestNearWhiteBandStart) > 0 &&
-        Number(blankAudit.longestNearWhiteBandEnd) >= segmentHeight - 1
-      );
-      if (trailingBlankTail) {
-        const image = decodePng(error.captureBuffer);
-        const visibleHeight = Math.max(0, Math.floor(Number(blankAudit.longestNearWhiteBandStart) || 0));
-        copySegment(image, rgba, width, height, y, visibleHeight);
-        finalHeight = Math.max(1, y + visibleHeight);
-        segmentValidations.push({
-          index,
-          plannedY: y,
-          y,
-          height: visibleHeight,
-          ok: true,
-          label: error.captureValidation.label,
-          maxAttempts: error.captureValidation.maxAttempts,
-          retries: error.captureValidation.retries,
-          attempts: error.captureValidation.attempts,
-          trimmedTrailingBlankTail: segmentHeight - visibleHeight
-        });
-        break;
-      }
       if (error.captureValidation) {
         error.captureValidation.segment = {
           index,
@@ -8736,10 +8738,19 @@ async function captureStitchedScreenshot(client, outputPath, options) {
   };
 }
 
+function isAcceptableTrailingSegmentBlankAudit(blankAudit, segmentHeight) {
+  if (!blankAudit || blankAudit.status !== "blank" || blankAudit.fullImageNearWhite) {
+    return false;
+  }
+  return Number(blankAudit.longestNearWhiteBandStart) > 0 &&
+    Number(blankAudit.longestNearWhiteBandEnd) >= Math.max(0, segmentHeight - 1);
+}
+
 export const __testOnly = {
   captureStitchedScreenshot,
   freezePageMotion,
-  restorePageMotion
+  restorePageMotion,
+  isAcceptableTrailingSegmentBlankAudit
 };
 
 async function captureFullPageClipScreenshot(client, outputPath, options) {
@@ -8935,14 +8946,30 @@ async function hideFixedElements(client) {
   await client.send("Runtime.evaluate", {
     expression: `(() => {
       let hidden = 0;
+      const viewportWidth = Math.max(1, window.innerWidth || 0);
+      const viewportHeight = Math.max(1, window.innerHeight || 0);
       for (const element of document.querySelectorAll("body *")) {
         if (element.dataset.pageShotHidden === "true") continue;
+        if (element.closest("footer, [class*='footer'], [id*='footer']")) continue;
         const style = getComputedStyle(element);
+        const position = style.position;
         const zIndex = Number.parseInt(style.zIndex, 10);
-        if (style.position !== "fixed" && style.position !== "sticky" && !(Number.isFinite(zIndex) && zIndex >= 1000)) continue;
+        const hasHighZIndex = Number.isFinite(zIndex) && zIndex >= 1000;
+        if (position !== "fixed" && position !== "sticky" && !hasHighZIndex) continue;
         const rect = element.getBoundingClientRect();
         const area = rect.width * rect.height;
         if (area < 400) continue;
+        const intersectsViewport = rect.bottom > 0 && rect.right > 0 && rect.top < viewportHeight && rect.left < viewportWidth;
+        if (!intersectsViewport) continue;
+        const anchoredToViewport = position === "fixed" ||
+          position === "sticky" ||
+          (hasHighZIndex && (
+            position === "absolute" ||
+            rect.top <= viewportHeight * 0.2 ||
+            rect.bottom >= viewportHeight * 0.8 ||
+            rect.width >= viewportWidth * 0.65
+          ));
+        if (!anchoredToViewport) continue;
         element.dataset.pageShotHidden = "true";
         element.style.setProperty("visibility", "hidden", "important");
         hidden += 1;
@@ -9015,9 +9042,10 @@ async function prepareFullPage(client, options) {
     }
   }
 
-  await scrollTo(client, state.height);
-  await sleep(Math.max(stepDelay, 700));
-  const bottomState = await getPageState(client);
+  const bottomState = await settleFullPageBottom(client, state, {
+    stepDelay,
+    maxHeight
+  });
   const reachableHeight = Math.max(
     viewportHeightForState(bottomState),
     Number(bottomState.y || 0) + viewportHeightForState(bottomState)
@@ -9027,7 +9055,305 @@ async function prepareFullPage(client, options) {
   await materializeFullPageContent(client);
   state = await getPageState(client);
 
-  return { ...state, scrolls, reachableHeight };
+  return {
+    ...state,
+    scrolls,
+    reachableHeight: Math.max(reachableHeight, Number(state.height || 0))
+  };
+}
+
+async function settleFullPageBottom(client, state, options = {}) {
+  const stepDelay = Number(options.stepDelay) || 350;
+  const maxHeight = Math.max(1000, Number(options.maxHeight) || 16000);
+  let currentState = state && typeof state === "object" ? state : await getPageState(client);
+  let bestState = currentState;
+  let stableRounds = 0;
+  let lastHeight = Math.max(0, Number(currentState.height || 0));
+  const maxRounds = 6;
+  const settleDelay = Math.max(stepDelay, 900);
+  const postMaterializeDelay = Math.max(450, Math.min(1600, stepDelay + 550));
+
+  for (let round = 0; round < maxRounds && stableRounds < 2; round += 1) {
+    const targetY = Math.min(
+      maxHeight,
+      Math.max(
+        0,
+        Number(currentState.height || 0),
+        Number(currentState.y || 0)
+      )
+    );
+    await scrollTo(client, targetY);
+    await sleep(settleDelay);
+    await materializeFullPageContent(client);
+    await sleep(postMaterializeDelay);
+    currentState = await getPageState(client);
+    bestState = currentState;
+    const currentHeight = Math.max(0, Number(currentState.height || 0));
+    const incompleteImages = Math.max(0, Number(currentState.incompleteImages || 0));
+    if (currentHeight <= lastHeight && incompleteImages === 0) {
+      stableRounds += 1;
+    } else {
+      stableRounds = 0;
+    }
+    lastHeight = Math.max(lastHeight, currentHeight);
+  }
+
+  return bestState;
+}
+
+async function settlePositionedViewport(client, options = {}) {
+  const frames = Math.max(1, Math.min(6, Number(options.frames) || 2));
+  const delayMs = Math.max(0, Math.min(2000, Number(options.delayMs) || 0));
+  await client.send("Runtime.evaluate", {
+    expression: `(() => new Promise((resolve) => {
+      let remainingFrames = ${frames};
+      const finish = () => setTimeout(resolve, ${delayMs});
+      const tick = () => {
+        remainingFrames -= 1;
+        if (remainingFrames <= 0) {
+          finish();
+          return;
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    }))()`,
+    awaitPromise: true,
+    returnByValue: true
+  }).catch(() => sleep(delayMs));
+}
+
+async function patchShokzMobileFooterInStitchedCapture(client, url, stitchedCapture, options = {}) {
+  if (!stitchedCapture?.buffer || !Number.isFinite(Number(stitchedCapture.height))) {
+    return stitchedCapture;
+  }
+  const viewportHeight = Math.max(1, Math.floor(Number(options.viewportHeight) || 0));
+  const finalHeight = Math.max(1, Math.floor(Number(stitchedCapture.height) || 0));
+  const finalStart = Math.max(0, finalHeight - viewportHeight);
+  if (viewportHeight < 200 || finalStart <= 0) {
+    return stitchedCapture;
+  }
+
+  await navigateForFooterPatch(client, url, {
+    waitAfterLoadMs: options.waitAfterLoadMs,
+    guardSearchOverlay: options.guardSearchOverlay
+  });
+  await positionFooterPatchViewport(client, finalStart, {
+    guardSearchOverlay: options.guardSearchOverlay
+  });
+
+  const footerCapture = await captureScreenshotWithValidation(client, {
+    format: "png",
+    fromSurface: true
+  }, {
+    label: "shokz footer viewport patch",
+    maxAttempts: 2,
+    acceptBlankAudit: (blankAudit) => Boolean(blankAudit && !blankAudit.fullImageNearWhite),
+    beforeAttempt: async ({ attempt }) => {
+      if (attempt > 1) {
+        await navigateForFooterPatch(client, url, {
+          waitAfterLoadMs: options.waitAfterLoadMs,
+          guardSearchOverlay: options.guardSearchOverlay
+        });
+      }
+      await positionFooterPatchViewport(client, finalStart, {
+        guardSearchOverlay: options.guardSearchOverlay,
+        delayMs: attempt > 1 ? 1100 : 760
+      });
+    }
+  });
+  const footerInfo = await readShokzFooterViewportInfo(client);
+  const footerTop = resolveShokzFooterPatchTop(footerInfo, viewportHeight);
+
+  const buffer = patchViewportRowsIntoStitchedCapture(
+    stitchedCapture.buffer,
+    footerCapture.buffer,
+    {
+      sourceTop: footerTop,
+      targetTop: finalStart + footerTop
+    }
+  );
+  if (!buffer) {
+    return stitchedCapture;
+  }
+  if (options.outputPath) {
+    await fs.writeFile(options.outputPath, buffer);
+  }
+  return {
+    ...stitchedCapture,
+    buffer
+  };
+}
+
+function patchViewportRowsIntoStitchedCapture(baseBuffer, viewportBuffer, options = {}) {
+  const baseImage = decodePng(baseBuffer);
+  const viewportImage = decodePng(viewportBuffer);
+  const sourceY = Math.max(0, Math.min(viewportImage.height - 1, Math.floor(Number(options.sourceTop) || 0)));
+  const targetY = Math.max(0, Math.min(baseImage.height - 1, Math.floor(Number(options.targetTop) || 0)));
+  const rows = Math.min(viewportImage.height - sourceY, baseImage.height - targetY);
+  if (rows <= 0) {
+    return null;
+  }
+  const rgba = new Uint8Array(baseImage.rgba);
+  const copyWidth = Math.min(baseImage.width, viewportImage.width);
+  for (let row = 0; row < rows; row += 1) {
+    const sourceStart = ((sourceY + row) * viewportImage.width) * 4;
+    const targetStart = ((targetY + row) * baseImage.width) * 4;
+    rgba.set(
+      viewportImage.rgba.subarray(sourceStart, sourceStart + copyWidth * 4),
+      targetStart
+    );
+  }
+  return encodePng(baseImage.width, baseImage.height, rgba);
+}
+
+function resolveShokzFooterPatchTop(footerInfo, viewportHeight) {
+  const safeViewportHeight = Math.max(1, Math.floor(Number(viewportHeight) || 0));
+  const fallbackTop = Math.max(120, Math.min(safeViewportHeight - 220, Math.round(safeViewportHeight * 0.2)));
+  if (!footerInfo?.ok) {
+    return fallbackTop;
+  }
+  return Math.max(80, Math.min(safeViewportHeight - 120, Math.floor(Number(footerInfo.top) || fallbackTop)));
+}
+
+async function navigateForFooterPatch(client, url, options = {}) {
+  const loadEvent = client.waitFor("Page.loadEventFired", defaultTimeoutMs).catch(() => null);
+  await client.send("Page.navigate", { url });
+  await loadEvent;
+  await sleep(options.waitAfterLoadMs ?? 2500);
+  await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 3 });
+  if (options.guardSearchOverlay) {
+    await ensureShokzSearchOverlayClosed(client, "after footer patch navigation");
+  }
+  await materializeFullPageContent(client);
+  await sleep(420);
+}
+
+async function positionFooterPatchViewport(client, finalStart, options = {}) {
+  await scrollTo(client, finalStart);
+  await settlePositionedViewport(client, {
+    delayMs: Number(options.delayMs) > 0 ? Number(options.delayMs) : 760,
+    frames: 4
+  });
+  await dismissCookieControlsInViewport(client);
+  if (options.guardSearchOverlay) {
+    await ensureShokzSearchOverlayClosed(client, "before footer patch capture");
+  }
+  await hideFixedElements(client);
+  await freezePageMotion(client);
+  await settlePositionedViewport(client, { delayMs: 380, frames: 2 });
+}
+
+async function dismissCookieControlsInViewport(client) {
+  for (let round = 0; round < 3; round += 1) {
+    const result = await client.send("Runtime.evaluate", {
+      expression: `(() => {
+        const visible = (element) => {
+          if (!element || !(element instanceof Element)) return false;
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 0 &&
+            rect.height > 0 &&
+            rect.bottom > 0 &&
+            rect.right > 0 &&
+            rect.left < window.innerWidth &&
+            rect.top < window.innerHeight &&
+            style.visibility !== "hidden" &&
+            style.display !== "none" &&
+            Number(style.opacity || 1) > 0.01;
+        };
+        const textOf = (element) => [
+          element.innerText,
+          element.textContent,
+          element.getAttribute?.("aria-label"),
+          element.getAttribute?.("title"),
+          element.value
+        ].filter(Boolean).join(" ").replace(/\\s+/g, " ").trim();
+        let clicked = 0;
+        const controls = Array.from(document.querySelectorAll("button, [role='button'], input[type='button'], input[type='submit']"));
+        for (const control of controls) {
+          if (!visible(control)) continue;
+          const text = textOf(control).slice(0, 160);
+          if (!/accept all|use necessary cookies only|preferences/i.test(text)) continue;
+          try {
+            if (typeof control.click === "function") {
+              control.click();
+            } else {
+              control.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+            }
+            clicked += 1;
+          } catch {}
+        }
+        return clicked;
+      })()`,
+      returnByValue: true
+    }).catch(() => null);
+    const clicked = Number(result?.result?.value || 0);
+    await sleep(clicked ? 420 : 180);
+    if (!clicked) {
+      break;
+    }
+  }
+}
+
+async function readShokzFooterViewportInfo(client) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          rect.bottom > 0 &&
+          rect.right > 0 &&
+          rect.left < window.innerWidth &&
+          rect.top < window.innerHeight &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const textOf = (element) => (element?.innerText || element?.textContent || "").replace(/\\s+/g, " ").trim();
+      const candidates = Array.from(document.querySelectorAll(
+        ".shopify-section-group-footer-group, .section-footer-new, footer, [class*='footer'], [id*='footer']"
+      ))
+        .filter(visible)
+        .map((element) => {
+          const rect = element.getBoundingClientRect();
+          const text = textOf(element);
+          return {
+            top: rect.top,
+            bottom: rect.bottom,
+            height: rect.height,
+            text,
+            score:
+              Number(/USA:|About Us|Support|Policy|United States/i.test(text)) * 12 +
+              Number(/©\\s*20\\d\\d\\s*Shokz/i.test(text)) * 16 +
+              Math.min(rect.height / 120, 8)
+          };
+        })
+        .filter((item) =>
+          item.top >= 80 &&
+          item.top < window.innerHeight &&
+          item.height >= 160 &&
+          /USA:|About Us|Support|Policy|United States|©\\s*20\\d\\d\\s*Shokz/i.test(item.text)
+        )
+        .sort((a, b) => b.score - a.score || a.top - b.top);
+      const best = candidates[0];
+      if (!best) {
+        return { ok: false };
+      }
+      return {
+        ok: true,
+        top: best.top,
+        bottom: best.bottom,
+        height: best.height,
+        text: best.text.slice(0, 240)
+      };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
+  return result?.result?.value || { ok: false };
 }
 
 async function materializeFullPageContent(client) {

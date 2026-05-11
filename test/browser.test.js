@@ -6,7 +6,12 @@ import test from "node:test";
 import { __testOnly, blankImageAuditForBuffer, captureScreenshotWithValidation, imageQualityAuditForBuffer } from "../src/browser.js";
 import { encodePng } from "../src/png.js";
 
-const { captureStitchedScreenshot, freezePageMotion, restorePageMotion } = __testOnly;
+const {
+  captureStitchedScreenshot,
+  freezePageMotion,
+  restorePageMotion,
+  isAcceptableTrailingSegmentBlankAudit
+} = __testOnly;
 
 test("flags flat images as low-detail quality warnings", () => {
   const buffer = encodePng(24, 24, solidImage(24, 24, [128, 128, 128, 255]));
@@ -174,6 +179,62 @@ test("stitched capture runs the post-position hook before capture", async () => 
   assert.deepEqual(events, ["scroll:0", "before", "scroll:0", "after", "capture"]);
 });
 
+test("accepts a trailing near-white band on the last stitched segment", () => {
+  assert.equal(
+    isAcceptableTrailingSegmentBlankAudit({
+      status: "blank",
+      fullImageNearWhite: false,
+      longestNearWhiteBandStart: 21,
+      longestNearWhiteBandEnd: 99
+    }, 100),
+    true
+  );
+  assert.equal(
+    isAcceptableTrailingSegmentBlankAudit({
+      status: "blank",
+      fullImageNearWhite: true,
+      longestNearWhiteBandStart: 0,
+      longestNearWhiteBandEnd: 99
+    }, 100),
+    false
+  );
+});
+
+test("stitched capture keeps the full last segment when only the tail is near-white", async () => {
+  const firstSegment = encodePng(100, 100, checkerImage(100, 100));
+  const lastSegment = encodePng(100, 100, trailingWhiteBandImage(100, 100, 18));
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-browser-test-"));
+  const outputPath = path.join(tempDir, "stitched-tail.png");
+  const client = {
+    async send(method, params = {}) {
+      if (method === "Runtime.evaluate") {
+        return { result: { value: { ok: true } } };
+      }
+      if (method === "Page.captureScreenshot") {
+        const clipY = Number(params?.clip?.y || 0);
+        return { data: (clipY >= 100 ? lastSegment : firstSegment).toString("base64") };
+      }
+      throw new Error(`Unexpected method: ${method}`);
+    }
+  };
+
+  try {
+    const result = await captureStitchedScreenshot(client, outputPath, {
+      width: 100,
+      height: 200,
+      viewportHeight: 100,
+      stepDelay: 0,
+      dismissObstructionsBeforeSegment: false,
+      hideFixedElementsAfterFirstSegment: false,
+      viewportRelativeCapture: false
+    });
+    assert.equal(result.height, 200);
+    assert.equal(result.captureValidation.ok, true);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 function solidImage(width, height, color) {
   const rgba = new Uint8Array(width * height * 4);
   for (let offset = 0; offset < rgba.length; offset += 4) {
@@ -209,6 +270,10 @@ function whiteBandImage(width, height, startY, endY) {
     }
   }
   return rgba;
+}
+
+function trailingWhiteBandImage(width, height, preservedRows) {
+  return whiteBandImage(width, height, Math.max(0, preservedRows), height);
 }
 
 function brightDetailedImage(width, height) {
