@@ -1,7 +1,12 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { blankImageAuditForBuffer, captureScreenshotWithValidation, imageQualityAuditForBuffer } from "../src/browser.js";
+import { __testOnly, blankImageAuditForBuffer, captureScreenshotWithValidation, imageQualityAuditForBuffer } from "../src/browser.js";
 import { encodePng } from "../src/png.js";
+
+const { captureStitchedScreenshot, freezePageMotion, restorePageMotion } = __testOnly;
 
 test("flags flat images as low-detail quality warnings", () => {
   const buffer = encodePng(24, 24, solidImage(24, 24, [128, 128, 128, 255]));
@@ -100,6 +105,73 @@ test("fails after repeated blank screenshots", async () => {
     }
   );
   assert.equal(captures, 3);
+});
+
+test("freezes and restores page motion with runtime evaluation", async () => {
+  const expressions = [];
+  const client = {
+    async send(method, params = {}) {
+      assert.equal(method, "Runtime.evaluate");
+      expressions.push(String(params.expression || ""));
+      return { result: { value: { ok: true } } };
+    }
+  };
+
+  await freezePageMotion(client);
+  await restorePageMotion(client);
+
+  assert.equal(expressions.length, 2);
+  assert.match(expressions[0], /__pageShotMotionFreeze/);
+  assert.match(expressions[0], /document\.getAnimations/);
+  assert.match(expressions[0], /autoplay\.stop/);
+  assert.match(expressions[1], /autoplay\.start/);
+  assert.match(expressions[1], /style\.remove/);
+});
+
+test("stitched capture runs the post-position hook before capture", async () => {
+  const events = [];
+  const screenshotBuffer = encodePng(48, 48, checkerImage(48, 48));
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-browser-test-"));
+  const outputPath = path.join(tempDir, "stitched.png");
+  const client = {
+    async send(method, params = {}) {
+      if (method === "Runtime.evaluate") {
+        const expression = String(params.expression || "");
+        const scrollMatch = expression.match(/window\.scrollTo\(0, (\d+)\)/);
+        if (scrollMatch) {
+          events.push(`scroll:${scrollMatch[1]}`);
+        }
+        return { result: { value: { ok: true } } };
+      }
+      if (method === "Page.captureScreenshot") {
+        events.push("capture");
+        return { data: screenshotBuffer.toString("base64") };
+      }
+      throw new Error(`Unexpected method: ${method}`);
+    }
+  };
+
+  try {
+    await captureStitchedScreenshot(client, outputPath, {
+      width: 48,
+      height: 48,
+      viewportHeight: 48,
+      stepDelay: 0,
+      dismissObstructionsBeforeSegment: false,
+      hideFixedElementsAfterFirstSegment: false,
+      beforeSegmentCapture: async () => {
+        events.push("before");
+      },
+      afterSegmentPositioned: async () => {
+        events.push("after");
+      },
+      viewportRelativeCapture: false
+    });
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+
+  assert.deepEqual(events, ["scroll:0", "before", "scroll:0", "after", "capture"]);
 });
 
 function solidImage(width, height, color) {

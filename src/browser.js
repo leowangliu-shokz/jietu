@@ -17,6 +17,8 @@ import {
 export { blankImageAuditForBuffer, imageQualityAuditForBuffer } from "./image-audit.js";
 
 const defaultTimeoutMs = 45000;
+const pageShotMotionFreezeStateKey = "__pageShotMotionFreeze";
+const pageShotMotionFreezeStyleId = "__pageShotMotionFreezeStyle";
 
 export async function capturePage(url, outputPath, options = {}) {
   const browserPath = await findBrowser();
@@ -273,22 +275,28 @@ async function driveCapture(client, url, outputPath, options) {
           : "before stitched segment screenshot capture"
       });
     };
-    const stitchedCapture = await captureStitchedScreenshot(client, outputPath, {
-      width: clipWidth,
-      height: clipHeight,
-      viewportHeight: viewport.height,
-      stepDelay: options.scrollStepMs ?? 350,
-      dismissObstructionsBeforeSegment: !cleanShokzKnownPopups,
-      hideFixedElementsAfterFirstSegment: options.hideFixedElementsAfterFirstSegment !== false,
-      beforeSegmentCapture,
-      beforeFirstSegmentCapture: guardShokzSearchOverlay
-        ? () => ensureShokzSearchOverlayClosed(client, "before first segment screenshot capture")
-        : null,
-      viewportRelativeCapture: false
-    });
-    captureBuffer = stitchedCapture.buffer;
-    captureValidation = stitchedCapture.captureValidation;
-    captureHeight = stitchedCapture.height || clipHeight;
+    await freezePageMotion(client);
+    try {
+      const stitchedCapture = await captureStitchedScreenshot(client, outputPath, {
+        width: clipWidth,
+        height: clipHeight,
+        viewportHeight: viewport.height,
+        stepDelay: options.scrollStepMs ?? 350,
+        dismissObstructionsBeforeSegment: !cleanShokzKnownPopups,
+        hideFixedElementsAfterFirstSegment: options.hideFixedElementsAfterFirstSegment !== false,
+        beforeSegmentCapture,
+        beforeFirstSegmentCapture: guardShokzSearchOverlay
+          ? () => ensureShokzSearchOverlayClosed(client, "before first segment screenshot capture")
+          : null,
+        afterSegmentPositioned: () => freezePageMotion(client),
+        viewportRelativeCapture: false
+      });
+      captureBuffer = stitchedCapture.buffer;
+      captureValidation = stitchedCapture.captureValidation;
+      captureHeight = stitchedCapture.height || clipHeight;
+    } finally {
+      await restorePageMotion(client);
+    }
   } else {
     if (options.captureMode === "shokz-products-nav") {
       await prepareShokzNavigationMainScreenshot(client, viewport);
@@ -870,6 +878,224 @@ async function prepareForScreenshotCapture(client, options = {}) {
   if (options.guardSearchOverlay) {
     await ensureShokzSearchOverlayClosed(client, options.stage || "before screenshot capture");
   }
+}
+
+async function freezePageMotion(client) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const stateKey = ${JSON.stringify(pageShotMotionFreezeStateKey)};
+      const styleId = ${JSON.stringify(pageShotMotionFreezeStyleId)};
+      const styleText = [
+        "html, body { scroll-behavior: auto !important; }",
+        "*, *::before, *::after {",
+        "  animation-play-state: paused !important;",
+        "  transition-duration: 0s !important;",
+        "  transition-delay: 0s !important;",
+        "  transition-property: none !important;",
+        "  scroll-behavior: auto !important;",
+        "}"
+      ].join("\\n");
+      const state = window[stateKey] && typeof window[stateKey] === "object"
+        ? window[stateKey]
+        : {
+          animations: [],
+          videos: [],
+          swipers: [],
+          slicks: []
+        };
+
+      let style = document.getElementById(styleId);
+      if (!(style instanceof HTMLStyleElement)) {
+        style = document.createElement("style");
+        style.id = styleId;
+        style.textContent = styleText;
+        (document.head || document.documentElement).appendChild(style);
+      } else if (style.textContent !== styleText) {
+        style.textContent = styleText;
+      }
+
+      const animations = typeof document.getAnimations === "function"
+        ? (() => {
+          try {
+            return document.getAnimations({ subtree: true });
+          } catch {
+            return document.getAnimations();
+          }
+        })()
+        : [];
+      const trackedAnimations = Array.isArray(state.animations) ? state.animations : [];
+      const seenAnimations = new Set(trackedAnimations.map((entry) => entry?.animation).filter(Boolean));
+      let pausedAnimations = 0;
+      for (const animation of animations) {
+        if (!animation || seenAnimations.has(animation)) continue;
+        trackedAnimations.push({
+          animation,
+          shouldResume: animation.playState !== "paused"
+        });
+        seenAnimations.add(animation);
+      }
+      for (const entry of trackedAnimations) {
+        if (!entry?.animation || typeof entry.animation.pause !== "function") continue;
+        try {
+          entry.animation.pause();
+          pausedAnimations += 1;
+        } catch {}
+      }
+
+      const trackedVideos = Array.isArray(state.videos) ? state.videos : [];
+      const seenVideos = new Set(trackedVideos.map((entry) => entry?.element).filter(Boolean));
+      let pausedVideos = 0;
+      for (const video of document.querySelectorAll("video")) {
+        if (!(video instanceof HTMLMediaElement)) continue;
+        if (!seenVideos.has(video)) {
+          trackedVideos.push({
+            element: video,
+            shouldResume: !video.paused && !video.ended
+          });
+          seenVideos.add(video);
+        }
+        if (!video.paused && typeof video.pause === "function") {
+          try {
+            video.pause();
+            pausedVideos += 1;
+          } catch {}
+        }
+      }
+
+      const trackedSwipers = Array.isArray(state.swipers) ? state.swipers : [];
+      const seenSwipers = new Set(trackedSwipers.map((entry) => entry?.swiper).filter(Boolean));
+      let stoppedSwipers = 0;
+      for (const element of document.querySelectorAll(".swiper, [class*='swiper']")) {
+        const swiper = element?.swiper;
+        if (!swiper || seenSwipers.has(swiper)) continue;
+        trackedSwipers.push({
+          swiper,
+          shouldResume: Boolean(swiper.autoplay?.running)
+        });
+        seenSwipers.add(swiper);
+      }
+      for (const entry of trackedSwipers) {
+        if (!entry?.swiper?.autoplay?.stop) continue;
+        try {
+          entry.swiper.autoplay.stop();
+          stoppedSwipers += 1;
+        } catch {}
+      }
+
+      const trackedSlicks = Array.isArray(state.slicks) ? state.slicks : [];
+      const seenSlicks = new Set(trackedSlicks.map((entry) => entry?.instance).filter(Boolean));
+      let pausedSlicks = 0;
+      for (const element of document.querySelectorAll(".slick-slider")) {
+        const instance = element?.slick;
+        if (!instance || seenSlicks.has(instance)) continue;
+        trackedSlicks.push({
+          instance,
+          shouldResume: Boolean(instance.autoPlayTimer || instance.options?.autoplay)
+        });
+        seenSlicks.add(instance);
+      }
+      for (const entry of trackedSlicks) {
+        const instance = entry?.instance;
+        if (!instance || typeof instance.slickPause !== "function") continue;
+        try {
+          instance.slickPause();
+          pausedSlicks += 1;
+        } catch {}
+      }
+
+      state.animations = trackedAnimations;
+      state.videos = trackedVideos;
+      state.swipers = trackedSwipers;
+      state.slicks = trackedSlicks;
+      state.active = true;
+      window[stateKey] = state;
+      return {
+        ok: true,
+        pausedAnimations,
+        trackedAnimations: trackedAnimations.length,
+        pausedVideos,
+        trackedVideos: trackedVideos.length,
+        stoppedSwipers,
+        trackedSwipers: trackedSwipers.length,
+        pausedSlicks,
+        trackedSlicks: trackedSlicks.length
+      };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
+  return result?.result?.value || { ok: false };
+}
+
+async function restorePageMotion(client) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const stateKey = ${JSON.stringify(pageShotMotionFreezeStateKey)};
+      const styleId = ${JSON.stringify(pageShotMotionFreezeStyleId)};
+      const state = window[stateKey];
+      if (!state || typeof state !== "object") {
+        const style = document.getElementById(styleId);
+        if (style) {
+          style.remove();
+        }
+        return { ok: true, restored: false };
+      }
+
+      let resumedAnimations = 0;
+      for (const entry of Array.isArray(state.animations) ? state.animations : []) {
+        if (!entry?.shouldResume || !entry.animation || typeof entry.animation.play !== "function") continue;
+        try {
+          entry.animation.play();
+          resumedAnimations += 1;
+        } catch {}
+      }
+
+      let resumedVideos = 0;
+      for (const entry of Array.isArray(state.videos) ? state.videos : []) {
+        if (!entry?.shouldResume || !entry.element || typeof entry.element.play !== "function") continue;
+        try {
+          const maybePromise = entry.element.play();
+          if (maybePromise && typeof maybePromise.catch === "function") {
+            maybePromise.catch(() => null);
+          }
+          resumedVideos += 1;
+        } catch {}
+      }
+
+      let resumedSwipers = 0;
+      for (const entry of Array.isArray(state.swipers) ? state.swipers : []) {
+        if (!entry?.shouldResume || !entry.swiper?.autoplay?.start) continue;
+        try {
+          entry.swiper.autoplay.start();
+          resumedSwipers += 1;
+        } catch {}
+      }
+
+      let resumedSlicks = 0;
+      for (const entry of Array.isArray(state.slicks) ? state.slicks : []) {
+        if (!entry?.shouldResume || !entry.instance || typeof entry.instance.slickPlay !== "function") continue;
+        try {
+          entry.instance.slickPlay();
+          resumedSlicks += 1;
+        } catch {}
+      }
+
+      const style = document.getElementById(styleId);
+      if (style) {
+        style.remove();
+      }
+      delete window[stateKey];
+      return {
+        ok: true,
+        restored: true,
+        resumedAnimations,
+        resumedVideos,
+        resumedSwipers,
+        resumedSlicks
+      };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
+  return result?.result?.value || { ok: false };
 }
 
 function formatKnownPopupRemaining(cleanup) {
@@ -8436,6 +8662,9 @@ async function captureStitchedScreenshot(client, outputPath, options) {
             await scrollTo(client, y);
             captureY = y;
           }
+          if (typeof options.afterSegmentPositioned === "function") {
+            await options.afterSegmentPositioned({ attempt, index, y: captureY, plannedY: y, segmentHeight });
+          }
         }
       });
     } catch (error) {
@@ -8506,6 +8735,12 @@ async function captureStitchedScreenshot(client, outputPath, options) {
     }
   };
 }
+
+export const __testOnly = {
+  captureStitchedScreenshot,
+  freezePageMotion,
+  restorePageMotion
+};
 
 async function captureFullPageClipScreenshot(client, outputPath, options) {
   const screenshotCapture = await captureScreenshotWithValidation(client, {
