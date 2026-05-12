@@ -55,8 +55,9 @@ const elements = {
 };
 
 const homeBannerWindowMs = 5 * 60 * 1000;
-const relatedSectionOrder = ["banner", "navigation", "product-showcase", "scene-explore", "athletes", "media", "voices"];
+const relatedSectionOrder = ["topbar", "banner", "navigation", "product-showcase", "scene-explore", "athletes", "media", "voices"];
 const relatedSectionTitles = {
+  topbar: "Topbar 轮播图",
   navigation: "导航栏分级截图",
   banner: "Banner 轮播图",
   "product-showcase": "产品橱窗轮播图",

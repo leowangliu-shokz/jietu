@@ -8,10 +8,29 @@ export const shokzProductsNavigationCategoryLabels = [
 
 export const shokzHomeRelatedSectionDefinitions = [
   {
+    key: "topbar",
+    sectionLabel: "Topbar",
+    title: "Topbar 轮播图",
+    mode: "carousel",
+    anchors: [
+      "Fast & Free Shipping",
+      "45-Day Price Match",
+      "Free 45-Day Returns",
+      "2-Year Warranty"
+    ],
+    labelPrefix: "Topbar",
+    expectedPages: 4,
+    mobileOnly: true,
+    rootSelector: ".announcement",
+    minRootHeight: 24,
+    maxRootHeight: 120
+  },
+  {
     key: "product-showcase",
     sectionLabel: "产品橱窗",
     title: "产品橱窗轮播图",
     mode: "tabs-carousel",
+    rootSelector: ".section-home-product-collection",
     anchors: ["Best Selling", "Sports Headphones", "Workout & Lifestyle Earbuds", "Communication Headsets"],
     tabs: ["Best Selling", "Sports Headphones", "Workout & Lifestyle Earbuds", "Communication Headsets"],
     labelMode: "tab"
@@ -78,9 +97,12 @@ export const shokzMediaTrackDefinitions = [
 ];
 
 export const shokzRelatedSectionOrder = [
+  "topbar",
   "banner",
   "navigation",
-  ...shokzHomeRelatedSectionDefinitions.map((definition) => definition.key)
+  ...shokzHomeRelatedSectionDefinitions
+    .map((definition) => definition.key)
+    .filter((key) => key !== "topbar")
 ];
 
 export function findShokzHomeRelatedSectionDefinition(sectionKey) {

@@ -532,6 +532,8 @@ async function captureShokzHomeRelated(client, outputPath, viewport) {
     }
   }
 
+  sections.sort(compareRelatedSectionEntries);
+
   captures.sort(compareRelatedCaptures);
 
   return {
@@ -2278,6 +2280,17 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
 async function captureShokzHomeRelatedSection(client, outputPath, viewport, definition) {
   await primeLazyImages(client);
   const plan = await readShokzHomeRelatedSectionPlan(client, definition, viewport);
+  if (plan.ok && plan.skipped) {
+    return {
+      width: 0,
+      height: 0,
+      captures: [],
+      warnings: [],
+      expectedCount: 0,
+      capturedCount: 0,
+      skipped: true
+    };
+  }
   if (!plan.ok || !Array.isArray(plan.states) || !plan.states.length) {
     const warningReason = Array.isArray(plan.warnings) && plan.warnings.length
       ? ` ${plan.warnings.map((warning) => warning.message).filter(Boolean).join(" ")}`
@@ -2613,6 +2626,16 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
       !viewport.mobile &&
       !viewport.touch
   };
+  if (runtimeDefinition.mobileOnly && !viewport.mobile && !viewport.touch) {
+    return {
+      ok: true,
+      skipped: true,
+      sectionKey: definition.key,
+      sectionLabel: definition.sectionLabel,
+      states: [],
+      warnings: []
+    };
+  }
   const result = await client.send("Runtime.evaluate", {
     expression: `(() => {
       const definition = ${JSON.stringify(runtimeDefinition)};
@@ -2633,6 +2656,17 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
           style.visibility !== "hidden" &&
           style.display !== "none" &&
           Number(style.opacity || 1) > 0.01;
+      };
+      const rootVisible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        const selectorMatch = Boolean(definition.rootSelector && element.matches?.(definition.rootSelector));
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          (selectorMatch || Number(style.opacity || 1) > 0.01);
       };
       const intersects = (rect, rootRect) =>
         Math.max(0, Math.min(rect.right, rootRect.right) - Math.max(rect.left, rootRect.left)) *
@@ -3365,6 +3399,9 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
       };
       const findRoots = () => {
         const roots = new Set();
+        if (definition.rootSelector) {
+          document.querySelectorAll(definition.rootSelector).forEach((element) => roots.add(element));
+        }
         const baseSelector = [
           "section",
           ".shopify-section",
@@ -3388,9 +3425,14 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
           }
         }
         return [...roots].filter((root) => {
-          if (!root || root === document.body || root === document.documentElement || !visible(root)) return false;
+          if (!root || root === document.body || root === document.documentElement || !rootVisible(root)) return false;
           const rect = root.getBoundingClientRect();
-          return rect.width >= Math.min(260, window.innerWidth * 0.45) && rect.height >= 140;
+          const minWidth = Math.max(24, Number(definition.minRootWidth || Math.min(260, window.innerWidth * 0.45)));
+          const minHeight = Math.max(18, Number(definition.minRootHeight || 140));
+          const maxHeight = Math.max(0, Number(definition.maxRootHeight || 0));
+          return rect.width >= minWidth &&
+            rect.height >= minHeight &&
+            (!maxHeight || rect.height <= maxHeight);
         });
       };
       const anchorHits = (root) => (definition.anchors || [])
@@ -3403,7 +3445,9 @@ async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}
             const area = rect.width * rect.height;
             const hits = anchorHits(root);
             const className = classText(root);
+            const selectorBonus = Number(Boolean(definition.rootSelector && root.matches?.(definition.rootSelector))) * 1200;
             const score = hits * 10000 +
+              selectorBonus +
               Number(/shopify-section|section|swiper|slider|carousel/i.test(className)) * 120 -
               Math.log(Math.max(area, 1)) * 30 -
               Number(rect.height > window.innerHeight * 3) * 2000;
@@ -7351,6 +7395,14 @@ function compareRelatedCaptures(a, b) {
     Number(a.pageIndex || 0) - Number(b.pageIndex || 0) ||
     Number(a.stateIndex || a.bannerIndex || 0) - Number(b.stateIndex || b.bannerIndex || 0) ||
     String(a.label || "").localeCompare(String(b.label || ""), "zh-CN");
+}
+
+function compareRelatedSectionEntries(a, b) {
+  const sectionA = shokzRelatedSectionOrder.indexOf(a.sectionKey);
+  const sectionB = shokzRelatedSectionOrder.indexOf(b.sectionKey);
+  const orderA = sectionA === -1 ? 1000 : sectionA;
+  const orderB = sectionB === -1 ? 1000 : sectionB;
+  return orderA - orderB || String(a.sectionLabel || "").localeCompare(String(b.sectionLabel || ""), "zh-CN");
 }
 
 async function openShokzProductsNavigation(client, viewport) {

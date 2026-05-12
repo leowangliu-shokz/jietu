@@ -383,6 +383,8 @@ async function captureShokzHomeRelatedShotsIsolated(normalizedUrl, baseOutputPat
     sections.push(...(result.validation?.sections || []));
   }
 
+  sections.sort(compareRelatedSectionEntries);
+
   return {
     shots: shots.sort(compareRelatedShots),
     validation: {
@@ -598,6 +600,14 @@ function compareRelatedShots(a, b) {
     Number(a.hoverIndex || 0) - Number(b.hoverIndex || 0) ||
     Number(a.stateIndex || a.bannerIndex || 0) - Number(b.stateIndex || b.bannerIndex || 0) ||
     String(a.label || "").localeCompare(String(b.label || ""), "zh-CN");
+}
+
+function compareRelatedSectionEntries(a, b) {
+  const sectionA = shokzRelatedSectionOrder.indexOf(a.sectionKey);
+  const sectionB = shokzRelatedSectionOrder.indexOf(b.sectionKey);
+  const orderA = sectionA === -1 ? 1000 : sectionA;
+  const orderB = sectionB === -1 ? 1000 : sectionB;
+  return orderA - orderB || String(a.sectionLabel || "").localeCompare(String(b.sectionLabel || ""), "zh-CN");
 }
 
 function interactionSort(item) {
