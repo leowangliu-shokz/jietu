@@ -1,6 +1,6 @@
 # Page Shot Archive
 
-一个本地网页截图归档查看工具。默认监控 `https://shokz.com`，服务运行期间会在每个整点自动截图所有设备预设。所有截图都会保存在 `archive/` 目录，并在网页界面里按时间、URL 和设备查看。
+一个本地网页截图时间档案工具。默认监控 `https://shokz.com`，截图会保存在 `archive/`，索引和变更汇总会写入 `data/`，页面可按时间、URL、设备查看历史截图和变更。
 
 ## 启动
 
@@ -8,34 +8,68 @@
 npm start
 ```
 
-打开终端里显示的本地地址，通常是：
+默认地址通常是：
 
 ```text
 http://127.0.0.1:4173
 ```
 
-## 开发者手动截图
+## 默认可用能力
 
-普通网页界面是只读查看模式，不提供手动截图或配置修改入口。开发者可以在命令行运行：
+- 查看截图档案
+- 预览大图和更多截图
+- 手动删除单次截图卡，并自动重算变更汇总
+
+## 管理员模式能力
+
+手动截图和配置修改仍然需要管理员模式。默认情况下：
+
+- `POST /api/capture` 会返回 `403`
+- `POST /api/config` 会返回 `403`
+
+如果确实需要临时打开这些写接口，可以这样启动服务：
+
+```powershell
+$env:PAGE_SHOT_ADMIN = "1"
+npm start
+```
+
+也可以直接从命令行做一次手动截图：
 
 ```powershell
 npm run capture
 ```
 
-也可以临时指定一个 URL：
+指定 URL：
 
 ```powershell
 npm run capture -- https://shokz.com
 ```
 
-如果确实需要临时打开 HTTP 管理接口，可以用 `PAGE_SHOT_ADMIN=1` 启动服务；默认情况下 `/api/capture` 和 `/api/config` 会拒绝写操作。
+## 修复运行时中文 `???`
+
+如果 `data/snapshots.json` 或 `data/changes.json` 里的派生展示字段被写成了 `???`，可以运行一次修复脚本：
+
+```powershell
+npm run repair:data
+```
+
+这个脚本会：
+
+- 按当前配置修复 `targetLabel` / `displayUrl`
+- 按设备预设修复 `deviceLabel`
+- 按分区元数据修复 `sectionLabel` / `sectionTitle`
+- 立即重建 `data/changes.json`
+
+它不会改动 `archive/` 里的原图文件，也不会重写 `logs/` 历史日志。
 
 ## 数据位置
 
 - 截图文件：`archive/YYYY-MM-DD/<site>/...png`
 - 截图索引：`data/snapshots.json`
+- 变更汇总：`data/changes.json`
 - 工具配置：`data/config.json`
 
 ## 浏览器
 
-工具会优先使用环境变量 `BROWSER_PATH`，否则自动寻找本机 Edge 或 Chrome。它通过浏览器的 headless 模式截取全页面截图，不需要安装额外 npm 包。
+工具会优先使用环境变量 `BROWSER_PATH`；否则自动寻找本机 Edge 或 Chrome。截图通过浏览器 headless 模式完成，不需要额外安装 npm 包。

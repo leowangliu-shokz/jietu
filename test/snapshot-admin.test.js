@@ -5,7 +5,11 @@ import path from "node:path";
 import test from "node:test";
 import { compareSnapshots, loadChanges, saveChanges } from "../src/changes.js";
 import { encodePng } from "../src/png.js";
-import { deleteSnapshotAction, deleteSnapshotArchive, viewerModeErrorMessage } from "../src/snapshot-admin.js";
+import {
+  deleteSnapshotAction,
+  deleteSnapshotArchive,
+  snapshotDeleteDisabledMessage
+} from "../src/snapshot-admin.js";
 import { readSnapshots } from "../src/store.js";
 
 test("deleteSnapshotArchive removes the snapshot record and its image files", async () => {
@@ -114,9 +118,9 @@ test("deleteSnapshotArchive rebuilds change links and removes stale diff images"
   }
 });
 
-test("deleteSnapshotAction rejects viewer mode", async () => {
+test("deleteSnapshotAction rejects deletion when snapshot deletion is disabled", async () => {
   const result = await deleteSnapshotAction({
-    adminApiEnabled: false,
+    canDeleteSnapshots: false,
     captureRunning: false,
     snapshotId: "snap-1"
   });
@@ -124,13 +128,13 @@ test("deleteSnapshotAction rejects viewer mode", async () => {
   assert.equal(result.status, 403);
   assert.deepEqual(result.payload, {
     ok: false,
-    error: viewerModeErrorMessage
+    error: snapshotDeleteDisabledMessage
   });
 });
 
 test("deleteSnapshotAction rejects deletion while capture is running", async () => {
   const result = await deleteSnapshotAction({
-    adminApiEnabled: true,
+    canDeleteSnapshots: true,
     captureRunning: true,
     snapshotId: "snap-1"
   });
@@ -145,7 +149,7 @@ test("deleteSnapshotAction returns 404 when the snapshot id does not exist", asy
   await writeSnapshots(fixture.snapshotsFilePath, []);
 
   const result = await deleteSnapshotAction({
-    adminApiEnabled: true,
+    canDeleteSnapshots: true,
     captureRunning: false,
     snapshotId: "missing-snapshot",
     archiveRoot: fixture.archiveRoot,

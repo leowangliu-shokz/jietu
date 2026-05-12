@@ -11,6 +11,7 @@ import { ensureStorage, loadConfig, loadSnapshots, saveConfig } from "./store.js
 const host = "127.0.0.1";
 const port = Number(process.env.PORT || 4173);
 const adminApiEnabled = process.env.PAGE_SHOT_ADMIN === "1";
+const snapshotDeleteEnabled = true;
 
 let config = await loadConfig();
 let captureState = {
@@ -66,7 +67,7 @@ const server = http.createServer(async (request, response) => {
     if (request.method === "DELETE" && pathname.startsWith("/api/snapshots/")) {
       const snapshotId = decodeURIComponent(pathname.slice("/api/snapshots/".length));
       const result = await deleteSnapshotAction({
-        adminApiEnabled,
+        canDeleteSnapshots: snapshotDeleteEnabled,
         captureRunning: captureState.running,
         snapshotId,
         buildState
@@ -164,7 +165,7 @@ async function buildState() {
     devicePresets: devicePresets.map(toPublicDevicePreset),
     snapshots: await loadSnapshots(),
     permissions: {
-      canDeleteSnapshots: adminApiEnabled
+      canDeleteSnapshots: snapshotDeleteEnabled
     },
     changesSummary: {
       count: changes.length,
