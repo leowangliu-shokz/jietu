@@ -75,7 +75,6 @@ const relatedSectionTitles = {
 let state = null;
 let changes = [];
 let activePlatform = "pc";
-let activeTab = "archive";
 let imagePreviewReturnFocus = null;
 let imagePreviewPreviousOverflow = "";
 let imagePreviewZoomState = createImagePreviewZoomState();
@@ -91,6 +90,10 @@ const imagePreviewScreenRailGap = 24;
 const changesPageByPlatform = {
   pc: 1,
   mobile: 1
+};
+const activeTabByPlatform = {
+  pc: "archive",
+  mobile: "archive"
 };
 const archiveFiltersByPlatform = createPlatformFilterMap();
 const changesFiltersByPlatform = createPlatformFilterMap();
@@ -197,6 +200,7 @@ function activeChangesFilters() {
 function setActivePlatform(platform, options = {}) {
   activePlatform = resolveActivePlatformValue(platform);
   syncPlatformTabs();
+  syncActiveTabUi();
   syncActivePlatformFilterInputs();
   closePlatformMenus();
   if (options.render !== false) {
@@ -276,8 +280,35 @@ function closePlatformMenus() {
   setChangesDeviceFilterMenuOpen(false);
 }
 
-function setActiveTab(tabName) {
-  activeTab = tabName === "changes" ? "changes" : "archive";
+function activeTabForPlatform(platform = activePlatform) {
+  return activeTabByPlatform[resolveActivePlatformValue(platform)] === "changes"
+    ? "changes"
+    : "archive";
+}
+
+function resolveActiveTabValue(tabName) {
+  return tabName === "changes" ? "changes" : "archive";
+}
+
+function setActiveTab(tabName, options = {}) {
+  activeTabByPlatform[activePlatform] = resolveActiveTabValue(tabName);
+  syncActiveTabUi();
+
+  const activeTab = activeTabForPlatform();
+  if (activeTab !== "archive") {
+    setDeviceFilterMenuOpen(false);
+  }
+  if (activeTab !== "changes") {
+    setChangesDeviceFilterMenuOpen(false);
+  }
+
+  if (options.render !== false) {
+    render();
+  }
+}
+
+function syncActiveTabUi() {
+  const activeTab = activeTabForPlatform();
 
   for (const tab of elements.tabs) {
     const isActive = tab.dataset.tab === activeTab;
@@ -290,13 +321,6 @@ function setActiveTab(tabName) {
     const isActive = panel.dataset.tabPanel === activeTab;
     panel.classList.toggle("is-active", isActive);
     panel.hidden = !isActive;
-  }
-
-  if (activeTab !== "archive") {
-    setDeviceFilterMenuOpen(false);
-  }
-  if (activeTab !== "changes") {
-    setChangesDeviceFilterMenuOpen(false);
   }
 }
 
