@@ -1,5 +1,9 @@
+import { configTargets, platformForChange, platformForSnapshot, platformLabel } from "./app-model.js";
+
 const elements = {
   refresh: document.querySelector("#refresh"),
+  platformTabs: [...document.querySelectorAll("[data-platform-tab]")],
+  platformState: document.querySelector("#platformState"),
   tabs: [...document.querySelectorAll("[data-tab]")],
   tabPanels: [...document.querySelectorAll("[data-tab-panel]")],
   shotCount: document.querySelector("#shotCount"),
@@ -70,8 +74,8 @@ const relatedSectionTitles = {
 
 let state = null;
 let changes = [];
+let activePlatform = "pc";
 let activeTab = "archive";
-let changesPage = 1;
 let imagePreviewReturnFocus = null;
 let imagePreviewPreviousOverflow = "";
 let imagePreviewZoomState = createImagePreviewZoomState();
@@ -84,12 +88,12 @@ const imagePreviewMaxScale = 5;
 const imagePreviewButtonScaleStep = 1.25;
 const imagePreviewWheelScaleStep = 1.12;
 const imagePreviewScreenRailGap = 24;
-const selectedDeviceFilters = {
-  devices: new Set()
+const changesPageByPlatform = {
+  pc: 1,
+  mobile: 1
 };
-const selectedChangesDeviceFilters = {
-  devices: new Set()
-};
+const archiveFiltersByPlatform = createPlatformFilterMap();
+const changesFiltersByPlatform = createPlatformFilterMap();
 const pendingSnapshotDeletes = new Set();
 let archiveStatusState = {
   tone: "info",
@@ -100,20 +104,42 @@ await refreshState();
 setInterval(() => refreshState({ preserveScroll: true }), 10000);
 
 elements.refresh.addEventListener("click", () => refreshState({ preserveScroll: true }));
+for (const tab of elements.platformTabs) {
+  tab.addEventListener("click", () => setActivePlatform(tab.dataset.platformTab));
+  tab.addEventListener("keydown", handlePlatformTabKeydown);
+}
 for (const tab of elements.tabs) {
   tab.addEventListener("click", () => setActiveTab(tab.dataset.tab));
   tab.addEventListener("keydown", handleTabKeydown);
 }
-elements.urlFilter.addEventListener("change", () => renderGallery({ preserveScroll: false }));
-elements.dateStartFilter.addEventListener("change", () => renderGallery({ preserveScroll: false }));
-elements.dateEndFilter.addEventListener("change", () => renderGallery({ preserveScroll: false }));
+elements.urlFilter.addEventListener("change", () => {
+  activeArchiveFilters().url = elements.urlFilter.value;
+  renderGallery({ preserveScroll: false });
+});
+elements.dateStartFilter.addEventListener("change", () => {
+  activeArchiveFilters().dateStart = elements.dateStartFilter.value;
+  renderGallery({ preserveScroll: false });
+});
+elements.dateEndFilter.addEventListener("change", () => {
+  activeArchiveFilters().dateEnd = elements.dateEndFilter.value;
+  renderGallery({ preserveScroll: false });
+});
 elements.dateClearFilter.addEventListener("click", clearDateFilter);
 elements.deviceFilterButton.addEventListener("click", toggleDeviceFilterMenu);
 elements.deviceFilterMenu.addEventListener("change", handleDeviceFilterChange);
 elements.deviceFilterMenu.addEventListener("click", handleDeviceFilterClick);
-elements.changesUrlFilter.addEventListener("change", () => renderChangesSummary({ resetPage: true }));
-elements.changesDateStartFilter.addEventListener("change", () => renderChangesSummary({ resetPage: true }));
-elements.changesDateEndFilter.addEventListener("change", () => renderChangesSummary({ resetPage: true }));
+elements.changesUrlFilter.addEventListener("change", () => {
+  activeChangesFilters().url = elements.changesUrlFilter.value;
+  renderChangesSummary({ resetPage: true });
+});
+elements.changesDateStartFilter.addEventListener("change", () => {
+  activeChangesFilters().dateStart = elements.changesDateStartFilter.value;
+  renderChangesSummary({ resetPage: true });
+});
+elements.changesDateEndFilter.addEventListener("change", () => {
+  activeChangesFilters().dateEnd = elements.changesDateEndFilter.value;
+  renderChangesSummary({ resetPage: true });
+});
 elements.changesDateClearFilter.addEventListener("click", clearChangesDateFilter);
 elements.changesDeviceFilterButton.addEventListener("click", toggleChangesDeviceFilterMenu);
 elements.changesDeviceFilterMenu.addEventListener("change", handleChangesDeviceFilterChange);
@@ -143,6 +169,86 @@ document.addEventListener("keydown", handleImagePreviewNavigationKeydown);
 document.addEventListener("keydown", closeImagePreviewOnEscape);
 document.addEventListener("keydown", closeWarningPreviewOnEscape);
 window.addEventListener("resize", handleImagePreviewResize);
+
+function createPlatformFilterMap() {
+  return {
+    pc: createPlatformFilterState(),
+    mobile: createPlatformFilterState()
+  };
+}
+
+function createPlatformFilterState() {
+  return {
+    url: "",
+    dateStart: "",
+    dateEnd: "",
+    devices: new Set()
+  };
+}
+
+function activeArchiveFilters() {
+  return archiveFiltersByPlatform[activePlatform];
+}
+
+function activeChangesFilters() {
+  return changesFiltersByPlatform[activePlatform];
+}
+
+function setActivePlatform(platform) {
+  activePlatform = platform === "mobile" ? "mobile" : "pc";
+
+  for (const tab of elements.platformTabs) {
+    const isActive = tab.dataset.platformTab === activePlatform;
+    tab.classList.toggle("is-active", isActive);
+    tab.setAttribute("aria-selected", String(isActive));
+    tab.tabIndex = isActive ? 0 : -1;
+  }
+
+  syncActivePlatformFilterInputs();
+  closePlatformMenus();
+  render();
+}
+
+function handlePlatformTabKeydown(event) {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+    return;
+  }
+
+  event.preventDefault();
+  const currentIndex = elements.platformTabs.indexOf(event.currentTarget);
+  const lastIndex = elements.platformTabs.length - 1;
+  let nextIndex = currentIndex;
+
+  if (event.key === "ArrowLeft") {
+    nextIndex = currentIndex <= 0 ? lastIndex : currentIndex - 1;
+  } else if (event.key === "ArrowRight") {
+    nextIndex = currentIndex >= lastIndex ? 0 : currentIndex + 1;
+  } else if (event.key === "Home") {
+    nextIndex = 0;
+  } else if (event.key === "End") {
+    nextIndex = lastIndex;
+  }
+
+  const nextTab = elements.platformTabs[nextIndex];
+  setActivePlatform(nextTab.dataset.platformTab);
+  nextTab.focus();
+}
+
+function syncActivePlatformFilterInputs() {
+  const archiveFilters = activeArchiveFilters();
+  const changeFilters = activeChangesFilters();
+  elements.urlFilter.value = archiveFilters.url;
+  elements.dateStartFilter.value = archiveFilters.dateStart;
+  elements.dateEndFilter.value = archiveFilters.dateEnd;
+  elements.changesUrlFilter.value = changeFilters.url;
+  elements.changesDateStartFilter.value = changeFilters.dateStart;
+  elements.changesDateEndFilter.value = changeFilters.dateEnd;
+}
+
+function closePlatformMenus() {
+  setDeviceFilterMenuOpen(false);
+  setChangesDeviceFilterMenuOpen(false);
+}
 
 function setActiveTab(tabName) {
   activeTab = tabName === "changes" ? "changes" : "archive";
@@ -201,12 +307,17 @@ async function refreshState(options = {}) {
   state = await stateResponse.json();
   const loadedChanges = await changesResponse.json();
   changes = Array.isArray(loadedChanges) ? loadedChanges : [];
+  if (!state?.platforms?.[activePlatform]) {
+    activePlatform = "pc";
+  }
   render(options);
 }
 
 function render(options = {}) {
-  elements.shotCount.textContent = state.snapshots.length;
-  elements.changeCount.textContent = changes.length;
+  const platformView = state.platforms?.[activePlatform] || null;
+  elements.platformState.textContent = platformView?.label || platformLabel(activePlatform);
+  elements.shotCount.textContent = platformSnapshots().length;
+  elements.changeCount.textContent = platformChanges().length;
   elements.captureState.textContent = state.capture.running ? "截图中" : "空闲";
   elements.browserState.textContent = state.browser.ok ? browserName(state.browser.path) : "未找到";
   elements.scheduleState.textContent = "整点（所有设备）";
@@ -214,6 +325,13 @@ function render(options = {}) {
   elements.latestShotTime.textContent = latestCapturedAt
     ? `最近一次截图时间：${formatDate(latestCapturedAt)}`
     : "最近一次截图时间：暂无";
+  elements.captureState.textContent = state.capture.running ? "截图中" : "空闲";
+  elements.browserState.textContent = state.browser.ok ? browserName(state.browser.path) : "未找到";
+  elements.scheduleState.textContent = scheduleLabelForActivePlatform(platformView);
+  elements.latestShotTime.textContent = latestSnapshotCapturedAt()
+    ? `最近一次截图时间：${formatDate(latestSnapshotCapturedAt())}`
+    : "最近一次截图时间：暂无";
+  syncActivePlatformFilterInputs();
   renderFilterOptions();
   renderChangesFilterOptions();
   renderDeviceFilterOptions();
@@ -221,6 +339,44 @@ function render(options = {}) {
   renderArchiveStatus();
   renderChangesSummary();
   renderGallery({ preserveScroll: options.preserveScroll !== false });
+}
+
+function platformSnapshots() {
+  return (state?.snapshots || []).filter((snapshot) =>
+    platformForSnapshot(snapshot, state?.devicePresets || []) === activePlatform
+  );
+}
+
+function platformChanges() {
+  return changes.filter((change) =>
+    platformForChange(change, state?.devicePresets || []) === activePlatform
+  );
+}
+
+/*
+function scheduleLabelForActivePlatform(platformView) {
+  if (!platformView) {
+    return "按启用计划执行";
+  }
+
+  const profileCount = Array.isArray(platformView.deviceProfiles)
+    ? platformView.deviceProfiles.filter((profile) => profile.enabled !== false).length
+    : 0;
+  const targetCount = Array.isArray(platformView.targets) ? platformView.targets.length : 0;
+  return `${platformView.label}：${targetCount} URL / ${profileCount} 设备配置`;
+}
+
+*/
+function scheduleLabelForActivePlatform(platformView) {
+  if (!platformView) {
+    return "By enabled plans";
+  }
+
+  const profileCount = Array.isArray(platformView.deviceProfiles)
+    ? platformView.deviceProfiles.filter((profile) => profile.enabled !== false).length
+    : 0;
+  const targetCount = Array.isArray(platformView.targets) ? platformView.targets.length : 0;
+  return `${platformView.label}: ${targetCount} URL / ${profileCount} profiles`;
 }
 
 function renderArchiveStatus() {
@@ -240,20 +396,20 @@ function setArchiveStatus(message = "", tone = "info") {
 }
 
 function latestSnapshotCapturedAt() {
-  const latest = Math.max(...state.snapshots.map((snapshot) => timestamp(snapshot.capturedAt)));
+  const latest = Math.max(...platformSnapshots().map((snapshot) => timestamp(snapshot.capturedAt)));
   return Number.isFinite(latest) ? new Date(latest).toISOString() : null;
 }
 
 function renderFilterOptions() {
-  renderUrlFilterOptions(elements.urlFilter, urlFilterOptions());
+  renderUrlFilterOptions(elements.urlFilter, urlFilterOptions(), activeArchiveFilters().url);
 }
 
 function renderChangesFilterOptions() {
-  renderUrlFilterOptions(elements.changesUrlFilter, urlFilterOptions());
+  renderUrlFilterOptions(elements.changesUrlFilter, urlFilterOptions(), activeChangesFilters().url);
 }
 
-function renderUrlFilterOptions(select, urls) {
-  const current = select.value;
+function renderUrlFilterOptions(select, urls, currentValue = "") {
+  const current = currentValue;
   select.innerHTML = "<option value=\"\">全部 URL</option>";
   for (const url of urls) {
     const option = document.createElement("option");
@@ -267,7 +423,7 @@ function renderUrlFilterOptions(select, urls) {
 function renderDeviceFilterOptions() {
   renderDeviceFilterOptionsFor({
     devices: uniqueDevicesFromSnapshots(),
-    selectedFilters: selectedDeviceFilters,
+    selectedFilters: activeArchiveFilters(),
     menu: elements.deviceFilterMenu,
     label: elements.deviceFilterLabel,
     button: elements.deviceFilterButton,
@@ -278,7 +434,7 @@ function renderDeviceFilterOptions() {
 function renderChangesDeviceFilterOptions() {
   renderDeviceFilterOptionsFor({
     devices: uniqueDevicesFromChanges(),
-    selectedFilters: selectedChangesDeviceFilters,
+    selectedFilters: activeChangesFilters(),
     menu: elements.changesDeviceFilterMenu,
     label: elements.changesDeviceFilterLabel,
     button: elements.changesDeviceFilterButton,
@@ -1028,7 +1184,7 @@ function parseWarningPayload(value) {
 
 function handleDeviceFilterClick(event) {
   handleDeviceFilterClickFor(event, {
-    selectedFilters: selectedDeviceFilters,
+    selectedFilters: activeArchiveFilters(),
     renderOptions: renderDeviceFilterOptions,
     renderResults: () => renderGallery({ preserveScroll: false })
   });
@@ -1036,7 +1192,7 @@ function handleDeviceFilterClick(event) {
 
 function handleChangesDeviceFilterClick(event) {
   handleDeviceFilterClickFor(event, {
-    selectedFilters: selectedChangesDeviceFilters,
+    selectedFilters: activeChangesFilters(),
     renderOptions: renderChangesDeviceFilterOptions,
     renderResults: () => renderChangesSummary({ resetPage: true })
   });
@@ -1054,7 +1210,7 @@ function handleDeviceFilterClickFor(event, { selectedFilters, renderOptions, ren
 
 function handleDeviceFilterChange(event) {
   handleDeviceFilterChangeFor(event, {
-    selectedFilters: selectedDeviceFilters,
+    selectedFilters: activeArchiveFilters(),
     devices: uniqueDevicesFromSnapshots,
     renderOptions: renderDeviceFilterOptions,
     renderResults: () => renderGallery({ preserveScroll: false })
@@ -1063,7 +1219,7 @@ function handleDeviceFilterChange(event) {
 
 function handleChangesDeviceFilterChange(event) {
   handleDeviceFilterChangeFor(event, {
-    selectedFilters: selectedChangesDeviceFilters,
+    selectedFilters: activeChangesFilters(),
     devices: uniqueDevicesFromChanges,
     renderOptions: renderChangesDeviceFilterOptions,
     renderResults: () => renderChangesSummary({ resetPage: true })
@@ -1191,11 +1347,11 @@ function deviceFilterGroups(devices) {
 }
 
 function matchesDeviceFilters(snapshot) {
-  return matchesDeviceFilterSet(deviceInfoForSnapshot(snapshot), selectedDeviceFilters);
+  return matchesDeviceFilterSet(deviceInfoForSnapshot(snapshot), activeArchiveFilters());
 }
 
 function matchesChangesDeviceFilters(change) {
-  return matchesDeviceFilterSet(deviceInfoForChange(change), selectedChangesDeviceFilters);
+  return matchesDeviceFilterSet(deviceInfoForChange(change), activeChangesFilters());
 }
 
 function matchesDeviceFilterSet(device, selectedFilters) {
@@ -1206,11 +1362,11 @@ function matchesDeviceFilterSet(device, selectedFilters) {
 }
 
 function matchesTimeFilter(snapshot) {
-  return matchesDateRange(snapshot.capturedAt, selectedDateRange(elements.dateStartFilter, elements.dateEndFilter));
+  return matchesDateRange(snapshot.capturedAt, selectedDateRange(activeArchiveFilters()));
 }
 
 function matchesChangesTimeFilter(change) {
-  return matchesDateRange(changeTimeValue(change), selectedDateRange(elements.changesDateStartFilter, elements.changesDateEndFilter));
+  return matchesDateRange(changeTimeValue(change), selectedDateRange(activeChangesFilters()));
 }
 
 function changeTimeValue(change) {
@@ -1230,9 +1386,9 @@ function matchesDateRange(value, range) {
   return capturedAt >= range.start && capturedAt <= range.end;
 }
 
-function selectedDateRange(startInput, endInput) {
-  const start = startOfDay(startInput.value);
-  const end = endOfDay(endInput.value);
+function selectedDateRange(filterState) {
+  const start = startOfDay(filterState?.dateStart || "");
+  const end = endOfDay(filterState?.dateEnd || "");
 
   if (!Number.isFinite(start) && !Number.isFinite(end)) {
     return null;
@@ -1246,14 +1402,16 @@ function selectedDateRange(startInput, endInput) {
 }
 
 function clearDateFilter() {
-  clearDateFilterFor(elements.dateStartFilter, elements.dateEndFilter, () => renderGallery({ preserveScroll: false }));
+  clearDateFilterFor(activeArchiveFilters(), elements.dateStartFilter, elements.dateEndFilter, () => renderGallery({ preserveScroll: false }));
 }
 
 function clearChangesDateFilter() {
-  clearDateFilterFor(elements.changesDateStartFilter, elements.changesDateEndFilter, () => renderChangesSummary({ resetPage: true }));
+  clearDateFilterFor(activeChangesFilters(), elements.changesDateStartFilter, elements.changesDateEndFilter, () => renderChangesSummary({ resetPage: true }));
 }
 
-function clearDateFilterFor(startInput, endInput, renderResults) {
+function clearDateFilterFor(filterState, startInput, endInput, renderResults) {
+  filterState.dateStart = "";
+  filterState.dateEnd = "";
   startInput.value = "";
   endInput.value = "";
   renderResults();
@@ -1276,12 +1434,14 @@ function endOfDay(value) {
 }
 
 function renderChangesSummary(options = {}) {
+  let changesPage = changesPageByPlatform[activePlatform] || 1;
   if (options.resetPage) {
     changesPage = 1;
   }
-  const filteredChanges = changes.filter(matchesChangeFilters);
+  const filteredChanges = platformChanges().filter(matchesChangeFilters);
   const totalPages = Math.max(1, Math.ceil(filteredChanges.length / changesPageSize));
   changesPage = Math.min(Math.max(changesPage, 1), totalPages);
+  changesPageByPlatform[activePlatform] = changesPage;
   const pageStart = filteredChanges.length === 0 ? 0 : (changesPage - 1) * changesPageSize;
   const pageChanges = filteredChanges.slice(pageStart, pageStart + changesPageSize);
   elements.changesList.innerHTML = "";
@@ -1311,6 +1471,7 @@ function renderChangesSummary(options = {}) {
 }
 
 function renderChangesPagination(total, pageStart, visibleCount, totalPages) {
+  const changesPage = changesPageByPlatform[activePlatform] || 1;
   const hasMultiplePages = total > changesPageSize;
   elements.changesPagination.hidden = !hasMultiplePages;
   if (!hasMultiplePages) {
@@ -1328,12 +1489,12 @@ function renderChangesPagination(total, pageStart, visibleCount, totalPages) {
 }
 
 function changeChangesPage(delta) {
-  changesPage += delta;
+  changesPageByPlatform[activePlatform] = (changesPageByPlatform[activePlatform] || 1) + delta;
   renderChangesSummary();
 }
 
 function matchesChangeFilters(change) {
-  const selectedUrl = elements.changesUrlFilter.value;
+  const selectedUrl = activeChangesFilters().url;
   const matchesUrl = selectedUrl ? canonicalDisplayUrlForChange(change) === selectedUrl : true;
   const matchesTime = matchesChangesTimeFilter(change);
   const matchesDevice = matchesChangesDeviceFilters(change);
@@ -1448,8 +1609,8 @@ function changeTypeLabel(change) {
 function renderGallery(options = {}) {
   const preserveScroll = options.preserveScroll !== false;
   const scrollState = preserveScroll ? captureGalleryScrollState() : null;
-  const selectedUrl = elements.urlFilter.value;
-  const snapshots = state.snapshots.filter((snapshot) => {
+  const selectedUrl = activeArchiveFilters().url;
+  const snapshots = platformSnapshots().filter((snapshot) => {
     const matchesUrl = selectedUrl ? canonicalDisplayUrlForSnapshot(snapshot) === selectedUrl : true;
     const matchesTime = matchesTimeFilter(snapshot);
     const matchesDevice = matchesDeviceFilters(snapshot);
@@ -2115,7 +2276,8 @@ function relatedShotPageIndex(shot) {
 }
 
 function urlFilterOptions() {
-  const configured = (state.config?.urls || []).map(displayUrlForTarget);
+  const configured = (state.platforms?.[activePlatform]?.targets || configTargets(state.config))
+    .map(displayUrlForTarget);
   return [...new Set(configured)];
 }
 
@@ -2172,7 +2334,7 @@ function navDisplayUrl() {
 }
 
 function displayUrlForTargetId(id) {
-  const target = (state.config?.urls || []).find((item) => typeof item !== "string" && item.id === id);
+  const target = configTargets(state.config).find((item) => item.id === id);
   return target ? displayUrlForTarget(target) : "";
 }
 
@@ -2209,7 +2371,7 @@ function deviceInfoForSnapshot(snapshot) {
     return { id: bySize.id, name: bySize.name, group: bySize.mobile ? "mobile" : "pc" };
   }
 
-  const group = inferSnapshotDeviceGroup(snapshot);
+  const group = snapshot.platform || inferSnapshotDeviceGroup(snapshot);
   return {
     id: `custom-${group}`,
     name: group === "mobile" ? "自定义设备（手机端）" : "自定义设备（PC端）",
@@ -2227,7 +2389,7 @@ function deviceInfoForChange(change) {
   return {
     id: location.deviceName || "unknown-device",
     name,
-    group: "pc"
+    group: location.platform === "mobile" ? "mobile" : "pc"
   };
 }
 
@@ -2242,7 +2404,7 @@ function deviceInfoForPreset(devicePresetId, fallbackName) {
 
 function uniqueDevicesFromSnapshots() {
   const devices = new Map();
-  for (const snapshot of state.snapshots) {
+  for (const snapshot of platformSnapshots()) {
     const device = deviceInfoForSnapshot(snapshot);
     devices.set(device.id, device);
   }
@@ -2251,7 +2413,7 @@ function uniqueDevicesFromSnapshots() {
 
 function uniqueDevicesFromChanges() {
   const devices = new Map();
-  for (const change of changes) {
+  for (const change of platformChanges()) {
     const device = deviceInfoForChange(change);
     devices.set(device.id, device);
   }

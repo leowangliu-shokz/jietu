@@ -13,31 +13,56 @@
           <p class="eyebrow">Page Shot Archive</p>
           <h1>网页截图时间档案</h1>
         </div>
-        <nav class="tabs" role="tablist" aria-label="页面内容">
-          <button
-            id="tabArchive"
-            class="tab is-active"
-            type="button"
-            role="tab"
-            aria-selected="true"
-            aria-controls="archivePanel"
-            data-tab="archive"
-          >
-            截图存档
-          </button>
-          <button
-            id="tabChanges"
-            class="tab"
-            type="button"
-            role="tab"
-            aria-selected="false"
-            aria-controls="changesPanel"
-            data-tab="changes"
-            tabindex="-1"
-          >
-            变更汇总
-          </button>
-        </nav>
+        <div class="toolbar-navs">
+          <nav class="platform-tabs" role="tablist" aria-label="按平台查看">
+            <button
+              id="platformTabPc"
+              class="platform-tab is-active"
+              type="button"
+              role="tab"
+              aria-selected="true"
+              data-platform-tab="pc"
+            >
+              PC
+            </button>
+            <button
+              id="platformTabMobile"
+              class="platform-tab"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              data-platform-tab="mobile"
+              tabindex="-1"
+            >
+              手机
+            </button>
+          </nav>
+          <nav class="tabs" role="tablist" aria-label="页面内容">
+            <button
+              id="tabArchive"
+              class="tab is-active"
+              type="button"
+              role="tab"
+              aria-selected="true"
+              aria-controls="archivePanel"
+              data-tab="archive"
+            >
+              截图存档
+            </button>
+            <button
+              id="tabChanges"
+              class="tab"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="changesPanel"
+              data-tab="changes"
+              tabindex="-1"
+            >
+              变更汇总
+            </button>
+          </nav>
+        </div>
         <div class="actions">
           <button id="refresh" type="button">刷新</button>
         </div>
@@ -53,12 +78,16 @@
         >
           <section class="status-grid" aria-label="截图存档状态">
             <div class="stat">
+              <span>当前平台</span>
+              <strong id="platformState">PC</strong>
+            </div>
+            <div class="stat">
               <span>归档数量</span>
               <strong id="shotCount">0</strong>
             </div>
             <div class="stat">
               <span>自动截图</span>
-              <strong id="scheduleState">整点（所有设备）</strong>
+              <strong id="scheduleState">按启用计划执行</strong>
             </div>
             <div class="stat">
               <span>浏览器</span>
@@ -156,7 +185,7 @@
               </div>
             </div>
             <div id="changesList" class="changes-list"></div>
-            <nav id="changesPagination" class="changes-pagination" aria-label="变更汇总分页" hidden>
+            <nav id="changesPagination" class="changes-pagination" aria-label="变更分页" hidden>
               <button id="changesPrevPage" type="button">上一页</button>
               <span id="changesPaginationStatus" class="changes-pagination-status" aria-live="polite"></span>
               <button id="changesNextPage" type="button">下一页</button>
@@ -166,6 +195,7 @@
         </section>
       </section>
     </main>
+
     <div id="imagePreview" class="image-preview" hidden aria-hidden="true">
       <div class="image-preview-panel" role="dialog" aria-modal="true" aria-label="图片预览">
         <div class="image-preview-toolbar">
@@ -188,13 +218,14 @@
                 <img id="imagePreviewImage" src="" alt="" draggable="false">
                 <div id="imagePreviewDepthMarkers" class="image-preview-depth-markers" aria-hidden="true"></div>
               </div>
-              <aside id="imagePreviewScreenRail" class="image-preview-screen-rail" aria-label="璁惧灞忓箷瀵规瘮"></aside>
+              <aside id="imagePreviewScreenRail" class="image-preview-screen-rail" aria-label="屏幕深度刻度"></aside>
             </div>
           </div>
         </div>
         <p id="imagePreviewCaption" class="image-preview-caption"></p>
       </div>
     </div>
+
     <div id="warningPreview" class="warning-preview" hidden aria-hidden="true">
       <section class="warning-preview-panel" role="dialog" aria-modal="true" aria-labelledby="warningPreviewTitle">
         <div class="warning-preview-head">
@@ -207,6 +238,7 @@
         <ul id="warningPreviewList" class="warning-preview-list"></ul>
       </section>
     </div>
+
     <script src="/app.js" type="module"></script>
   </body>
 </html>

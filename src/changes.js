@@ -3,6 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { archiveDir, changesPath } from "./paths.js";
 import { normalizeCaptureConfidence } from "./capture-confidence.js";
+import { platformForSnapshot } from "./platform-metadata.js";
 import { decodePng, encodePng } from "./png.js";
 import { loadSnapshots, publicSnapshotUrl } from "./store.js";
 
@@ -244,6 +245,9 @@ async function compareItems(fromItem, toItem, options) {
       displayUrl: toItem.displayUrl,
       targetId: toItem.targetId,
       targetLabel: toItem.targetLabel,
+      platform: toItem.platform,
+      deviceProfileId: toItem.deviceProfileId,
+      capturePlanId: toItem.capturePlanId,
       devicePresetId: toItem.deviceId,
       deviceName: toItem.deviceName,
       itemKind: toItem.itemKind,
@@ -476,6 +480,9 @@ function createComparableItem(snapshot, shot, relatedIndex = null) {
     displayUrl: snapshot.displayUrl || snapshot.targetLabel || snapshot.url || "",
     targetId: snapshot.targetId || snapshot.captureMode || "target",
     targetLabel: snapshot.targetLabel || "",
+    platform: snapshot.platform || platformForSnapshot(snapshot),
+    deviceProfileId: snapshot.deviceProfileId || null,
+    capturePlanId: snapshot.capturePlanId || null,
     deviceId: snapshot.devicePresetId || deviceSizeId(snapshot),
     deviceName: snapshot.deviceName || snapshot.deviceLabel || "",
     capturedAt: snapshot.capturedAt,
@@ -566,6 +573,9 @@ function publicItemRef(item) {
     capturedAt: item.capturedAt,
     file: item.file,
     imageUrl: item.imageUrl,
+    platform: item.platform || null,
+    deviceProfileId: item.deviceProfileId || null,
+    capturePlanId: item.capturePlanId || null,
     width: item.width,
     height: item.height,
     text: truncateText(normalizeComparableText(extractText(item)), 2000),

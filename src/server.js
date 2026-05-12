@@ -3,8 +3,8 @@ import http from "node:http";
 import path from "node:path";
 import { captureAllDevices, captureConfiguredUrls, captureOne, browserStatus } from "./capture-service.js";
 import { loadChanges } from "./changes.js";
-import { devicePresets, toPublicDevicePreset } from "./device-presets.js";
 import { archiveDir, publicDir } from "./paths.js";
+import { annotateChangesForResponse, buildStatePayload } from "./server-state.js";
 import { deleteSnapshotAction, viewerModeErrorMessage } from "./snapshot-admin.js";
 import { ensureStorage, loadConfig, loadSnapshots, saveConfig } from "./store.js";
 
@@ -36,7 +36,7 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (request.method === "GET" && pathname === "/api/changes") {
-      return sendJson(response, await loadChanges());
+      return sendJson(response, annotateChangesForResponse(await loadChanges(), config));
     }
 
     if (request.method === "POST" && pathname === "/api/capture") {
@@ -46,7 +46,9 @@ const server = http.createServer(async (request, response) => {
       const body = await readJsonBody(request);
       const result = await runCapture({
         url: body.url || null,
-        allDevices: Boolean(body.allDevices)
+        allDevices: Boolean(body.allDevices),
+        platform: stringOrNull(body.platform),
+        planIds: Array.isArray(body.planIds) ? body.planIds : null
       });
       return sendJson(response, result, result.ok ? 200 : 409);
     }
@@ -95,7 +97,7 @@ const server = http.createServer(async (request, response) => {
 
 server.listen(port, host, () => {
   console.log(`Page Shot Archive is running at http://${host}:${port}`);
-  console.log(`Default URL: ${config.urls.join(", ")}`);
+  console.log(`Configured targets: ${config.targets.map((target) => target.url).join(", ")}`);
 });
 
 async function runCapture(options = {}) {
@@ -116,10 +118,19 @@ async function runCapture(options = {}) {
 
   try {
     const results = allDevices
-      ? await captureAllDevices(config)
+      ? await captureAllDevices(config, {
+        platform: options.platform,
+        planIds: options.planIds
+      })
       : options.url
-        ? [await captureOne(options.url, config)]
-        : await captureConfiguredUrls(config);
+        ? [await captureOne(options.url, config, {
+          platform: options.platform,
+          planIds: options.planIds
+        })]
+        : await captureConfiguredUrls(config, {
+          platform: options.platform,
+          planIds: options.planIds
+        });
     captureState.lastResults = results;
     return { ok: true, results, state: await buildState() };
   } finally {
@@ -156,22 +167,22 @@ function scheduleNext() {
 }
 
 async function buildState() {
-  const changes = await loadChanges();
-  return {
+  const [changes, snapshots, browser] = await Promise.all([
+    loadChanges(),
+    loadSnapshots(),
+    browserStatus()
+  ]);
+  return buildStatePayload({
     config,
-    capture: captureState,
+    captureState,
     nextRunAt,
-    browser: await browserStatus(),
-    devicePresets: devicePresets.map(toPublicDevicePreset),
-    snapshots: await loadSnapshots(),
+    browser,
+    snapshots,
+    changes,
     permissions: {
       canDeleteSnapshots: snapshotDeleteEnabled
-    },
-    changesSummary: {
-      count: changes.length,
-      recent: changes.slice(0, 6)
     }
-  };
+  });
 }
 
 async function servePublic(url, response) {

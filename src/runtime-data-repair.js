@@ -1,4 +1,5 @@
 import { findDevicePreset, findDevicePresetByViewport, toPublicDevicePreset } from "./device-presets.js";
+import { annotateSnapshotRuntimeMetadata } from "./platform-metadata.js";
 import { shokzHomeRelatedSectionDefinitions } from "./shokz-capture-specs.js";
 
 const defaultTargetLabelsById = {
@@ -30,10 +31,14 @@ export function repairSnapshotsRuntimeMetadata(snapshots, options = {}) {
     ...defaultSectionMetadataByKey,
     ...(options.sectionMetadataByKey || {})
   };
+  const config = {
+    deviceProfiles: Array.isArray(options.deviceProfiles) ? options.deviceProfiles : [],
+    capturePlans: Array.isArray(options.capturePlans) ? options.capturePlans : []
+  };
   const stats = createRepairStats();
 
   const repairedSnapshots = (Array.isArray(snapshots) ? snapshots : []).map((snapshot) =>
-    repairSnapshotRuntimeMetadata(snapshot, { targetsById, sectionMetadataByKey, stats })
+    repairSnapshotRuntimeMetadata(snapshot, { targetsById, sectionMetadataByKey, config, stats })
   );
 
   stats.snapshotCountTouched = repairedSnapshots.filter((snapshot, index) => snapshot !== snapshots[index]).length;
@@ -112,6 +117,20 @@ function repairSnapshotRuntimeMetadata(snapshot, context) {
       nextSnapshot.relatedValidation = repairedValidation;
       changed = true;
     }
+  }
+
+  const annotatedSnapshot = annotateSnapshotRuntimeMetadata(nextSnapshot, context.config);
+  if (annotatedSnapshot !== nextSnapshot) {
+    if (annotatedSnapshot.platform !== snapshot.platform) {
+      context.stats.platformsRepaired += 1;
+    }
+    if (annotatedSnapshot.deviceProfileId !== snapshot.deviceProfileId) {
+      context.stats.deviceProfilesRepaired += 1;
+    }
+    if (annotatedSnapshot.capturePlanId !== snapshot.capturePlanId) {
+      context.stats.capturePlansRepaired += 1;
+    }
+    return annotatedSnapshot;
   }
 
   return changed ? nextSnapshot : snapshot;
@@ -211,6 +230,9 @@ function createRepairStats() {
     targetLabelsRepaired: 0,
     displayUrlsRepaired: 0,
     deviceLabelsRepaired: 0,
+    platformsRepaired: 0,
+    deviceProfilesRepaired: 0,
+    capturePlansRepaired: 0,
     sectionLabelsRepaired: 0,
     sectionTitlesRepaired: 0,
     validationSectionLabelsRepaired: 0,

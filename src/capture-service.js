@@ -4,57 +4,77 @@ import { capturePage, findBrowser } from "./browser.js";
 import { assessRelatedShotConfidence, assessSnapshotConfidence } from "./capture-confidence.js";
 import { createCaptureDiagnosticRun, finalizeCaptureDiagnostic, recordCaptureDiagnostic } from "./capture-diagnostics.js";
 import { rebuildChanges } from "./changes.js";
-import { devicePresets, findDevicePreset, toPublicDevicePreset } from "./device-presets.js";
+import { findDevicePreset, toPublicDevicePreset } from "./device-presets.js";
 import { archiveDir } from "./paths.js";
 import { shokzHomeRelatedSectionDefinitions, shokzRelatedSectionOrder } from "./shokz-capture-specs.js";
 import {
   appendSnapshot,
   createSnapshotFilePath,
+  findConfigDeviceProfile,
   loadConfig,
   normalizeCaptureTarget,
   normalizeConfig,
-  publicSnapshotUrl
+  normalizeDeviceProfile,
+  publicSnapshotUrl,
+  resolveConfiguredCapturePlans
 } from "./store.js";
 
-export async function captureConfiguredUrls(config = null) {
-  const activeConfig = config || await loadConfig();
+export async function captureConfiguredUrls(config = null, options = {}) {
+  const activeConfig = normalizeConfig(config || await loadConfig());
+  const plans = resolveConfiguredCapturePlans(activeConfig, options);
+  return runResolvedCapturePlans(plans, activeConfig);
+}
+
+export async function captureAllDevices(config = null, options = {}) {
+  return captureConfiguredUrls(config, options);
+}
+
+export async function captureOne(inputTarget, config = null, options = {}) {
+  const activeConfig = normalizeConfig(config || await loadConfig());
+  const execution = resolveAdHocCaptureExecution(inputTarget, activeConfig, options);
+  return runCaptureExecution(execution, activeConfig);
+}
+
+async function runResolvedCapturePlans(plans, config) {
   const results = [];
-  for (const target of activeConfig.urls) {
-    results.push(await captureOne(target, activeConfig));
+  for (const execution of plans) {
+    results.push(await runCaptureExecution(execution, config));
   }
   return results;
 }
 
-export async function captureAllDevices(config = null) {
-  const activeConfig = config || await loadConfig();
-  const results = [];
-  for (const preset of devicePresets) {
-    const presetConfig = normalizeConfig({
-      ...activeConfig,
-      devicePresetId: preset.id
-    });
-    for (const target of presetConfig.urls) {
-      results.push(await captureOne(target, presetConfig));
-    }
-  }
-  return results;
+async function runCaptureExecution(execution, config) {
+  const runner = execution.platform === "mobile"
+    ? captureMobilePlan
+    : capturePcPlan;
+  return runner(execution, config);
 }
 
-export async function captureOne(inputTarget, config = null) {
-  const activeConfig = config || await loadConfig();
-  const target = normalizeCaptureTarget(inputTarget);
+async function capturePcPlan(execution, config) {
+  return capturePlanExecution({ ...execution, platform: "pc" }, config);
+}
+
+async function captureMobilePlan(execution, config) {
+  return capturePlanExecution({ ...execution, platform: "mobile" }, config);
+}
+
+async function capturePlanExecution(execution, config) {
+  const target = execution.target;
   const normalizedUrl = target.url;
   const capturedAt = new Date();
   const fileInfo = await createSnapshotFilePath(normalizedUrl, capturedAt);
-  const devicePreset = findDevicePreset(activeConfig.devicePresetId);
+  const devicePreset = execution.devicePreset || findDevicePreset(execution.deviceProfile?.devicePresetId || "");
   const publicDevice = devicePreset ? toPublicDevicePreset(devicePreset) : null;
-  const captureConfig = captureConfigForTarget(activeConfig, target);
+  const captureConfig = captureConfigForExecution(config, execution);
   const diagnosticRun = createCaptureDiagnosticRun({
     targetId: target.id,
     targetLabel: target.label || normalizedUrl,
     requestedUrl: normalizedUrl,
-    captureMode: target.captureMode || null,
-    devicePresetId: publicDevice?.id || activeConfig.devicePresetId || null
+    captureMode: captureConfig.captureMode || null,
+    devicePresetId: publicDevice?.id || execution.deviceProfile?.devicePresetId || null,
+    platform: execution.platform,
+    deviceProfileId: execution.deviceProfile?.id || null,
+    capturePlanId: execution.id || null
   });
 
   try {
@@ -99,12 +119,12 @@ export async function captureOne(inputTarget, config = null) {
         urlCheck: capture.urlCheck || null
       });
       const snapshot = await appendSnapshot({
-        id: `${stamp}-${fileInfo.siteSlug}-${itemTargetId}-${publicDevice?.id || "device"}`,
+        id: `${stamp}-${fileInfo.siteSlug}-${itemTargetId}-${execution.id || publicDevice?.id || "device"}`,
         url: normalizedUrl,
         targetId: itemTargetId,
         targetLabel: itemTargetLabel,
         displayUrl,
-        captureMode: target.captureMode || null,
+        captureMode: captureConfig.captureMode || null,
         requestedUrl: capture.requestedUrl || normalizedUrl,
         finalUrl: capture.finalUrl || normalizedUrl,
         urlCheck: capture.urlCheck || null,
@@ -115,9 +135,12 @@ export async function captureOne(inputTarget, config = null) {
         bytes: stat.size,
         width: item.width || capture.width,
         height: item.height || capture.height,
-        devicePresetId: publicDevice?.id || activeConfig.devicePresetId || null,
+        devicePresetId: publicDevice?.id || execution.deviceProfile?.devicePresetId || null,
         deviceName: publicDevice?.name || null,
         deviceLabel: publicDevice?.label || null,
+        platform: execution.platform,
+        deviceProfileId: execution.deviceProfile?.id || null,
+        capturePlanId: execution.id || null,
         fullPageHeight: capture.fullPageHeight,
         truncated: capture.truncated,
         scrollInfo: capture.scrollInfo,
@@ -169,7 +192,15 @@ export async function captureOne(inputTarget, config = null) {
       warningCount: Array.isArray(relatedCapture.validation?.warnings) ? relatedCapture.validation.warnings.length : 0,
       changeRefresh
     });
-    return { ok: true, snapshot: snapshots[0], snapshots, changeRefresh };
+    return {
+      ok: true,
+      platform: execution.platform,
+      capturePlanId: execution.id || null,
+      deviceProfileId: execution.deviceProfile?.id || null,
+      snapshot: snapshots[0],
+      snapshots,
+      changeRefresh
+    };
   } catch (error) {
     await removeCaptureOutputs(fileInfo.absolutePath);
     recordCaptureDiagnostic(diagnosticRun, {
@@ -188,19 +219,90 @@ export async function captureOne(inputTarget, config = null) {
       error: error.message
     });
     return {
-      ok: false,
-      url: normalizedUrl,
-      targetId: target.id,
-      targetLabel: target.label || normalizedUrl,
-      displayUrl: target.label || normalizedUrl,
-      captureMode: target.captureMode || null,
-      requestedUrl: error.requestedUrl || normalizedUrl,
-      finalUrl: error.finalUrl || null,
-      urlCheck: error.urlCheck || null,
+        ok: false,
+        url: normalizedUrl,
+        targetId: target.id,
+        targetLabel: target.label || normalizedUrl,
+        displayUrl: target.label || normalizedUrl,
+        captureMode: captureConfig.captureMode || null,
+        platform: execution.platform,
+        deviceProfileId: execution.deviceProfile?.id || null,
+        capturePlanId: execution.id || null,
+        requestedUrl: error.requestedUrl || normalizedUrl,
+        finalUrl: error.finalUrl || null,
+        urlCheck: error.urlCheck || null,
       capturedAt: capturedAt.toISOString(),
       error: error.message
     };
   }
+}
+
+function resolveAdHocCaptureExecution(inputTarget, config, options = {}) {
+  const target = normalizeCaptureTarget(inputTarget);
+  const selectedPlan = resolveConfiguredCapturePlans(config, {
+    planIds: options.planIds,
+    platform: options.platform,
+    deviceProfileId: options.deviceProfileId,
+    devicePresetId: options.devicePresetId
+  })[0] || resolveConfiguredCapturePlans(config)[0];
+  const deviceProfile = selectedPlan?.deviceProfile || resolveAdHocDeviceProfile(config, options);
+  const devicePreset = selectedPlan?.devicePreset || findDevicePreset(deviceProfile?.devicePresetId || "");
+  const platform = selectedPlan?.platform ||
+    deviceProfile?.platform ||
+    (devicePreset?.mobile ? "mobile" : "pc") ||
+    "pc";
+
+  return {
+    id: selectedPlan?.target?.id === target.id
+      ? selectedPlan.id
+      : `adhoc-${selectedPlan?.id || deviceProfile?.id || platform}-${target.id}`,
+    target,
+    deviceProfile,
+    devicePreset,
+    platform,
+    captureMode: stringOrNull(options.captureMode) || target.captureMode || selectedPlan?.captureMode || null,
+    ...(Object.hasOwn(options, "fullPage")
+      ? { fullPage: Boolean(options.fullPage) }
+      : Object.hasOwn(target, "fullPage")
+        ? { fullPage: Boolean(target.fullPage) }
+        : Object.hasOwn(selectedPlan || {}, "fullPage")
+          ? { fullPage: Boolean(selectedPlan.fullPage) }
+          : {})
+  };
+}
+
+function resolveAdHocDeviceProfile(config, options = {}) {
+  const requestedProfileId = String(options.deviceProfileId || "").trim();
+  if (requestedProfileId) {
+    const configuredProfile = findConfigDeviceProfile(config, requestedProfileId);
+    if (configuredProfile) {
+      return configuredProfile;
+    }
+  }
+
+  const requestedPresetId = String(options.devicePresetId || "").trim();
+  if (requestedPresetId) {
+    return normalizeDeviceProfile({
+      id: `adhoc-${requestedPresetId}`,
+      platform: options.platform || null,
+      devicePresetId: requestedPresetId,
+      enabled: true
+    });
+  }
+
+  const fallbackPlan = resolveConfiguredCapturePlans(config, {
+    platform: options.platform
+  })[0] || resolveConfiguredCapturePlans(config)[0];
+  if (fallbackPlan?.deviceProfile) {
+    return fallbackPlan.deviceProfile;
+  }
+
+  return normalizeDeviceProfile({
+    id: "adhoc-default",
+    platform: options.platform || "pc",
+    devicePresetId: options.platform === "mobile" ? "iphone-15" : "pc-hd",
+    enabled: true
+  });
 }
 
 async function refreshChangeRecords() {
@@ -212,19 +314,39 @@ async function refreshChangeRecords() {
   }
 }
 
-function captureConfigForTarget(config, target) {
-  const targetConfig = { ...config };
-  if (Object.hasOwn(target, "fullPage")) {
-    targetConfig.fullPage = target.fullPage;
+function captureConfigForExecution(config, execution) {
+  const targetConfig = {
+    ...config,
+    platform: execution.platform,
+    devicePresetId: execution.devicePreset?.id || execution.deviceProfile?.devicePresetId || null,
+    viewport: {
+      width: execution.devicePreset?.width || 1440,
+      height: execution.devicePreset?.height || 1000,
+      mobile: execution.platform === "mobile",
+      touch: Boolean(execution.devicePreset?.touch),
+      deviceScaleFactor: execution.devicePreset?.deviceScaleFactor || 1
+    }
+  };
+  if (Object.hasOwn(execution.target, "fullPage")) {
+    targetConfig.fullPage = execution.target.fullPage;
   }
-  if (target.captureMode) {
-    targetConfig.captureMode = target.captureMode;
+  if (Object.hasOwn(execution, "fullPage")) {
+    targetConfig.fullPage = execution.fullPage;
+  }
+  const captureMode = execution.captureMode || execution.target.captureMode || null;
+  if (captureMode) {
+    targetConfig.captureMode = captureMode;
   }
   return targetConfig;
 }
 
+function stringOrNull(value) {
+  const text = String(value || "").trim();
+  return text || null;
+}
+
 function relatedCaptureModeForTarget(target, captureConfig) {
-  if ((target.id === "shokz-products-nav" || target.captureMode === "shokz-products-nav") && !captureConfig.viewport?.mobile) {
+  if ((target.id === "shokz-products-nav" || captureConfig.captureMode === "shokz-products-nav") && captureConfig.platform !== "mobile") {
     return "shokz-products-nav-related";
   }
 
@@ -232,7 +354,7 @@ function relatedCaptureModeForTarget(target, captureConfig) {
 }
 
 async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPath, captureConfig, diagnosticRun = null) {
-  if (target.id === "shokz-home" && !target.captureMode) {
+  if (target.id === "shokz-home" && !captureConfig.captureMode) {
     return captureShokzHomeRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun);
   }
 
@@ -643,4 +765,15 @@ export async function browserStatus() {
   } catch (error) {
     return { ok: false, error: error.message };
   }
+}
+
+export const __testOnly = {
+  captureConfigForExecution,
+  relatedCaptureModeForTarget,
+  resolveAdHocCaptureExecution,
+  runnerNameForPlatform
+};
+
+function runnerNameForPlatform(platform) {
+  return platform === "mobile" ? "captureMobilePlan" : "capturePcPlan";
 }

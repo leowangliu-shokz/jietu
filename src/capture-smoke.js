@@ -1,5 +1,5 @@
 import { captureAllDevices, captureConfiguredUrls, captureOne } from "./capture-service.js";
-import { loadConfig, normalizeConfig } from "./store.js";
+import { loadConfig } from "./store.js";
 
 const args = parseArgs(process.argv.slice(2));
 const allowWarnings = args.has("--allow-warnings");
@@ -8,10 +8,7 @@ const targetId = args.get("--target-id");
 const url = args.get("--url");
 const devicePresetId = args.get("--device-preset-id");
 
-const config = normalizeConfig({
-  ...await loadConfig(),
-  ...(devicePresetId ? { devicePresetId } : {})
-});
+const config = await loadConfig();
 
 const results = await runCaptures({
   config,
@@ -33,25 +30,24 @@ if (
 
 async function runCaptures({ config, allDevices, targetId, url }) {
   if (url) {
-    return [await captureOne(url, config)];
+    return [await captureOne(url, config, {
+      ...(devicePresetId ? { devicePresetId } : {})
+    })];
   }
 
-  const filteredConfig = targetId
-    ? normalizeConfig({
-      ...config,
-      urls: config.urls.filter((target) => target.id === targetId)
-    })
-    : config;
+  const filters = {
+    ...(targetId ? { targetId } : {}),
+    ...(devicePresetId ? { devicePresetId } : {})
+  };
+  const results = allDevices
+    ? await captureAllDevices(config, filters)
+    : await captureConfiguredUrls(config, filters);
 
-  if (targetId && filteredConfig.urls.length === 0) {
+  if (targetId && results.length === 0) {
     throw new Error(`Unknown target id: ${targetId}`);
   }
 
-  if (allDevices) {
-    return captureAllDevices(filteredConfig);
-  }
-
-  return captureConfiguredUrls(filteredConfig);
+  return results;
 }
 
 function summarizeResults(results) {

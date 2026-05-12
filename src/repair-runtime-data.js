@@ -5,7 +5,9 @@ import { repairSnapshotsRuntimeMetadata } from "./runtime-data-repair.js";
 const config = await loadConfig();
 const snapshots = await readSnapshots();
 const result = repairSnapshotsRuntimeMetadata(snapshots, {
-  targets: config.urls
+  targets: config.targets,
+  deviceProfiles: config.deviceProfiles,
+  capturePlans: config.capturePlans
 });
 
 await saveSnapshots(result.snapshots);

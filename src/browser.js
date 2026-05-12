@@ -90,8 +90,33 @@ export async function findBrowser() {
   throw new Error("Could not find Edge or Chrome. Set BROWSER_PATH to your browser executable.");
 }
 
+function capturePlatform(options = {}, viewport = {}) {
+  const explicit = String(options?.platform || "").trim().toLowerCase();
+  if (explicit === "mobile" || explicit === "pc") {
+    return explicit;
+  }
+  return viewport.mobile ? "mobile" : "pc";
+}
+
+function viewportForCaptureContext(captureContext = {}) {
+  return captureContext?.viewport || captureContext || {};
+}
+
+function isMobileCaptureContext(captureContext = {}) {
+  const explicit = String(captureContext?.platform || "").trim().toLowerCase();
+  if (explicit === "mobile" || explicit === "pc") {
+    return explicit === "mobile";
+  }
+
+  const viewport = viewportForCaptureContext(captureContext);
+  return Boolean(viewport.mobile);
+}
+
 async function driveCapture(client, url, outputPath, options) {
   const viewport = options.viewport || { width: 1440, height: 1000 };
+  const platform = capturePlatform(options, viewport);
+  const captureContext = { viewport, platform };
+  const mobile = platform === "mobile";
   const urlCheck = {
     requestedUrl: url,
     finalUrl: "",
@@ -99,7 +124,7 @@ async function driveCapture(client, url, outputPath, options) {
     checks: []
   };
   const cleanShokzKnownPopups = shouldCleanShokzKnownPopups(url, options);
-  const deferShokzMobileNavDismiss = options.captureMode === "shokz-products-nav" && Boolean(viewport.mobile);
+  const deferShokzMobileNavDismiss = options.captureMode === "shokz-products-nav" && mobile;
   let stage = "initializing";
   try {
   await client.send("Page.enable");
@@ -107,7 +132,7 @@ async function driveCapture(client, url, outputPath, options) {
   // The preset width/height are CSS pixels: keep the screenshot output at
   // that same visible size, otherwise high-DPI mobile DPR crops the left edge.
   await client.send("Emulation.setDeviceMetricsOverride", {
-    mobile: Boolean(viewport.mobile),
+    mobile,
     width: viewport.width,
     height: viewport.height,
     deviceScaleFactor: viewport.deviceScaleFactor || 1,
@@ -141,7 +166,7 @@ async function driveCapture(client, url, outputPath, options) {
 
   if (options.captureMode === "shokz-products-nav") {
     stage = "opening Shokz products navigation";
-    await openShokzProductsNavigation(client, viewport);
+    await openShokzProductsNavigation(client, captureContext);
     if (deferShokzMobileNavDismiss) {
       await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 3, hideOnly: true });
     }
@@ -165,13 +190,13 @@ async function driveCapture(client, url, outputPath, options) {
         : "capturing Shokz home banners";
     let relatedCapture;
     if (options.captureMode === "shokz-products-nav-related") {
-      relatedCapture = await captureShokzProductsNavigationRelated(client, outputPath, viewport);
+      relatedCapture = await captureShokzProductsNavigationRelated(client, outputPath, captureContext);
     } else if (options.captureMode === "shokz-home-related-section") {
       const definition = findShokzHomeRelatedSectionDefinition(options.sectionKey);
       if (!definition) {
         throw new Error(`Unknown Shokz home related section: ${options.sectionKey || "(missing)"}.`);
       }
-      const sectionCapture = await captureShokzHomeRelatedSection(client, outputPath, viewport, definition);
+      const sectionCapture = await captureShokzHomeRelatedSection(client, outputPath, captureContext, definition);
       relatedCapture = {
         width: sectionCapture.width,
         height: sectionCapture.height,
@@ -190,7 +215,7 @@ async function driveCapture(client, url, outputPath, options) {
         }
       };
     } else if (options.captureMode === "shokz-home-related") {
-      relatedCapture = await captureShokzHomeRelated(client, outputPath, viewport);
+      relatedCapture = await captureShokzHomeRelated(client, outputPath, captureContext);
     } else {
       relatedCapture = await captureShokzHomeBanners(client, outputPath, viewport);
     }
@@ -305,7 +330,7 @@ async function driveCapture(client, url, outputPath, options) {
           });
         }
       });
-      const finalizedCapture = viewport.mobile && cleanShokzKnownPopups
+      const finalizedCapture = mobile && cleanShokzKnownPopups
         ? await patchShokzMobileFooterInStitchedCapture(client, url, stitchedCapture, {
           outputPath,
           viewportHeight: viewport.height,
@@ -321,7 +346,7 @@ async function driveCapture(client, url, outputPath, options) {
     }
   } else {
     if (options.captureMode === "shokz-products-nav") {
-      await prepareShokzNavigationMainScreenshot(client, viewport);
+      await prepareShokzNavigationMainScreenshot(client, captureContext);
     } else {
       await prepareForScreenshotCapture(client, {
         rounds: 2,
@@ -340,7 +365,7 @@ async function driveCapture(client, url, outputPath, options) {
           return;
         }
         if (options.captureMode === "shokz-products-nav") {
-          await prepareShokzNavigationMainScreenshot(client, viewport);
+          await prepareShokzNavigationMainScreenshot(client, captureContext);
           return;
         }
         await prepareForScreenshotCapture(client, {
@@ -460,7 +485,8 @@ const homeRelatedSectionDefinitions = [
   }
 ];
 
-async function captureShokzHomeRelated(client, outputPath, viewport) {
+async function captureShokzHomeRelated(client, outputPath, captureContext) {
+  const viewport = viewportForCaptureContext(captureContext);
   await scrollTo(client, 0);
   await sleep(700);
   await primeLazyImages(client);
@@ -502,7 +528,7 @@ async function captureShokzHomeRelated(client, outputPath, viewport) {
 
   for (const definition of importedShokzHomeRelatedSectionDefinitions) {
     try {
-      const sectionCapture = await captureShokzHomeRelatedSection(client, outputPath, viewport, definition);
+      const sectionCapture = await captureShokzHomeRelatedSection(client, outputPath, captureContext, definition);
       captures.push(...sectionCapture.captures);
       warnings.push(...sectionCapture.warnings);
       maxWidth = Math.max(maxWidth, sectionCapture.width || 0);
@@ -548,12 +574,13 @@ async function captureShokzHomeRelated(client, outputPath, viewport) {
   };
 }
 
-async function captureShokzProductsNavigationRelated(client, outputPath, viewport) {
+async function captureShokzProductsNavigationRelated(client, outputPath, captureContext) {
+  const viewport = viewportForCaptureContext(captureContext);
   await scrollTo(client, 0);
   await sleep(700);
   await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 3, hideOnly: true });
 
-  if (viewport.mobile) {
+  if (isMobileCaptureContext(captureContext)) {
     return {
       width: viewport.width,
       height: viewport.height,
@@ -606,13 +633,13 @@ async function captureShokzProductsNavigationRelated(client, outputPath, viewpor
     rect: null
   };
 
-  try {
-    let productOpenError = null;
     try {
-      await openShokzProductsNavigation(client, viewport);
-    } catch (error) {
-      productOpenError = error;
-      await hoverShokzNavigationPoint(client, productsTopItem.hoverPoint);
+      let productOpenError = null;
+      try {
+        await openShokzProductsNavigation(client, captureContext);
+      } catch (error) {
+        productOpenError = error;
+        await hoverShokzNavigationPoint(client, productsTopItem.hoverPoint);
     }
     await sleep(750);
     await primeLazyImages(client);
@@ -1139,22 +1166,24 @@ function formatKnownPopupRemaining(cleanup) {
     .join("; ");
 }
 
-async function prepareShokzNavigationMainScreenshot(client, viewport) {
+async function prepareShokzNavigationMainScreenshot(client, captureContext) {
+  const viewport = viewportForCaptureContext(captureContext);
+  const mobile = isMobileCaptureContext(captureContext);
   let cleanup = await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 4, hideOnly: true });
   if (!cleanup.ok) {
     throw new Error(`Known popup remained before Shokz navigation screenshot: ${formatKnownPopupRemaining(cleanup)}.`);
   }
-  const state = await waitForShokzProductsNavigation(client, Boolean(viewport.mobile));
+  const state = await waitForShokzProductsNavigation(client, mobile);
   if (!state.ok) {
-    await openShokzProductsNavigation(client, viewport);
+    await openShokzProductsNavigation(client, captureContext);
   }
   cleanup = await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 4, hideOnly: true });
   if (!cleanup.ok) {
     throw new Error(`Known popup remained before Shokz navigation screenshot: ${formatKnownPopupRemaining(cleanup)}.`);
   }
-  const finalState = await waitForShokzProductsNavigation(client, Boolean(viewport.mobile));
+  const finalState = await waitForShokzProductsNavigation(client, mobile);
   if (!finalState.ok) {
-    await openShokzProductsNavigation(client, viewport);
+    await openShokzProductsNavigation(client, captureContext);
   }
   await sleep(250);
   cleanup = await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 5, hideOnly: true });
@@ -1163,20 +1192,20 @@ async function prepareShokzNavigationMainScreenshot(client, viewport) {
   }
 }
 
-async function prepareShokzNavigationRelatedScreenshot(client, state, viewport) {
+async function prepareShokzNavigationRelatedScreenshot(client, state, captureContext) {
   await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 4, hideOnly: true });
-  await restoreShokzNavigationHover(client, state, viewport);
+  await restoreShokzNavigationHover(client, state, captureContext);
 }
 
-async function restoreShokzNavigationHover(client, state, viewport = null) {
+async function restoreShokzNavigationHover(client, state, captureContext = null) {
   if (state.navigationLevel === "secondary" && isProductsNavigationLabel(state.topLevelLabel || state.tabLabel) && state.hoverItemLabel) {
     await hoverShokzTopNavigationLabel(client, "Products");
     const activated = await hoverShokzProductsSecondaryLabel(client, state.hoverItemLabel);
     if (activated?.ok) {
       return;
     }
-    if (viewport) {
-      await openShokzProductsNavigation(client, viewport);
+    if (captureContext) {
+      await openShokzProductsNavigation(client, captureContext);
       const openedActivation = await hoverShokzProductsSecondaryLabel(client, state.hoverItemLabel);
       if (openedActivation?.ok) {
         return;
@@ -2277,9 +2306,10 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
   };
 }
 
-async function captureShokzHomeRelatedSection(client, outputPath, viewport, definition) {
+async function captureShokzHomeRelatedSection(client, outputPath, captureContext, definition) {
+  const viewport = viewportForCaptureContext(captureContext);
   await primeLazyImages(client);
-  const plan = await readShokzHomeRelatedSectionPlan(client, definition, viewport);
+  const plan = await readShokzHomeRelatedSectionPlan(client, definition, captureContext);
   if (plan.ok && plan.skipped) {
     return {
       width: 0,
@@ -2619,14 +2649,16 @@ function directRelatedStateForCapture(state) {
   };
 }
 
-async function readShokzHomeRelatedSectionPlan(client, definition, viewport = {}) {
+async function readShokzHomeRelatedSectionPlan(client, definition, captureContext = {}) {
+  const viewport = viewportForCaptureContext(captureContext);
+  const mobile = isMobileCaptureContext(captureContext);
   const runtimeDefinition = {
     ...definition,
     captureHover: definition.key === "product-showcase" &&
-      !viewport.mobile &&
+      !mobile &&
       !viewport.touch
   };
-  if (runtimeDefinition.mobileOnly && !viewport.mobile && !viewport.touch) {
+  if (runtimeDefinition.mobileOnly && !mobile && !viewport.touch) {
     return {
       ok: true,
       skipped: true,
@@ -7405,16 +7437,18 @@ function compareRelatedSectionEntries(a, b) {
   return orderA - orderB || String(a.sectionLabel || "").localeCompare(String(b.sectionLabel || ""), "zh-CN");
 }
 
-async function openShokzProductsNavigation(client, viewport) {
+async function openShokzProductsNavigation(client, captureContext) {
+  const viewport = viewportForCaptureContext(captureContext);
+  const mobile = isMobileCaptureContext(captureContext);
   await scrollTo(client, 0);
-  if (!viewport.mobile) {
+  if (!mobile) {
     await closeShokzSearchOverlay(client);
   }
   await sleep(700);
 
   let state = null;
   let mobileClick = null;
-  if (viewport.mobile) {
+  if (mobile) {
     mobileClick = await clickShokzMobileMenu(client);
     await returnShokzMobileMenuToTopLevel(client);
     state = await ensureShokzMobileMenuVisible(client);
@@ -7427,7 +7461,7 @@ async function openShokzProductsNavigation(client, viewport) {
   }
 
   if (!state.ok) {
-    if (!viewport.mobile) {
+    if (!mobile) {
       for (let attempt = 0; attempt < 2 && !state.ok; attempt += 1) {
         await hoverShokzTopNavigationLabel(client, "Products");
         state = await waitForShokzProductsNavigation(client, false);
