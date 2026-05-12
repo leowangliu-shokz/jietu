@@ -194,19 +194,45 @@ function activeChangesFilters() {
   return changesFiltersByPlatform[activePlatform];
 }
 
-function setActivePlatform(platform) {
-  activePlatform = platform === "mobile" ? "mobile" : "pc";
+function setActivePlatform(platform, options = {}) {
+  activePlatform = resolveActivePlatformValue(platform);
+  syncPlatformTabs();
+  syncActivePlatformFilterInputs();
+  closePlatformMenus();
+  if (options.render !== false) {
+    render();
+  }
+}
 
+function syncPlatformTabs() {
   for (const tab of elements.platformTabs) {
     const isActive = tab.dataset.platformTab === activePlatform;
     tab.classList.toggle("is-active", isActive);
     tab.setAttribute("aria-selected", String(isActive));
     tab.tabIndex = isActive ? 0 : -1;
   }
+}
 
-  syncActivePlatformFilterInputs();
-  closePlatformMenus();
-  render();
+function resolveActivePlatformValue(platform) {
+  return platform === "mobile" ? "mobile" : "pc";
+}
+
+function resolveAvailablePlatform(nextState, fallbackPlatform = activePlatform) {
+  const currentPlatform = resolveActivePlatformValue(fallbackPlatform);
+  const platformViews = nextState?.platforms;
+  const availablePlatforms = ["pc", "mobile"].filter((platform) => platformViews?.[platform]);
+
+  if (availablePlatforms.length === 0) {
+    return currentPlatform;
+  }
+
+  if (availablePlatforms.includes(currentPlatform)) {
+    return currentPlatform;
+  }
+
+  return availablePlatforms.includes("pc")
+    ? "pc"
+    : availablePlatforms[0];
 }
 
 function handlePlatformTabKeydown(event) {
@@ -307,9 +333,7 @@ async function refreshState(options = {}) {
   state = await stateResponse.json();
   const loadedChanges = await changesResponse.json();
   changes = Array.isArray(loadedChanges) ? loadedChanges : [];
-  if (!state?.platforms?.[activePlatform]) {
-    activePlatform = "pc";
-  }
+  setActivePlatform(resolveAvailablePlatform(state, activePlatform), { render: false });
   render(options);
 }
 
