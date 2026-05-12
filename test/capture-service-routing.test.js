@@ -34,7 +34,7 @@ test("captureConfigForExecution builds a mobile viewport and applies plan overri
   assert.equal(captureConfig.fullPage, false);
 });
 
-test("navigation related captures stay desktop-only after platform split", () => {
+test("navigation related captures run for both desktop and mobile navigation targets", () => {
   assert.equal(
     relatedCaptureModeForTarget(
       { id: "shokz-products-nav" },
@@ -47,7 +47,7 @@ test("navigation related captures stay desktop-only after platform split", () =>
       { id: "shokz-products-nav" },
       { platform: "mobile", captureMode: "shokz-products-nav" }
     ),
-    null
+    "shokz-products-nav-related"
   );
 });
 

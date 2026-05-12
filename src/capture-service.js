@@ -346,7 +346,7 @@ function stringOrNull(value) {
 }
 
 function relatedCaptureModeForTarget(target, captureConfig) {
-  if ((target.id === "shokz-products-nav" || captureConfig.captureMode === "shokz-products-nav") && captureConfig.platform !== "mobile") {
+  if (target.id === "shokz-products-nav" || captureConfig.captureMode === "shokz-products-nav") {
     return "shokz-products-nav-related";
   }
 

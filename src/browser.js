@@ -10,6 +10,7 @@ import {
   findShokzHomeRelatedSectionDefinition,
   shokzHomeRelatedSectionDefinitions as importedShokzHomeRelatedSectionDefinitions,
   shokzMediaTrackDefinitions,
+  shokzMobileNavigationSecondaryStateDefinitions,
   shokzNavigationTopLabels,
   shokzProductsNavigationCategoryLabels,
   shokzRelatedSectionOrder
@@ -581,23 +582,7 @@ async function captureShokzProductsNavigationRelated(client, outputPath, capture
   await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 3, hideOnly: true });
 
   if (isMobileCaptureContext(captureContext)) {
-    return {
-      width: viewport.width,
-      height: viewport.height,
-      captures: [],
-      relatedValidation: {
-        status: "ok",
-        warnings: [],
-        sections: [{
-          sectionKey: "navigation",
-          sectionLabel: "Navigation",
-          expectedCount: 0,
-          capturedCount: 0,
-          savedCount: 0,
-          status: "ok"
-        }]
-      }
-    };
+    return captureShokzMobileNavigationRelated(client, outputPath, captureContext);
   }
 
   const plan = await readShokzNavigationTopLevelItems(client);
@@ -741,6 +726,72 @@ async function captureShokzProductsNavigationRelated(client, outputPath, capture
   };
 }
 
+async function captureShokzMobileNavigationRelated(client, outputPath, captureContext) {
+  const viewport = viewportForCaptureContext(captureContext);
+  const captures = [];
+  const warnings = [];
+  const seenVisual = new Set();
+  const mainSeed = await visualSeedForFile(outputPath);
+  const expectedCount = shokzMobileNavigationSecondaryStateDefinitions.length;
+
+  await openShokzProductsNavigation(client, captureContext);
+
+  for (const definition of shokzMobileNavigationSecondaryStateDefinitions) {
+    try {
+      await saveShokzNavigationCapture(client, outputPath, viewport, {
+        navigationLevel: "secondary",
+        topLevelLabel: definition.topLevelLabel,
+        topLevelIndex: definition.topLevelIndex,
+        tabLabel: definition.tabLabel,
+        tabIndex: definition.tabIndex,
+        hoverItemKey: definition.hoverItemKey,
+        hoverItemLabel: definition.hoverItemLabel,
+        hoverItemRect: null,
+        hoverPoint: null,
+        hoverIndex: definition.hoverIndex,
+        stateLabel: definition.stateLabel,
+        fileId: definition.fileId,
+        skipMainDuplicate: false,
+        restoreMode: "mobile-tap",
+        activationLabel: definition.clickLabel
+      }, { captures, warnings, seenVisual, mainSeed });
+    } catch (error) {
+      warnings.push({
+        sectionKey: "navigation",
+        sectionLabel: "Navigation",
+        stateLabel: definition.stateLabel,
+        message: error.message
+      });
+    }
+  }
+
+  captures.forEach((capture, index) => {
+    capture.stateIndex = index + 1;
+    capture.stateCount = captures.length;
+    if (capture.sectionState) {
+      capture.sectionState.activeIndex = index + 1;
+    }
+  });
+
+  return {
+    width: captures.reduce((max, capture) => Math.max(max, capture.width || 0), viewport.width),
+    height: captures.reduce((max, capture) => Math.max(max, capture.height || 0), viewport.height),
+    captures: captures.sort(compareRelatedCaptures),
+    relatedValidation: {
+      status: warnings.length ? "warning" : "ok",
+      warnings,
+      sections: [{
+        sectionKey: "navigation",
+        sectionLabel: "Navigation",
+        expectedCount,
+        capturedCount: captures.length,
+        savedCount: captures.length,
+        status: warnings.length ? "warning" : "ok"
+      }]
+    }
+  };
+}
+
 async function saveShokzNavigationCapture(client, outputPath, viewport, state, context) {
   await prepareShokzNavigationRelatedScreenshot(client, state, viewport);
   let current = await readShokzNavigationSnapshotState(client, state);
@@ -805,6 +856,7 @@ async function saveShokzNavigationCapture(client, outputPath, viewport, state, c
     fromSurface: true
   }, {
     label: `navigation ${state.stateLabel}`,
+    acceptBlankAudit: (blankAudit) => shouldAcceptShokzNavigationBlankAudit(state, current, blankAudit),
     beforeAttempt: async ({ attempt }) => {
       if (attempt === 1) {
         return;
@@ -910,6 +962,29 @@ async function saveShokzNavigationCapture(client, outputPath, viewport, state, c
   };
   context.captures.push(capture);
   return true;
+}
+
+function shouldAcceptShokzNavigationBlankAudit(state, current, blankAudit) {
+  if (blankAudit?.status !== "blank") {
+    return false;
+  }
+  if (blankAudit?.fullImageNearWhite) {
+    return false;
+  }
+  if (state?.restoreMode !== "mobile-tap") {
+    return false;
+  }
+  if (isProductsNavigationLabel(state?.topLevelLabel || state?.tabLabel)) {
+    return false;
+  }
+  const panelText = comparableNavigationLabel(current?.text || "");
+  const targetKey = comparableNavigationLabel(state?.hoverItemLabel || state?.topLevelLabel || state?.tabLabel || "");
+  const textBlockCount = Array.isArray(current?.textBlocks) ? current.textBlocks.length : 0;
+  const visibleItemCount = Number(current?.visibleItemCount || current?.itemCount || 0);
+  if (!targetKey || !panelText.includes(targetKey)) {
+    return false;
+  }
+  return textBlockCount >= 8 && visibleItemCount >= 6;
 }
 
 async function prepareForScreenshotCapture(client, options = {}) {
@@ -1198,6 +1273,10 @@ async function prepareShokzNavigationRelatedScreenshot(client, state, captureCon
 }
 
 async function restoreShokzNavigationHover(client, state, captureContext = null) {
+  if (state.restoreMode === "mobile-tap") {
+    await restoreShokzMobileNavigationTapState(client, state, captureContext);
+    return;
+  }
   if (state.navigationLevel === "secondary" && isProductsNavigationLabel(state.topLevelLabel || state.tabLabel) && state.hoverItemLabel) {
     await hoverShokzTopNavigationLabel(client, "Products");
     const activated = await hoverShokzProductsSecondaryLabel(client, state.hoverItemLabel);
@@ -1224,6 +1303,70 @@ async function restoreShokzNavigationHover(client, state, captureContext = null)
     await sleep(650);
     await primeLazyImages(client);
   }
+}
+
+async function restoreShokzMobileNavigationTapState(client, state, captureContext = null) {
+  const targetLabel = state.activationLabel || state.hoverItemLabel || state.topLevelLabel;
+  if (!targetLabel) {
+    throw new Error("Mobile navigation target label is missing.");
+  }
+
+  const menuState = await readShokzProductsNavigationState(client, true);
+  if (!menuState.ok) {
+    if (menuState.drawerVisible) {
+      await returnShokzMobileMenuToTopLevel(client);
+      const resetState = await ensureShokzMobileMenuVisible(client);
+      if (!resetState.ok) {
+        throw new Error(`Could not return the Shokz mobile menu to the top level before opening ${targetLabel}.`);
+      }
+    } else {
+      await openShokzProductsNavigation(client, captureContext);
+    }
+  }
+  await returnShokzMobileMenuToTopLevel(client);
+  await sleep(350);
+
+  const expectedUrl = await readCurrentUrl(client);
+  const activated = await clickShokzMobileNavigationLabel(client, targetLabel);
+  if (!activated.ok) {
+    throw new Error(activated.reason || `Could not activate ${targetLabel} in the Shokz mobile menu.`);
+  }
+  if (activated.navigatesAway) {
+    throw new Error(`${targetLabel} would navigate away and was skipped.`);
+  }
+  if (!activated.usedDetailsToggle && Number.isFinite(activated.x) && Number.isFinite(activated.y)) {
+    await client.send("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [{
+        x: Math.round(activated.x),
+        y: Math.round(activated.y),
+        radiusX: 1,
+        radiusY: 1,
+        force: 1,
+        id: 1
+      }]
+    }).catch(() => null);
+    await client.send("Input.dispatchTouchEvent", {
+      type: "touchEnd",
+      touchPoints: []
+    }).catch(() => null);
+  }
+
+  const drilldownState = await waitForShokzMobileNavigationDrilldown(client, state, expectedUrl);
+  if (!drilldownState.ok) {
+    const activationSummary = [
+      activated.label ? `label=${activated.label}` : "",
+      activated.targetTag ? `target=${activated.targetTag}` : "",
+      activated.structureHint ? `structureHint=${activated.structureHint}` : "",
+      activated.interactive ? `interactive=${activated.interactive}` : "",
+      activated.targetHtml ? `html=${activated.targetHtml}` : ""
+    ].filter(Boolean).join(" ");
+    const suffix = activationSummary ? ` (${activationSummary})` : "";
+    throw new Error((drilldownState.reason || `Could not confirm ${targetLabel} mobile secondary navigation state.`) + suffix);
+  }
+
+  await sleep(350);
+  await primeLazyImages(client);
 }
 
 async function hoverShokzTopNavigationLabel(client, label) {
@@ -1890,6 +2033,7 @@ async function readShokzNavigationSnapshotState(client, state) {
   const result = await client.send("Runtime.evaluate", {
     expression: `(() => {
       const state = ${JSON.stringify(state)};
+      const mobileTap = state.restoreMode === "mobile-tap";
       const visible = (element) => {
         if (!element || !(element instanceof Element)) return false;
         const rect = element.getBoundingClientRect();
@@ -1943,12 +2087,17 @@ async function readShokzNavigationSnapshotState(client, state) {
             const explicitPanel = element.matches([
               "#menu-drawer",
               ".menu-drawer",
+              ".menu_drawer_content",
+              ".menu_drawer_content.active",
+              ".menu_drawer_content > .submenu_content",
               ".mega-menu__content",
               ".product_mega_menu",
               ".product_mega_menu-wrapper",
               "[class*='mega']",
               "[class*='menu-drawer']"
             ].join(","));
+            const drawerClonePanel = mobileTap &&
+              element.matches?.(".menu_drawer_content.active, .menu_drawer_content > .submenu_content");
             const topHit = comparable(text).includes(comparable(state.topLevelLabel));
             const itemHit = comparable(text).includes(comparable(state.hoverItemLabel));
             const categoryHits = [
@@ -1970,11 +2119,14 @@ async function readShokzNavigationSnapshotState(client, state) {
               element,
               text,
               rect,
+              explicitPanel,
+              drawerClonePanel,
               score:
                 Number(topHit) * 4 +
-                Number(itemHit) * 4 +
+                Number(itemHit) * (mobileTap ? 8 : 4) +
                 categoryHits * 3 +
                 Number(explicitPanel) * 10 +
+                Number(drawerClonePanel) * 16 +
                 Number(positioned) * 2 +
                 Math.min(rect.width / Math.max(1, window.innerWidth), 1) * 4 +
                 Math.min(rect.height / Math.max(1, window.innerHeight), 1) * 2
@@ -1983,10 +2135,10 @@ async function readShokzNavigationSnapshotState(client, state) {
           .filter((item) =>
             item.text.length > 16 &&
             item.text.length <= 12000 &&
-            (item.rect.top >= 70 || item.explicitPanel) &&
-            item.rect.top < Math.max(280, window.innerHeight * 0.35) &&
-            item.rect.height >= 80 &&
-            item.rect.width >= Math.min(220, window.innerWidth * 0.2) &&
+            (item.rect.top >= (mobileTap ? 40 : 70) || item.explicitPanel) &&
+            item.rect.top < Math.max(mobileTap ? 360 : 280, window.innerHeight * (mobileTap ? 0.45 : 0.35)) &&
+            item.rect.height >= (mobileTap ? 120 : 80) &&
+            item.rect.width >= Math.min(mobileTap ? 220 : 220, window.innerWidth * (mobileTap ? 0.55 : 0.2)) &&
             item.rect.left < window.innerWidth * 0.8 &&
             item.rect.right > window.innerWidth * 0.2 &&
             !/^Mother.?s Day Sale/i.test(item.text) &&
@@ -1996,6 +2148,40 @@ async function readShokzNavigationSnapshotState(client, state) {
           .sort((a, b) => b.score - a.score || (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height));
         if (candidates[0]) {
           return candidates[0];
+        }
+        if (mobileTap) {
+          const targetKey = comparable(state.hoverItemLabel || state.topLevelLabel || "");
+          const fallback = Array.from(document.querySelectorAll("body *"))
+            .filter(visible)
+            .map((element) => {
+              const rect = rectOf(element);
+              const text = textOf(element).slice(0, 12000);
+              return {
+                element,
+                text,
+                rect,
+                score:
+                  Number(comparable(text).includes(targetKey)) * 10 +
+                  Number(rect.top < 220) * 3 +
+                  Math.min(rect.width / Math.max(1, window.innerWidth), 1) * 4 +
+                  Math.min(rect.height / Math.max(1, window.innerHeight), 1) * 3
+              };
+            })
+            .filter((item) =>
+              item.text.length > 16 &&
+              item.text.length <= 12000 &&
+              comparable(item.text).includes(targetKey) &&
+              item.rect.top >= 40 &&
+              item.rect.top < Math.max(360, window.innerHeight * 0.45) &&
+              item.rect.width >= Math.min(220, window.innerWidth * 0.55) &&
+              item.rect.height >= 120 &&
+              !/Don.?t Miss Out|email address|Subscribe Now|Privacy Policy|Giveaway Terms/i.test(item.text) &&
+              !/^Feedback$/i.test(item.text)
+            )
+            .sort((a, b) => b.score - a.score || (b.rect.width * b.rect.height) - (a.rect.width * a.rect.height));
+          if (fallback[0]) {
+            return fallback[0];
+          }
         }
         return null;
       };
@@ -8353,6 +8539,22 @@ async function returnShokzMobileMenuToTopLevel(client) {
           }
           return null;
         };
+        const drawerBox = document.querySelector(".menu_drawer_content");
+        const closeBtn = drawerBox?.querySelector(".close_btn");
+        if (visible(drawerBox) && drawerBox.classList.contains("active") && visible(closeBtn)) {
+          if (typeof closeBtn.click === "function") {
+            closeBtn.click();
+          } else {
+            closeBtn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+          }
+          drawerBox.classList.remove("active");
+          Array.from(drawerBox.children || [])
+            .filter((element) => element.classList?.contains("submenu_content"))
+            .forEach((element) => element.remove());
+          const menuIcon = document.querySelector("header-drawer .header__icon--menu .icon");
+          menuIcon?.style?.removeProperty("z-index");
+          return { ok: true, moved: true, text: "drawer-clone-close" };
+        }
         const drawer = document.querySelector("#menu-drawer, .menu-drawer");
         if (!visible(drawer)) return { ok: true, moved: false, reason: "drawer-not-visible" };
         const controls = Array.from(document.querySelectorAll("button, [role='button'], a, summary, svg, [class*='close-button'], [class*='arrow']"))
@@ -8392,6 +8594,522 @@ async function returnShokzMobileMenuToTopLevel(client) {
     }
     await sleep(650);
   }
+}
+
+async function clickShokzMobileNavigationLabel(client, label) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const targetLabel = ${JSON.stringify(label)};
+      const comparable = (value) => String(value || "")
+        .toLowerCase()
+        .replace(/&/g, "and")
+        .replace(/[^a-z0-9]+/g, "");
+      const targetKey = comparable(targetLabel);
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          rect.bottom > 0 &&
+          rect.right > 0 &&
+          rect.left < window.innerWidth &&
+          rect.top < window.innerHeight &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const directText = (element) => Array.from(element?.childNodes || [])
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent || "")
+        .join(" ")
+        .replace(/\\s+/g, " ")
+        .trim();
+      const textOf = (element) => element ? [
+        directText(element),
+        element.innerText || element.textContent,
+        element.getAttribute?.("aria-label"),
+        element.getAttribute?.("title")
+      ].filter(Boolean).join(" ").replace(/\\s+/g, " ").trim() : "";
+      const compactRepeatedLabel = (value) => {
+        const clean = String(value || "").replace(/\\s+/g, " ").trim();
+        const words = clean.split(" ").filter(Boolean);
+        if (words.length && words.length % 2 === 0) {
+          const midpoint = words.length / 2;
+          const left = words.slice(0, midpoint).join(" ");
+          const right = words.slice(midpoint).join(" ");
+          if (left === right) return left;
+        }
+        return clean;
+      };
+      const drawer = document.querySelector("#menu-drawer, .menu-drawer");
+      if (!visible(drawer)) {
+        return { ok: false, reason: "Shokz mobile navigation drawer is not visible." };
+      }
+      const current = new URL(window.location.href);
+      const navigatesAway = (target) => {
+        const link = target?.closest?.("a[href]");
+        if (!link) return false;
+        const rawHref = String(link.getAttribute("href") || "").trim();
+        if (!rawHref || rawHref === "#" || rawHref.startsWith("#") || /^javascript:/i.test(rawHref)) {
+          return false;
+        }
+        try {
+          const destination = new URL(rawHref, current);
+          if (!["http:", "https:"].includes(destination.protocol)) {
+            return true;
+          }
+          return destination.origin !== current.origin ||
+            destination.pathname !== current.pathname ||
+            destination.search !== current.search;
+        } catch {
+          return true;
+        }
+      };
+      const rectOf = (element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          top: rect.top,
+          left: rect.left,
+          right: rect.right,
+          bottom: rect.bottom,
+          width: rect.width,
+          height: rect.height
+        };
+      };
+      const interactiveTargetOf = (element) =>
+        element?.closest?.("summary") ||
+        element?.closest?.("button, [role='button'], a, label, [tabindex]") ||
+        element?.closest?.("details") ||
+        element?.closest?.("li") ||
+        element?.parentElement ||
+        element;
+      const drawerRect = rectOf(drawer);
+      const raw = Array.from(drawer.querySelectorAll("a, button, [role='button'], summary, li, div, span, p"))
+        .filter(visible)
+        .map((element) => {
+          const target = interactiveTargetOf(element);
+          const rect = rectOf(target);
+          const targetText = textOf(target);
+          const elementLabel = compactRepeatedLabel(directText(element) || directText(target) || (target.children.length <= 2 ? targetText : ""));
+          const normalizedLabel = comparable(elementLabel);
+          const interactive = target.matches?.("summary") ? 3 :
+            target.matches?.("details") ? 2 :
+              target.matches?.("button, [role='button'], a, label, [tabindex]") ? 1 : 0;
+          const structureHint = /summary|details/i.test(elementLabel + " " + targetText) ? 1 : 0;
+          return { target, rect, label: elementLabel, normalizedLabel, text: targetText, interactive, structureHint };
+        })
+        .filter((item) =>
+          (item.normalizedLabel === targetKey || item.normalizedLabel.startsWith(targetKey)) &&
+          item.rect.top >= Math.max(80, drawerRect.top - 4) &&
+          item.rect.bottom <= Math.min(window.innerHeight + 24, drawerRect.bottom + 24) &&
+          item.rect.left >= Math.max(0, drawerRect.left - 12) &&
+          item.rect.right <= Math.min(window.innerWidth + 12, drawerRect.right + 12) &&
+          item.rect.width >= 36 &&
+          item.rect.height >= 14
+        )
+        .sort((a, b) =>
+          b.structureHint - a.structureHint ||
+          b.interactive - a.interactive ||
+          b.normalizedLabel.length - a.normalizedLabel.length ||
+          a.rect.top - b.rect.top ||
+          a.rect.left - b.rect.left
+        );
+      const choice = raw[0];
+      if (!choice) {
+        return { ok: false, reason: "Target label not found in the Shokz mobile menu." };
+      }
+      const href = choice.target.closest?.("a[href]")?.href || "";
+      const wouldNavigate = navigatesAway(choice.target);
+      const detailsRoot = choice.target.matches?.("details")
+        ? choice.target
+        : choice.target.closest?.("details");
+      const controlledPanelId = !detailsRoot && choice.target.matches?.("summary")
+        ? String(choice.target.getAttribute("aria-controls") || "").trim()
+        : "";
+      const controlledPanel = controlledPanelId ? document.getElementById(controlledPanelId) : null;
+      const materializeMobileDrawerClone = (summary, panel) => {
+        const drawerBox = document.querySelector(".menu_drawer_content");
+        const drawerBoxHeader = drawerBox?.querySelector(".menu_drawer_header");
+        const drawerCloneSource = panel?.querySelector(".submenu_content");
+        if (!drawerBox || !drawerBoxHeader || !drawerCloneSource) {
+          return false;
+        }
+        Array.from(drawerBox.children || [])
+          .filter((element) => element.classList?.contains("submenu_content"))
+          .forEach((element) => element.remove());
+        const clone = drawerCloneSource.cloneNode(true);
+        clone.dataset.pageShotNavClone = "true";
+        drawerBoxHeader.after(clone);
+        drawerBox.classList.add("active");
+        drawerBox.style.setProperty("display", "block", "important");
+        drawerBox.style.setProperty("visibility", "visible", "important");
+        drawerBox.style.setProperty("opacity", "1", "important");
+        drawerBox.style.setProperty("pointer-events", "auto", "important");
+        summary?.classList?.add("active");
+        const menuIcon = document.querySelector("header-drawer .header__icon--menu .icon");
+        menuIcon?.style?.setProperty("z-index", "15", "important");
+        return visible(clone);
+      };
+      const x = detailsRoot
+        ? Math.round(choice.rect.left + choice.rect.width / 2)
+        : Math.round(choice.rect.right - Math.min(24, Math.max(12, choice.rect.width * 0.18)));
+      const y = Math.round(choice.rect.top + choice.rect.height / 2);
+      let usedDrawerClone = false;
+      if (!wouldNavigate) {
+        const primaryTarget = choice.target.matches?.("summary")
+          ? choice.target
+          : detailsRoot?.querySelector?.(":scope > summary") || choice.target;
+        const clickTargets = [
+          primaryTarget,
+          choice.target,
+          choice.target.parentElement,
+          choice.target.closest?.("li"),
+          detailsRoot
+        ].filter(Boolean);
+        if (detailsRoot && "open" in detailsRoot) {
+          detailsRoot.open = true;
+          detailsRoot.setAttribute("open", "open");
+        }
+        if (controlledPanel) {
+          primaryTarget.setAttribute("aria-expanded", "true");
+          controlledPanel.removeAttribute("hidden");
+          controlledPanel.removeAttribute("aria-hidden");
+          controlledPanel.style.setProperty("display", "block", "important");
+          controlledPanel.style.setProperty("visibility", "visible", "important");
+          controlledPanel.style.setProperty("opacity", "1", "important");
+          controlledPanel.style.setProperty("pointer-events", "auto", "important");
+          usedDrawerClone = materializeMobileDrawerClone(primaryTarget, controlledPanel);
+        }
+        const activeTargets = detailsRoot ? [primaryTarget].filter(Boolean) : clickTargets;
+        for (const element of activeTargets) {
+          if (element === primaryTarget && element.matches?.("summary")) {
+            element.focus?.();
+            for (const key of ["Enter", " "]) {
+              element.dispatchEvent(new KeyboardEvent("keydown", {
+                key,
+                code: key === "Enter" ? "Enter" : "Space",
+                bubbles: true,
+                cancelable: true
+              }));
+              element.dispatchEvent(new KeyboardEvent("keyup", {
+                key,
+                code: key === "Enter" ? "Enter" : "Space",
+                bubbles: true,
+                cancelable: true
+              }));
+            }
+          }
+          for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+            element.dispatchEvent(new MouseEvent(type, {
+              bubbles: true,
+              cancelable: true,
+              clientX: x,
+              clientY: y,
+              view: window
+            }));
+          }
+          if (typeof element.click === "function") {
+            element.click();
+          }
+        }
+      }
+      return {
+        ok: true,
+        label: choice.label,
+        targetTag: choice.target.tagName,
+        structureHint: choice.structureHint,
+        interactive: choice.interactive,
+        targetHtml: String(choice.target.outerHTML || "").replace(/\s+/g, " ").slice(0, 220),
+        href,
+        navigatesAway: wouldNavigate,
+        usedDetailsToggle: Boolean(choice.target.matches?.("details") || choice.target.matches?.("summary") || choice.target.closest?.("details")),
+        usedControlledPanel: Boolean(controlledPanel),
+        usedDrawerClone,
+        x,
+        y
+      };
+    })()`,
+    returnByValue: true
+  }).catch(() => ({ result: { value: { ok: false, reason: `Could not inspect mobile navigation label ${label}.` } } }));
+  return result.result?.value || { ok: false, reason: `Could not inspect mobile navigation label ${label}.` };
+}
+
+async function waitForShokzMobileNavigationDrilldown(client, state, expectedUrl) {
+  let lastState = { ok: false };
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    lastState = await readShokzMobileNavigationDrilldownState(client, state, expectedUrl);
+    if (lastState.ok) {
+      return lastState;
+    }
+    await sleep(350);
+  }
+  return lastState;
+}
+
+async function readShokzMobileNavigationDrilldownState(client, state, expectedUrl) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const targetLabel = ${JSON.stringify(state.activationLabel || state.hoverItemLabel || state.topLevelLabel || "")};
+      const topLevelLabels = [
+        "Sports Headphones",
+        "Workout & Lifestyle Earbuds",
+        "Communication Headsets",
+        "Support",
+        "Technology",
+        "About Us"
+      ];
+      const comparable = (value) => String(value || "")
+        .toLowerCase()
+        .replace(/&/g, "and")
+        .replace(/[^a-z0-9]+/g, "");
+      const targetKey = comparable(targetLabel);
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          rect.bottom > 0 &&
+          rect.right > 0 &&
+          rect.left < window.innerWidth &&
+          rect.top < window.innerHeight &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const directText = (element) => Array.from(element?.childNodes || [])
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent || "")
+        .join(" ")
+        .replace(/\\s+/g, " ")
+        .trim();
+      const textOf = (element) => element ? [
+        directText(element),
+        element.innerText || element.textContent,
+        element.getAttribute?.("aria-label"),
+        element.getAttribute?.("title"),
+        element.id,
+        String(element.className || "")
+      ].filter(Boolean).join(" ").replace(/\\s+/g, " ").trim() : "";
+      const compactRepeatedLabel = (value) => {
+        const clean = String(value || "").replace(/\\s+/g, " ").trim();
+        const words = clean.split(" ").filter(Boolean);
+        if (words.length && words.length % 2 === 0) {
+          const midpoint = words.length / 2;
+          const left = words.slice(0, midpoint).join(" ");
+          const right = words.slice(midpoint).join(" ");
+          if (left === right) return left;
+        }
+        return clean;
+      };
+      const drawer = document.querySelector("#menu-drawer, .menu-drawer");
+      const drawerVisible = Boolean(drawer && visible(drawer));
+      const clonedDrawer = Array.from(document.querySelectorAll(".menu_drawer_content"))
+        .find((element) =>
+          visible(element) &&
+          element.classList.contains("active") &&
+          Array.from(element.children || []).some((child) =>
+            child instanceof Element &&
+            child.classList.contains("submenu_content") &&
+            visible(child)
+          )
+        ) || null;
+      const clonedContent = clonedDrawer
+        ? Array.from(clonedDrawer.children || []).find((child) =>
+          child instanceof Element &&
+          child.classList.contains("submenu_content") &&
+          visible(child)
+        ) || null
+        : null;
+      const currentUrl = window.location.href;
+      const labels = drawerVisible
+        ? Array.from(drawer.querySelectorAll("a, button, [role='button'], summary, li, h1, h2, h3, h4, p, span, div"))
+          .filter(visible)
+          .map((element) => compactRepeatedLabel(directText(element) || (element.children.length <= 2 ? textOf(element) : "")))
+          .filter((text) => text && text.length <= 80)
+        : [];
+      const clonedText = clonedContent ? textOf(clonedContent).slice(0, 12000) : "";
+      const clonedItemCount = clonedContent
+        ? Array.from(clonedContent.querySelectorAll("a, button, [role='button'], li, p, span, div"))
+          .filter((element) => visible(element))
+          .map((element) => compactRepeatedLabel(directText(element) || (element.children.length <= 2 ? textOf(element) : "")))
+          .filter((text) => text && text.length <= 120)
+          .length
+        : 0;
+      const clonedBackVisible = Boolean(clonedDrawer?.querySelector(".close_btn") && visible(clonedDrawer.querySelector(".close_btn")));
+      const targetVisible = labels.some((text) => comparable(text) === targetKey);
+      const matchingDetails = Array.from(document.querySelectorAll("details"))
+        .map((detail) => {
+          const summary = detail.querySelector(":scope > summary");
+          if (!visible(summary)) return null;
+          const summaryLabel = compactRepeatedLabel(directText(summary) || textOf(summary));
+          if (!summaryLabel || comparable(summaryLabel) !== targetKey) return null;
+          const expandedItems = Array.from(detail.querySelectorAll("a, button, [role='button'], li, p, span, div"))
+            .filter((element) => visible(element) && !summary.contains(element))
+            .map((element) => compactRepeatedLabel(directText(element) || (element.children.length <= 2 ? textOf(element) : "")))
+            .filter((text) => text && text.length <= 120);
+          return {
+            open: Boolean(detail.open),
+            expandedItemCount: expandedItems.length
+          };
+        })
+        .filter(Boolean);
+      const detailState = matchingDetails[0] || null;
+      const matchingControlledSummaries = Array.from(document.querySelectorAll("summary[aria-controls]"))
+        .filter(visible)
+        .map((summary) => {
+          const summaryLabel = compactRepeatedLabel(directText(summary) || textOf(summary));
+          if (!summaryLabel || comparable(summaryLabel) !== targetKey) return null;
+          const controlledId = String(summary.getAttribute("aria-controls") || "").trim();
+          const controlled = controlledId ? document.getElementById(controlledId) : null;
+          const controlledVisible = Boolean(controlled && visible(controlled));
+          const expandedItems = controlledVisible
+            ? Array.from(controlled.querySelectorAll("a, button, [role='button'], li, p, span, div"))
+              .filter(visible)
+              .map((element) => compactRepeatedLabel(directText(element) || (element.children.length <= 2 ? textOf(element) : "")))
+              .filter((text) => text && text.length <= 120)
+            : [];
+          return {
+            expanded: String(summary.getAttribute("aria-expanded") || "").toLowerCase() === "true",
+            controlledVisible,
+            expandedItemCount: expandedItems.length
+          };
+        })
+        .filter(Boolean);
+      const controlledState = matchingControlledSummaries[0] || null;
+      const topLevelVisibleCount = topLevelLabels
+        .filter((label) => labels.some((text) => comparable(text) === comparable(label)))
+        .length;
+      const controls = drawerVisible
+        ? Array.from(drawer.querySelectorAll("button, [role='button'], a, summary, svg, [class*='close-button'], [class*='arrow']"))
+          .map((element) => {
+            const target = element.closest?.("button, [role='button'], a, summary") || element;
+            const rect = target.getBoundingClientRect();
+            return { rect, text: textOf(target) + " " + String(target.outerHTML || "").slice(0, 500) };
+          })
+          .filter((item) =>
+            item.rect.width > 0 &&
+            item.rect.height > 0 &&
+            item.rect.left >= 0 &&
+            item.rect.left < Math.max(90, window.innerWidth * 0.25) &&
+            item.rect.top >= 40 &&
+            item.rect.top < 170 &&
+            item.rect.width <= 120 &&
+            item.rect.height <= 80 &&
+            /menu-drawer__close-button|back|arrow|icon-arrow|chevron/i.test(item.text) &&
+            !/icon-close|modal__close|search/i.test(item.text)
+          )
+        : [];
+      const fallbackPanels = !drawerVisible
+        ? Array.from(document.querySelectorAll("body *"))
+          .filter(visible)
+          .map((element) => {
+            const rect = element.getBoundingClientRect();
+            const text = textOf(element).slice(0, 12000);
+            return {
+              rect,
+              text,
+              score:
+                Number(comparable(text).includes(targetKey)) * 10 +
+                Number(rect.top < 220) * 3 +
+                Math.min(rect.width / Math.max(1, window.innerWidth), 1) * 4 +
+                Math.min(rect.height / Math.max(1, window.innerHeight), 1) * 3
+            };
+          })
+          .filter((item) =>
+            item.text.length > 16 &&
+            item.text.length <= 12000 &&
+            comparable(item.text).includes(targetKey) &&
+            item.rect.top >= 40 &&
+            item.rect.top < Math.max(300, window.innerHeight * 0.4) &&
+            item.rect.width >= Math.min(220, window.innerWidth * 0.55) &&
+            item.rect.height >= 120
+          )
+          .sort((a, b) => b.score - a.score || (b.rect.width * b.rect.height) - (a.rect.width * a.rect.height))
+        : [];
+      const fallbackPanel = fallbackPanels[0] || null;
+      return {
+        drawerVisible,
+        currentUrl,
+        targetVisible: targetVisible || Boolean(fallbackPanel) || comparable(clonedText).includes(targetKey),
+        detailsOpen: Boolean(detailState?.open),
+        expandedItemCount: Number(detailState?.expandedItemCount || 0),
+        controlledExpanded: Boolean(controlledState?.expanded),
+        controlledVisible: Boolean(controlledState?.controlledVisible),
+        controlledItemCount: Number(controlledState?.expandedItemCount || 0),
+        clonedDrawerVisible: Boolean(clonedDrawer && clonedContent),
+        clonedItemCount,
+        clonedBackVisible,
+        topLevelVisibleCount,
+        backVisible: controls.length > 0,
+        fallbackPanelVisible: Boolean(fallbackPanel),
+        visibleText: drawerVisible
+          ? labels.slice(0, 24).join(" | ")
+          : String(fallbackPanel?.text || clonedText || "").slice(0, 280)
+      };
+    })()`,
+    returnByValue: true
+  }).catch(() => ({ result: { value: { drawerVisible: false, currentUrl: expectedUrl, targetVisible: false, backVisible: false, visibleText: "" } } }));
+  const value = result.result?.value || {};
+  if (!urlsEquivalent(expectedUrl, value.currentUrl || expectedUrl)) {
+    return {
+      ok: false,
+      reason: `URL changed to ${value.currentUrl || "an unexpected URL"} after selecting ${state.activationLabel || state.hoverItemLabel || state.topLevelLabel}.`
+    };
+  }
+  if (!value.drawerVisible) {
+    if (value.fallbackPanelVisible && value.targetVisible) {
+      return {
+        ok: true,
+        currentUrl: value.currentUrl || expectedUrl
+      };
+    }
+    return {
+      ok: false,
+      reason: `Navigation drawer closed after selecting ${state.activationLabel || state.hoverItemLabel || state.topLevelLabel}.`
+    };
+  }
+  if (value.detailsOpen && Number(value.expandedItemCount || 0) > 0 && value.targetVisible) {
+    return {
+      ok: true,
+      currentUrl: value.currentUrl || expectedUrl
+    };
+  }
+  if (value.controlledExpanded && value.controlledVisible && Number(value.controlledItemCount || 0) > 0) {
+    return {
+      ok: true,
+      currentUrl: value.currentUrl || expectedUrl
+    };
+  }
+  if (value.clonedDrawerVisible && Number(value.clonedItemCount || 0) > 0 && value.targetVisible) {
+    return {
+      ok: true,
+      currentUrl: value.currentUrl || expectedUrl
+    };
+  }
+  if (Number(value.topLevelVisibleCount || 0) >= 4) {
+    return {
+      ok: false,
+      reason: `Mobile navigation stayed at the top-level menu after selecting ${state.activationLabel || state.hoverItemLabel || state.topLevelLabel}. topLevelVisibleCount=${Number(value.topLevelVisibleCount || 0)} backVisible=${Boolean(value.backVisible)} targetVisible=${Boolean(value.targetVisible)} detailsOpen=${Boolean(value.detailsOpen)} expandedItemCount=${Number(value.expandedItemCount || 0)} controlledExpanded=${Boolean(value.controlledExpanded)} controlledVisible=${Boolean(value.controlledVisible)} controlledItemCount=${Number(value.controlledItemCount || 0)} clonedDrawerVisible=${Boolean(value.clonedDrawerVisible)} clonedItemCount=${Number(value.clonedItemCount || 0)} clonedBackVisible=${Boolean(value.clonedBackVisible)} visibleText=${value.visibleText || "(empty)"}`
+    };
+  }
+  if (!value.backVisible) {
+    return {
+      ok: false,
+      reason: `Could not confirm ${state.activationLabel || state.hoverItemLabel || state.topLevelLabel} secondary page because no back control was visible. visibleText=${value.visibleText || "(empty)"}`
+    };
+  }
+  if (!value.targetVisible) {
+    return {
+      ok: false,
+      reason: `Could not confirm ${state.activationLabel || state.hoverItemLabel || state.topLevelLabel} secondary page. Visible text: ${value.visibleText || "(empty)"}.`
+    };
+  }
+  return {
+    ok: true,
+    currentUrl: value.currentUrl || expectedUrl
+  };
 }
 
 async function waitForShokzProductsNavigation(client, mobile) {

@@ -6,6 +6,81 @@ export const shokzProductsNavigationCategoryLabels = [
   "Communication Headsets"
 ];
 
+export const shokzMobileNavigationSecondaryStateDefinitions = [
+  {
+    clickLabel: "Sports Headphones",
+    stateLabel: "Products / Sports Headphones",
+    fileId: "products-sports-headphones",
+    tabLabel: "Products",
+    tabIndex: 1,
+    topLevelLabel: "Products",
+    topLevelIndex: 1,
+    hoverItemKey: "secondary:1:1",
+    hoverItemLabel: "Sports Headphones",
+    hoverIndex: 1
+  },
+  {
+    clickLabel: "Workout & Lifestyle Earbuds",
+    stateLabel: "Products / Workout & Lifestyle Earbuds",
+    fileId: "products-workout-lifestyle-earbuds",
+    tabLabel: "Products",
+    tabIndex: 1,
+    topLevelLabel: "Products",
+    topLevelIndex: 1,
+    hoverItemKey: "secondary:1:2",
+    hoverItemLabel: "Workout & Lifestyle Earbuds",
+    hoverIndex: 2
+  },
+  {
+    clickLabel: "Communication Headsets",
+    stateLabel: "Products / Communication Headsets",
+    fileId: "products-communication-headsets",
+    tabLabel: "Products",
+    tabIndex: 1,
+    topLevelLabel: "Products",
+    topLevelIndex: 1,
+    hoverItemKey: "secondary:1:3",
+    hoverItemLabel: "Communication Headsets",
+    hoverIndex: 3
+  },
+  {
+    clickLabel: "Support",
+    stateLabel: "Support",
+    fileId: "support",
+    tabLabel: "Support",
+    tabIndex: 2,
+    topLevelLabel: "Support",
+    topLevelIndex: 2,
+    hoverItemKey: "secondary:2:1",
+    hoverItemLabel: "Support",
+    hoverIndex: 1
+  },
+  {
+    clickLabel: "Technology",
+    stateLabel: "Technology",
+    fileId: "technology",
+    tabLabel: "Technology",
+    tabIndex: 3,
+    topLevelLabel: "Technology",
+    topLevelIndex: 3,
+    hoverItemKey: "secondary:3:1",
+    hoverItemLabel: "Technology",
+    hoverIndex: 1
+  },
+  {
+    clickLabel: "About Us",
+    stateLabel: "About Us",
+    fileId: "about-us",
+    tabLabel: "About Us",
+    tabIndex: 4,
+    topLevelLabel: "About Us",
+    topLevelIndex: 4,
+    hoverItemKey: "secondary:4:1",
+    hoverItemLabel: "About Us",
+    hoverIndex: 1
+  }
+];
+
 export const shokzHomeRelatedSectionDefinitions = [
   {
     key: "topbar",
