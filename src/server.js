@@ -5,6 +5,7 @@ import { captureAllDevices, captureConfiguredUrls, captureOne, browserStatus } f
 import { loadChanges } from "./changes.js";
 import { devicePresets, toPublicDevicePreset } from "./device-presets.js";
 import { archiveDir, publicDir } from "./paths.js";
+import { deleteSnapshotAction, viewerModeErrorMessage } from "./snapshot-admin.js";
 import { ensureStorage, loadConfig, loadSnapshots, saveConfig } from "./store.js";
 
 const host = "127.0.0.1";
@@ -60,6 +61,17 @@ const server = http.createServer(async (request, response) => {
       });
       scheduleNext();
       return sendJson(response, await buildState());
+    }
+
+    if (request.method === "DELETE" && pathname.startsWith("/api/snapshots/")) {
+      const snapshotId = decodeURIComponent(pathname.slice("/api/snapshots/".length));
+      const result = await deleteSnapshotAction({
+        adminApiEnabled,
+        captureRunning: captureState.running,
+        snapshotId,
+        buildState
+      });
+      return sendJson(response, result.payload, result.status);
     }
 
     if (request.method === "GET" && pathname.startsWith("/preview/")) {
@@ -151,6 +163,9 @@ async function buildState() {
     browser: await browserStatus(),
     devicePresets: devicePresets.map(toPublicDevicePreset),
     snapshots: await loadSnapshots(),
+    permissions: {
+      canDeleteSnapshots: adminApiEnabled
+    },
     changesSummary: {
       count: changes.length,
       recent: changes.slice(0, 6)
@@ -282,7 +297,7 @@ function sendStatus(response, status) {
 
 function rejectViewerMode(response) {
   return sendJson(response, {
-    error: "Viewer mode is read-only. Set PAGE_SHOT_ADMIN=1 to enable admin actions."
+    error: viewerModeErrorMessage
   }, 403);
 }
 

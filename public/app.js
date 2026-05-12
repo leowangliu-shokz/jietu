@@ -24,6 +24,7 @@ const elements = {
   changesDateEndFilter: document.querySelector("#changesDateEndFilter"),
   changesDateClearFilter: document.querySelector("#changesDateClearFilter"),
   changesUrlFilter: document.querySelector("#changesUrlFilter"),
+  archiveStatus: document.querySelector("#archiveStatus"),
   gallery: document.querySelector("#gallery"),
   empty: document.querySelector("#empty"),
   changesList: document.querySelector("#changesList"),
@@ -88,6 +89,11 @@ const selectedDeviceFilters = {
 };
 const selectedChangesDeviceFilters = {
   devices: new Set()
+};
+const pendingSnapshotDeletes = new Set();
+let archiveStatusState = {
+  tone: "info",
+  message: ""
 };
 
 await refreshState();
@@ -212,8 +218,25 @@ function render(options = {}) {
   renderChangesFilterOptions();
   renderDeviceFilterOptions();
   renderChangesDeviceFilterOptions();
+  renderArchiveStatus();
   renderChangesSummary();
   renderGallery({ preserveScroll: options.preserveScroll !== false });
+}
+
+function renderArchiveStatus() {
+  const message = String(archiveStatusState.message || "").trim();
+  elements.archiveStatus.hidden = !message;
+  elements.archiveStatus.textContent = message;
+  elements.archiveStatus.classList.toggle("is-success", archiveStatusState.tone === "success");
+  elements.archiveStatus.classList.toggle("is-error", archiveStatusState.tone === "error");
+}
+
+function setArchiveStatus(message = "", tone = "info") {
+  archiveStatusState = {
+    tone,
+    message: String(message || "").trim()
+  };
+  renderArchiveStatus();
 }
 
 function latestSnapshotCapturedAt() {
@@ -1074,6 +1097,13 @@ function handleDeviceFilterChangeFor(event, { selectedFilters, devices, renderOp
 }
 
 function handleGalleryClick(event) {
+  const deleteButton = event.target.closest("[data-action='delete-snapshot']");
+  if (deleteButton && elements.gallery.contains(deleteButton)) {
+    event.preventDefault();
+    void handleSnapshotDeleteClick(deleteButton);
+    return;
+  }
+
   handleImagePreviewClick(event);
   if (event.defaultPrevented) {
     return;
@@ -1089,6 +1119,54 @@ function handleGalleryClick(event) {
     warnings: parseWarningPayload(warning.dataset.warningItems),
     trigger: warning
   });
+}
+
+async function handleSnapshotDeleteClick(button) {
+  if (!(button instanceof HTMLButtonElement) || button.disabled) {
+    return;
+  }
+
+  const snapshotId = String(button.dataset.snapshotId || "").trim();
+  const snapshot = state?.snapshots?.find((item) => item.id === snapshotId);
+  if (!snapshot) {
+    setArchiveStatus("找不到要删除的截图记录，请先刷新页面。", "error");
+    return;
+  }
+
+  const displayUrl = canonicalDisplayUrlForSnapshot(snapshot);
+  if (!window.confirm([
+    "删除这次截图？",
+    "",
+    `URL：${displayUrl}`,
+    `设备：${deviceNameForSnapshot(snapshot)}`,
+    `截图时间：${formatDate(snapshot.capturedAt)}`,
+    "",
+    "这会删除主图、相关小图，并重算变更汇总。"
+  ].join("\n"))) {
+    return;
+  }
+
+  pendingSnapshotDeletes.add(snapshotId);
+  setArchiveStatus(`正在删除 ${displayUrl} 的截图...`);
+  renderGallery({ preserveScroll: true });
+
+  try {
+    const response = await fetch(`/api/snapshots/${encodeURIComponent(snapshotId)}`, {
+      method: "DELETE"
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `删除失败（HTTP ${response.status}）`);
+    }
+
+    setArchiveStatus(`已删除 ${displayUrl} ${formatDate(snapshot.capturedAt)} 的截图。`, "success");
+    await refreshState({ preserveScroll: true });
+  } catch (error) {
+    setArchiveStatus(error?.message || "删除失败，请稍后重试。", "error");
+  } finally {
+    pendingSnapshotDeletes.delete(snapshotId);
+    renderGallery({ preserveScroll: true });
+  }
 }
 
 function renderDeviceFilterLabel(devices, selectedFilters, labelElement, button, allLabel) {
@@ -1630,10 +1708,14 @@ function renderShotCard(card) {
     hasRelatedWarning ? "has-related-warning" : ""
   ].filter(Boolean).join(" ");
   item.dataset.galleryCardKey = cardKey;
+  item.dataset.snapshotId = snapshot.id || "";
   item.innerHTML = `
-    <a class="shot-main-image" href="${snapshot.imageUrl}" target="_blank" rel="noreferrer" data-snapshot-id="${escapeHtml(snapshot.id || "")}" data-snapshot-file="${escapeHtml(snapshot.file || "")}">
-      <img src="${snapshot.imageUrl}" alt="${escapeHtml(displayUrl)} ${formatDate(snapshot.capturedAt)}" loading="lazy">
-    </a>
+    <div class="shot-hero">
+      <a class="shot-main-image" href="${snapshot.imageUrl}" target="_blank" rel="noreferrer" data-snapshot-id="${escapeHtml(snapshot.id || "")}" data-snapshot-file="${escapeHtml(snapshot.file || "")}">
+        <img src="${snapshot.imageUrl}" alt="${escapeHtml(displayUrl)} ${formatDate(snapshot.capturedAt)}" loading="lazy">
+      </a>
+      ${renderSnapshotDeleteButton(snapshot)}
+    </div>
     <div class="shot-info">
       <p class="shot-title" title="${escapeHtml(snapshot.title || displayUrl)}">${escapeHtml(displayUrl)}</p>
       <p class="shot-meta">
@@ -1647,6 +1729,34 @@ function renderShotCard(card) {
     ${renderRelatedShots(card.relatedShots, card.relatedValidation, cardKey)}
   `;
   return item;
+}
+
+function renderSnapshotDeleteButton(snapshot) {
+  if (!state?.permissions?.canDeleteSnapshots) {
+    return "";
+  }
+
+  const snapshotId = String(snapshot?.id || "").trim();
+  const pending = pendingSnapshotDeletes.has(snapshotId);
+  const captureRunning = Boolean(state?.capture?.running);
+  const disabled = pending || captureRunning;
+  const label = pending ? "删除中..." : "删除本次截图";
+  const title = captureRunning
+    ? "截图运行中，暂时不能删除。"
+    : "删除这次截图的主图、相关小图，并重算变更汇总。";
+
+  return `
+    <button
+      class="shot-delete-button${pending ? " is-pending" : ""}"
+      type="button"
+      data-action="delete-snapshot"
+      data-snapshot-id="${escapeHtml(snapshotId)}"
+      title="${escapeHtml(title)}"
+      ${disabled ? "disabled" : ""}
+    >
+      ${escapeHtml(label)}
+    </button>
+  `;
 }
 
 function renderRelatedShots(relatedShots, validation = null, cardKey = "") {

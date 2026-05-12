@@ -29,9 +29,9 @@ const defaultVisualJudgmentOptions = {
   mediaRectResizeRatio: 0.08
 };
 
-export async function loadChanges() {
+export async function loadChanges(filePath = changesPath) {
   try {
-    const parsed = JSON.parse(await fs.readFile(changesPath, "utf8"));
+    const parsed = JSON.parse(await fs.readFile(filePath, "utf8"));
     return Array.isArray(parsed)
       ? parsed.sort((a, b) => String(b.to?.capturedAt || "").localeCompare(String(a.to?.capturedAt || "")))
       : [];
@@ -40,16 +40,16 @@ export async function loadChanges() {
   }
 }
 
-export async function saveChanges(changes) {
-  await fs.mkdir(path.dirname(changesPath), { recursive: true });
-  await fs.writeFile(changesPath, `${JSON.stringify(changes, null, 2)}\n`, "utf8");
+export async function saveChanges(changes, filePath = changesPath) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, `${JSON.stringify(changes, null, 2)}\n`, "utf8");
   return changes;
 }
 
 export async function rebuildChanges(options = {}) {
   const snapshots = options.snapshots || await loadSnapshots();
   const changes = await compareSnapshots(snapshots, options);
-  await saveChanges(changes);
+  await saveChanges(changes, options.changesFilePath || changesPath);
   return changes;
 }
 

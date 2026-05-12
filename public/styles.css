@@ -608,6 +608,29 @@ select:focus {
   padding: 22px;
 }
 
+.timeline-status {
+  margin: 12px 0 0;
+  border: 1px solid rgba(16, 34, 53, 0.12);
+  border-radius: 10px;
+  background: #f6faf8;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 10px 12px;
+}
+
+.timeline-status.is-success {
+  border-color: rgba(21, 128, 61, 0.22);
+  background: #effaf3;
+  color: #166534;
+}
+
+.timeline-status.is-error {
+  border-color: rgba(185, 28, 28, 0.22);
+  background: #fff4f4;
+  color: #b42318;
+}
+
 .shot {
   display: grid;
   grid-template-rows: 170px 104px minmax(0, 144px);
@@ -619,8 +642,15 @@ select:focus {
   box-shadow: 0 10px 28px rgba(23, 33, 28, 0.1);
 }
 
+.shot-hero {
+  position: relative;
+  min-height: 0;
+  background: #e4ece8;
+}
+
 .shot-main-image {
   display: block;
+  height: 100%;
   min-height: 0;
   background: #e4ece8;
 }
@@ -631,6 +661,40 @@ select:focus {
   display: block;
   object-fit: cover;
   object-position: top;
+}
+
+.shot-delete-button {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 1;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 999px;
+  background: rgba(125, 28, 28, 0.88);
+  color: #fff;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1;
+  padding: 8px 10px;
+  box-shadow: 0 10px 24px rgba(39, 15, 15, 0.2);
+  transition: transform 120ms ease, background 120ms ease, opacity 120ms ease;
+}
+
+.shot-delete-button:hover:not(:disabled),
+.shot-delete-button:focus-visible:not(:disabled) {
+  background: rgba(153, 27, 27, 0.94);
+  transform: translateY(-1px);
+}
+
+.shot-delete-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.68;
+  transform: none;
+}
+
+.shot-delete-button.is-pending {
+  background: rgba(86, 107, 123, 0.94);
 }
 
 .shot-info {

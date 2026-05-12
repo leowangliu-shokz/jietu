@@ -56,18 +56,27 @@ export async function saveConfig(nextConfig) {
 }
 
 export async function loadSnapshots() {
+  return readSnapshots();
+}
+
+export async function readSnapshots(filePath = snapshotsPath) {
   await ensureStorage();
-  const snapshots = await readJson(snapshotsPath, []);
+  const snapshots = await readJson(filePath, []);
   return Array.isArray(snapshots)
     ? snapshots.sort((a, b) => String(b.capturedAt).localeCompare(String(a.capturedAt)))
     : [];
 }
 
 export async function appendSnapshot(snapshot) {
-  const snapshots = await loadSnapshots();
+  const snapshots = await readSnapshots();
   snapshots.unshift(snapshot);
-  await writeJson(snapshotsPath, snapshots);
+  await saveSnapshots(snapshots);
   return snapshot;
+}
+
+export async function saveSnapshots(snapshots, filePath = snapshotsPath) {
+  await writeJson(filePath, Array.isArray(snapshots) ? snapshots : []);
+  return snapshots;
 }
 
 export async function createSnapshotFilePath(url, capturedAt = new Date()) {
