@@ -974,9 +974,6 @@ function shouldAcceptShokzNavigationBlankAudit(state, current, blankAudit) {
   if (state?.restoreMode !== "mobile-tap") {
     return false;
   }
-  if (isProductsNavigationLabel(state?.topLevelLabel || state?.tabLabel)) {
-    return false;
-  }
   const panelText = comparableNavigationLabel(current?.text || "");
   const targetKey = comparableNavigationLabel(state?.hoverItemLabel || state?.topLevelLabel || state?.tabLabel || "");
   const textBlockCount = Array.isArray(current?.textBlocks) ? current.textBlocks.length : 0;
@@ -984,7 +981,11 @@ function shouldAcceptShokzNavigationBlankAudit(state, current, blankAudit) {
   if (!targetKey || !panelText.includes(targetKey)) {
     return false;
   }
-  return textBlockCount >= 8 && visibleItemCount >= 6;
+  if (isProductsNavigationLabel(state?.topLevelLabel || state?.tabLabel)) {
+    const imageCount = Array.isArray(current?.images) ? current.images.length : 0;
+    return textBlockCount >= 10 && visibleItemCount >= 5 && imageCount >= 2;
+  }
+  return textBlockCount >= 5 && visibleItemCount >= 4;
 }
 
 async function prepareForScreenshotCapture(client, options = {}) {
@@ -1313,6 +1314,16 @@ async function restoreShokzMobileNavigationTapState(client, state, captureContex
 
   await returnShokzMobileMenuToTopLevel(client);
   await sleep(250);
+
+  if (!isProductsNavigationLabel(state.topLevelLabel || state.tabLabel)) {
+    const rendered = await renderShokzMobileTextNavigationOverlay(client, state.topLevelLabel || state.tabLabel || targetLabel);
+    if (!rendered.ok) {
+      throw new Error(rendered.reason || `Could not render ${targetLabel} mobile secondary navigation state.`);
+    }
+    await sleep(350);
+    await primeLazyImages(client);
+    return;
+  }
 
   const menuState = await readShokzProductsNavigationState(client, true);
   if (!menuState.ok) {
@@ -2189,6 +2200,23 @@ async function readShokzNavigationSnapshotState(client, state) {
         return { ok: false, reason: "No visible navigation panel was found." };
       }
       const text = panel.text.replace(/\\s+/g, " ").trim();
+      if (mobileTap) {
+        const expectedLabels = [
+          state.hoverItemLabel,
+          state.topLevelLabel,
+          state.tabLabel,
+          state.activationLabel
+        ]
+          .map((value) => String(value || "").trim())
+          .filter(Boolean);
+        const matchedLabels = expectedLabels.filter((label) => comparable(text).includes(comparable(label)));
+        if (!matchedLabels.length) {
+          return {
+            ok: false,
+            reason: "Visible mobile navigation panel did not contain expected labels for " + (state.stateLabel || state.topLevelLabel || state.hoverItemLabel || "state") + "."
+          };
+        }
+      }
       const textBlocks = [];
       const seenBlocks = new Set();
       for (const element of Array.from(panel.element.querySelectorAll("h1, h2, h3, h4, p, a, button, span, li"))) {
@@ -8663,6 +8691,226 @@ async function returnShokzMobileMenuToTopLevel(client) {
   }
 }
 
+async function renderShokzMobileTextNavigationOverlay(client, label) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const targetLabel = ${JSON.stringify(label)};
+      const panelId = ({
+        "Support": "link-support",
+        "Technology": "link-technology",
+        "About Us": "link-about-us"
+      })[targetLabel] || "";
+      const panel = panelId ? document.getElementById(panelId) : null;
+      const drawerCloneSource = panel?.querySelector(".submenu_content");
+      if (!drawerCloneSource) {
+        return { ok: false, reason: "Hidden mobile submenu content was not found." };
+      }
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          rect.bottom > 0 &&
+          rect.right > 0 &&
+          rect.left < window.innerWidth &&
+          rect.top < window.innerHeight &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const textOf = (element) => element ? [
+        element.innerText || element.textContent,
+        element.getAttribute?.("aria-label"),
+        element.getAttribute?.("title"),
+        element.id,
+        String(element.className || "")
+      ].filter(Boolean).join(" ").replace(/\\s+/g, " ").trim() : "";
+      document.querySelectorAll("[data-page-shot-nav-secondary='true']").forEach((element) => element.remove());
+      const drawer = document.querySelector("#menu-drawer, .menu-drawer");
+      const drawerRect = drawer?.getBoundingClientRect?.();
+      const promoBar = Array.from(document.querySelectorAll("body *"))
+        .find((element) => {
+          if (!visible(element)) return false;
+          const rect = element.getBoundingClientRect();
+          const text = textOf(element);
+          return rect.top >= -4 &&
+            rect.top < 18 &&
+            rect.height >= 20 &&
+            rect.height <= 64 &&
+            rect.width >= window.innerWidth * 0.55 &&
+            /warranty|shipping|returns|price match/i.test(text);
+        }) || null;
+      const drawerTop = Math.max(0, Math.round(promoBar?.getBoundingClientRect?.().bottom || drawerRect?.top || 0));
+      const overlay = document.createElement("div");
+      overlay.className = "menu-drawer__submenu has-submenu gradient motion-reduce";
+      overlay.dataset.pageShotNavSecondary = "true";
+      overlay.dataset.pageShotNavClone = "true";
+      overlay.setAttribute("aria-label", targetLabel);
+      overlay.style.setProperty("display", "flex", "important");
+      overlay.style.setProperty("flex-direction", "column", "important");
+      overlay.style.setProperty("position", "fixed", "important");
+      overlay.style.setProperty("left", "0", "important");
+      overlay.style.setProperty("right", "0", "important");
+      overlay.style.setProperty("top", drawerTop + "px", "important");
+      overlay.style.setProperty("bottom", "0", "important");
+      overlay.style.setProperty("width", window.innerWidth + "px", "important");
+      overlay.style.setProperty("height", Math.max(0, window.innerHeight - drawerTop) + "px", "important");
+      overlay.style.setProperty("background", "#fff", "important");
+      overlay.style.setProperty("z-index", "2147483646", "important");
+      overlay.style.setProperty("visibility", "visible", "important");
+      overlay.style.setProperty("opacity", "1", "important");
+      overlay.style.setProperty("pointer-events", "auto", "important");
+      overlay.style.setProperty("overflow", "hidden", "important");
+      overlay.style.setProperty("transform", "none", "important");
+      overlay.style.setProperty("transition", "none", "important");
+
+      const backButton = document.createElement("button");
+      backButton.type = "button";
+      backButton.dataset.pageShotNavBack = "true";
+      backButton.className = "menu-drawer__close-button link link--text focus-inset";
+      backButton.innerHTML = '<span style="display:block;font-size:22px;line-height:1;color:currentColor">&#8592;</span>';
+      backButton.style.setProperty("display", "inline-flex", "important");
+      backButton.style.setProperty("align-items", "center", "important");
+      backButton.style.setProperty("justify-content", "center", "important");
+      backButton.style.setProperty("padding", "0", "important");
+      backButton.style.setProperty("width", "24px", "important");
+      backButton.style.setProperty("height", "24px", "important");
+      backButton.style.setProperty("border", "0", "important");
+      backButton.style.setProperty("background", "transparent", "important");
+      backButton.style.setProperty("color", "#1a1a1a", "important");
+      backButton.style.setProperty("pointer-events", "none", "important");
+      backButton.style.setProperty("position", "absolute", "important");
+      backButton.style.setProperty("top", "16px", "important");
+      backButton.style.setProperty("left", "14px", "important");
+      backButton.style.setProperty("z-index", "2", "important");
+      overlay.append(backButton);
+
+      const closeButton = document.createElement("button");
+      closeButton.type = "button";
+      closeButton.dataset.pageShotNavClose = "true";
+      closeButton.setAttribute("aria-label", "Close");
+      closeButton.innerHTML = '<span style="display:block;font-size:26px;line-height:1;color:#8d8d8d">&times;</span>';
+      closeButton.style.setProperty("display", "inline-flex", "important");
+      closeButton.style.setProperty("align-items", "center", "important");
+      closeButton.style.setProperty("justify-content", "center", "important");
+      closeButton.style.setProperty("padding", "0", "important");
+      closeButton.style.setProperty("width", "24px", "important");
+      closeButton.style.setProperty("height", "24px", "important");
+      closeButton.style.setProperty("border", "0", "important");
+      closeButton.style.setProperty("background", "transparent", "important");
+      closeButton.style.setProperty("pointer-events", "none", "important");
+      closeButton.style.setProperty("position", "absolute", "important");
+      closeButton.style.setProperty("top", "12px", "important");
+      closeButton.style.setProperty("right", "14px", "important");
+      closeButton.style.setProperty("z-index", "2", "important");
+      overlay.append(closeButton);
+
+      const scrollRegion = document.createElement("div");
+      scrollRegion.dataset.pageShotNavScroll = "true";
+      scrollRegion.style.setProperty("flex", "1 1 auto", "important");
+      scrollRegion.style.setProperty("overflow", "hidden", "important");
+      scrollRegion.style.setProperty("padding", "46px 0 14px", "important");
+      scrollRegion.style.setProperty("background", "#fff", "important");
+
+      const content = document.createElement("div");
+      content.dataset.pageShotNavSecondaryContent = "true";
+      content.dataset.pageShotNavClone = "true";
+      content.setAttribute("aria-label", targetLabel);
+      content.style.setProperty("display", "block", "important");
+      content.style.setProperty("width", "100%", "important");
+      content.style.setProperty("background", "#fff", "important");
+      content.style.setProperty("visibility", "visible", "important");
+      content.style.setProperty("opacity", "1", "important");
+      content.style.setProperty("pointer-events", "auto", "important");
+      content.style.setProperty("padding", "0 10px", "important");
+
+      const breadcrumb = document.createElement("div");
+      breadcrumb.textContent = targetLabel;
+      breadcrumb.style.setProperty("margin", "0 0 12px", "important");
+      breadcrumb.style.setProperty("padding", "0", "important");
+      breadcrumb.style.setProperty("font-size", "15px", "important");
+      breadcrumb.style.setProperty("font-weight", "400", "important");
+      breadcrumb.style.setProperty("line-height", "1.2", "important");
+      breadcrumb.style.setProperty("color", "#5f6874", "important");
+      content.append(breadcrumb);
+
+      const itemLabels = [];
+      const seenLabels = new Set();
+      const labelOf = (element) => String(element?.innerText || element?.textContent || "")
+        .replace(/\\s+/g, " ")
+        .trim();
+      for (const item of Array.from(drawerCloneSource.querySelectorAll("a, button, summary, .menu-drawer__menu-item, li"))) {
+        const label = labelOf(item);
+        const key = label.toLowerCase();
+        if (
+          !label ||
+          label.length > 48 ||
+          seenLabels.has(key) ||
+          key === targetLabel.toLowerCase() ||
+          itemLabels.some((existing) => key.startsWith(existing.toLowerCase() + " "))
+        ) continue;
+        seenLabels.add(key);
+        itemLabels.push(label);
+      }
+      const finalItemLabels = targetLabel === "Technology"
+        ? itemLabels.filter((label) => /technology$/i.test(label)).slice(0, 4)
+        : itemLabels;
+
+      for (const label of finalItemLabels.slice(0, 8)) {
+        const row = document.createElement("button");
+        row.type = "button";
+        row.style.setProperty("display", "flex", "important");
+        row.style.setProperty("align-items", "center", "important");
+        row.style.setProperty("justify-content", "space-between", "important");
+        row.style.setProperty("gap", "10px", "important");
+        row.style.setProperty("width", "100%", "important");
+        row.style.setProperty("padding", "10px 0", "important");
+        row.style.setProperty("margin", "0", "important");
+        row.style.setProperty("border", "0", "important");
+        row.style.setProperty("background", "transparent", "important");
+        row.style.setProperty("text-align", "left", "important");
+        row.style.setProperty("font-size", "15px", "important");
+        row.style.setProperty("font-weight", "600", "important");
+        row.style.setProperty("line-height", "1.2", "important");
+        row.style.setProperty("color", "#1a1a1a", "important");
+
+        const labelNode = document.createElement("span");
+        labelNode.textContent = label;
+        row.append(labelNode);
+
+        const arrow = document.createElement("span");
+        arrow.textContent = "›";
+        arrow.style.setProperty("font-size", "24px", "important");
+        arrow.style.setProperty("line-height", "1", "important");
+        arrow.style.setProperty("color", "#888", "important");
+        row.append(arrow);
+
+        content.append(row);
+      }
+
+      scrollRegion.append(content);
+      overlay.append(scrollRegion);
+      document.body.append(overlay);
+      drawer?.style?.setProperty("display", "none", "important");
+      drawer?.style?.setProperty("visibility", "hidden", "important");
+      drawer?.style?.setProperty("opacity", "0", "important");
+      drawer?.style?.setProperty("pointer-events", "none", "important");
+      Array.from(document.querySelectorAll(".menu_drawer_content")).forEach((element) => {
+        element.style.setProperty("display", "none", "important");
+        element.style.setProperty("visibility", "hidden", "important");
+        element.style.setProperty("opacity", "0", "important");
+        element.style.setProperty("pointer-events", "none", "important");
+      });
+      document.body.classList.add("unscroll");
+      document.documentElement.style.setProperty("overflow", "hidden", "important");
+      return { ok: finalItemLabels.length > 0 };
+    })()`,
+    returnByValue: true
+  }).catch(() => ({ result: { value: { ok: false, reason: `Could not render ${label} mobile text overlay.` } } }));
+  return result.result?.value || { ok: false, reason: `Could not render ${label} mobile text overlay.` };
+}
+
 async function clickShokzMobileNavigationLabel(client, label) {
   const result = await client.send("Runtime.evaluate", {
     expression: `(() => {
@@ -8857,19 +9105,21 @@ async function clickShokzMobileNavigationLabel(client, label) {
           overlay.style.setProperty("width", window.innerWidth + "px", "important");
           overlay.style.setProperty("height", Math.max(0, window.innerHeight - drawerTop) + "px", "important");
           overlay.style.setProperty("background", "#fff", "important");
-          overlay.style.setProperty("z-index", "2147483646", "important");
-          overlay.style.setProperty("visibility", "visible", "important");
-          overlay.style.setProperty("opacity", "1", "important");
-          overlay.style.setProperty("pointer-events", "auto", "important");
-          overlay.style.setProperty("overflow", "hidden", "important");
+      overlay.style.setProperty("z-index", "2147483646", "important");
+      overlay.style.setProperty("visibility", "visible", "important");
+      overlay.style.setProperty("opacity", "1", "important");
+      overlay.style.setProperty("pointer-events", "auto", "important");
+      overlay.style.setProperty("overflow", "hidden", "important");
+      overlay.style.setProperty("transform", "none", "important");
+      overlay.style.setProperty("transition", "none", "important");
 
           const headerRow = document.createElement("div");
           headerRow.dataset.pageShotNavHeader = "true";
           headerRow.style.setProperty("display", "flex", "important");
           headerRow.style.setProperty("align-items", "center", "important");
           headerRow.style.setProperty("justify-content", "space-between", "important");
-          headerRow.style.setProperty("padding", "12px 14px 8px", "important");
-          headerRow.style.setProperty("min-height", "40px", "important");
+          headerRow.style.setProperty("padding", "10px 14px 4px", "important");
+          headerRow.style.setProperty("min-height", "34px", "important");
           headerRow.style.setProperty("background", "#fff", "important");
 
           const backButton = document.createElement("button");
@@ -8887,6 +9137,7 @@ async function clickShokzMobileNavigationLabel(client, label) {
           backButton.style.setProperty("background", "transparent", "important");
           backButton.style.setProperty("color", "#1a1a1a", "important");
           backButton.style.setProperty("pointer-events", "none", "important");
+          backButton.style.setProperty("z-index", "2", "important");
           headerRow.append(backButton);
 
           const closeButton = document.createElement("button");
@@ -8903,6 +9154,7 @@ async function clickShokzMobileNavigationLabel(client, label) {
           closeButton.style.setProperty("border", "0", "important");
           closeButton.style.setProperty("background", "transparent", "important");
           closeButton.style.setProperty("pointer-events", "none", "important");
+          closeButton.style.setProperty("z-index", "2", "important");
           headerRow.append(closeButton);
           overlay.append(headerRow);
 
@@ -8911,7 +9163,7 @@ async function clickShokzMobileNavigationLabel(client, label) {
           scrollRegion.style.setProperty("flex", "1 1 auto", "important");
           scrollRegion.style.setProperty("overflow-y", "auto", "important");
           scrollRegion.style.setProperty("overflow-x", "hidden", "important");
-          scrollRegion.style.setProperty("padding", "0 10px 14px", "important");
+          scrollRegion.style.setProperty("padding", "0 6px 6px", "important");
           scrollRegion.style.setProperty("background", "#fff", "important");
 
           const clone = document.createElement("div");
@@ -8929,11 +9181,61 @@ async function clickShokzMobileNavigationLabel(client, label) {
             image.removeAttribute("loading");
           }
           for (const card of clone.querySelectorAll(".p-item")) {
-            card.style.setProperty("display", "block", "important");
-            card.style.setProperty("width", "100%", "important");
-            card.style.setProperty("min-height", "140px", "important");
+            if (!card.classList.contains("has_bg")) {
+              card.style.setProperty("display", "flex", "important");
+              card.style.setProperty("align-items", "center", "important");
+              card.style.setProperty("gap", "8px", "important");
+              card.style.setProperty("padding", targetKey === "sportsheadphones" ? "6px 8px" : targetKey === "communicationheadsets" ? "10px 12px" : "8px 10px", "important");
+              card.style.setProperty("margin", "0 0 8px", "important");
+              card.style.setProperty("min-height", targetKey === "sportsheadphones" ? "64px" : targetKey === "communicationheadsets" ? "94px" : "78px", "important");
+              card.style.setProperty("height", targetKey === "sportsheadphones" ? "84px" : targetKey === "communicationheadsets" ? "104px" : "88px", "important");
+              card.style.setProperty("overflow", "hidden", "important");
+            } else {
+              card.style.setProperty("margin", "0 0 8px", "important");
+              if (targetKey === "workoutandlifestyleearbuds") {
+                card.style.setProperty("max-height", "132px", "important");
+              }
+              card.style.setProperty("overflow", "hidden", "important");
+            }
             card.style.setProperty("visibility", "visible", "important");
             card.style.setProperty("opacity", "1", "important");
+          }
+          for (const wrapper of clone.querySelectorAll(".p-item:not(.has_bg) .feature-row__image-wrapper")) {
+            wrapper.style.setProperty("flex", "0 0 34%", "important");
+            wrapper.style.setProperty("max-width", "34%", "important");
+            wrapper.style.setProperty("width", "34%", "important");
+          }
+          for (const imageWrap of clone.querySelectorAll(".p-item:not(.has_bg) .feature-row__image")) {
+            imageWrap.style.setProperty("display", "flex", "important");
+            imageWrap.style.setProperty("align-items", "center", "important");
+            imageWrap.style.setProperty("justify-content", "center", "important");
+          }
+          for (const image of clone.querySelectorAll(".p-item:not(.has_bg) img")) {
+            image.style.setProperty("max-height", targetKey === "sportsheadphones" ? "48px" : targetKey === "communicationheadsets" ? "62px" : "54px", "important");
+            image.style.setProperty("width", "auto", "important");
+            image.style.setProperty("max-width", "100%", "important");
+            image.style.setProperty("object-fit", "contain", "important");
+          }
+          for (const image of clone.querySelectorAll(".p-item.has_bg img")) {
+            if (targetKey === "workoutandlifestyleearbuds") {
+              image.style.setProperty("max-height", "100px", "important");
+            }
+          }
+          for (const textWrapper of clone.querySelectorAll(".p-item:not(.has_bg) .text-wrapper")) {
+            textWrapper.style.setProperty("flex", "1 1 auto", "important");
+            textWrapper.style.setProperty("min-width", "0", "important");
+          }
+          for (const heading of clone.querySelectorAll(".p-item:not(.has_bg) .text-wrapper h1, .p-item:not(.has_bg) .text-wrapper h2, .p-item:not(.has_bg) .text-wrapper h3, .p-item:not(.has_bg) .text-wrapper h4, .p-item:not(.has_bg) .text-wrapper .title")) {
+            heading.style.setProperty("margin", "0 0 4px", "important");
+            heading.style.setProperty("line-height", "1.12", "important");
+          }
+          for (const desc of clone.querySelectorAll(".p-item:not(.has_bg) .desc")) {
+            desc.style.setProperty("font-size", "9px", "important");
+            desc.style.setProperty("line-height", "1.15", "important");
+            desc.style.setProperty("display", "-webkit-box", "important");
+            desc.style.setProperty("-webkit-line-clamp", "2", "important");
+            desc.style.setProperty("-webkit-box-orient", "vertical", "important");
+            desc.style.setProperty("overflow", "hidden", "important");
           }
           clone.style.setProperty("display", "block", "important");
           clone.style.setProperty("width", "100%", "important");
@@ -8945,43 +9247,43 @@ async function clickShokzMobileNavigationLabel(client, label) {
           const footer = document.createElement("div");
           footer.dataset.pageShotNavProductFooter = "true";
           footer.style.setProperty("display", "block", "important");
-          footer.style.setProperty("padding", "14px 0 8px", "important");
+          footer.style.setProperty("flex", "0 0 auto", "important");
+          footer.style.setProperty("padding", "0 8px 8px", "important");
+          footer.style.setProperty("background", "#fff", "important");
+          footer.style.setProperty("box-shadow", "0 -6px 14px rgba(255,255,255,0.96)", "important");
           const appendFooterLink = (label, background, color, border) => {
-            const source = Array.from(document.querySelectorAll("a, button"))
+            const source = Array.from(document.querySelectorAll("#menu-drawer a, #menu-drawer button, .menu-drawer a, .menu-drawer button, a, button"))
               .find((element) => comparable(textOf(element)) === comparable(label));
-            if (!source) return;
-            const link = source.cloneNode(true);
+            const link = source ? source.cloneNode(true) : document.createElement("a");
+            if (!source) {
+              link.textContent = label;
+            }
             link.style.setProperty("display", "block", "important");
             link.style.setProperty("width", "100%", "important");
             link.style.setProperty("box-sizing", "border-box", "important");
-            link.style.setProperty("padding", "10px 14px", "important");
-            link.style.setProperty("margin", "0 0 10px", "important");
+            link.style.setProperty("padding", "8px 14px", "important");
+            link.style.setProperty("margin", "0 0 6px", "important");
             link.style.setProperty("border-radius", "3px", "important");
             link.style.setProperty("text-align", "center", "important");
             link.style.setProperty("text-decoration", "none", "important");
-            link.style.setProperty("font-size", "15px", "important");
+            link.style.setProperty("font-size", "14px", "important");
             link.style.setProperty("font-weight", "600", "important");
             link.style.setProperty("line-height", "1.2", "important");
             link.style.setProperty("background", background, "important");
             link.style.setProperty("color", color, "important");
             link.style.setProperty("border", border, "important");
+            link.style.setProperty("visibility", "visible", "important");
+            link.style.setProperty("opacity", "1", "important");
             footer.append(link);
           };
           appendFooterLink("Compare Products", "#fff", "#3f3f3f", "1px solid #d7d7d7");
           appendFooterLink("All Products", "#ff6f2c", "#fff", "1px solid #ff6f2c");
-          const account = Array.from(document.querySelectorAll(".account-content"))
-            .find((element) => /welcometoshokz/i.test(comparable(textOf(element))));
-          if (account) {
-            const accountClone = account.cloneNode(true);
-            accountClone.style.setProperty("display", "block", "important");
-            accountClone.style.setProperty("width", "100%", "important");
-            accountClone.style.setProperty("box-sizing", "border-box", "important");
-            accountClone.style.setProperty("margin-top", "2px", "important");
-            footer.append(accountClone);
-          }
-          scrollRegion.append(footer);
-
           overlay.append(scrollRegion);
+          if (targetKey === "communicationheadsets") {
+            scrollRegion.append(footer);
+          } else {
+            overlay.append(footer);
+          }
           document.body.append(overlay);
           drawer?.style?.setProperty("display", "none", "important");
           drawer?.style?.setProperty("visibility", "hidden", "important");
@@ -9018,6 +9320,29 @@ async function clickShokzMobileNavigationLabel(client, label) {
         overlay.style.setProperty("opacity", "1", "important");
         overlay.style.setProperty("pointer-events", "auto", "important");
         overlay.style.setProperty("overflow", "hidden", "important");
+        overlay.style.setProperty("transform", "none", "important");
+        overlay.style.setProperty("transition", "none", "important");
+
+        const backButton = document.createElement("button");
+        backButton.type = "button";
+        backButton.dataset.pageShotNavBack = "true";
+        backButton.className = "menu-drawer__close-button link link--text focus-inset";
+        backButton.innerHTML = '<span style="display:block;font-size:22px;line-height:1;color:currentColor">&#8592;</span>';
+        backButton.style.setProperty("display", "inline-flex", "important");
+        backButton.style.setProperty("align-items", "center", "important");
+        backButton.style.setProperty("justify-content", "center", "important");
+        backButton.style.setProperty("padding", "0", "important");
+        backButton.style.setProperty("width", "24px", "important");
+        backButton.style.setProperty("height", "24px", "important");
+        backButton.style.setProperty("border", "0", "important");
+        backButton.style.setProperty("background", "transparent", "important");
+        backButton.style.setProperty("color", "#1a1a1a", "important");
+        backButton.style.setProperty("pointer-events", "none", "important");
+        backButton.style.setProperty("position", "absolute", "important");
+        backButton.style.setProperty("top", "16px", "important");
+        backButton.style.setProperty("left", "14px", "important");
+        backButton.style.setProperty("z-index", "2", "important");
+        overlay.append(backButton);
 
         const closeButton = document.createElement("button");
         closeButton.type = "button";
@@ -9036,6 +9361,7 @@ async function clickShokzMobileNavigationLabel(client, label) {
         closeButton.style.setProperty("position", "absolute", "important");
         closeButton.style.setProperty("top", "12px", "important");
         closeButton.style.setProperty("right", "14px", "important");
+        closeButton.style.setProperty("z-index", "2", "important");
         overlay.append(closeButton);
 
         const scrollRegion = document.createElement("div");
@@ -9043,10 +9369,12 @@ async function clickShokzMobileNavigationLabel(client, label) {
         scrollRegion.style.setProperty("flex", "1 1 auto", "important");
         scrollRegion.style.setProperty("overflow-y", "auto", "important");
         scrollRegion.style.setProperty("overflow-x", "hidden", "important");
-        scrollRegion.style.setProperty("padding", "6px 10px 14px", "important");
+        scrollRegion.style.setProperty("padding", "28px 10px 14px", "important");
         scrollRegion.style.setProperty("background", "#fff", "important");
 
-        const clone = panel.cloneNode(true);
+        const clone = document.createElement("div");
+        clone.className = String(drawerCloneSource.className || "submenu_content");
+        clone.innerHTML = drawerCloneSource.innerHTML;
         clone.dataset.pageShotNavSecondaryContent = "true";
         clone.dataset.pageShotNavClone = "true";
         clone.setAttribute("aria-label", targetLabel);
@@ -9056,15 +9384,20 @@ async function clickShokzMobileNavigationLabel(client, label) {
         clone.style.setProperty("visibility", "visible", "important");
         clone.style.setProperty("opacity", "1", "important");
         clone.style.setProperty("pointer-events", "auto", "important");
-        const backButton = clone.querySelector(".menu-drawer__close-button");
-        if (backButton) {
-          const svgWrapper = backButton.querySelector(".svg-wrapper")?.cloneNode(true) || null;
-          backButton.textContent = "";
-          if (svgWrapper) {
-            backButton.append(svgWrapper);
-          }
-          backButton.setAttribute("data-page-shot-nav-back", "true");
-          backButton.style.setProperty("padding", "0 0 10px", "important");
+        for (const link of clone.querySelectorAll("a")) {
+          link.style.setProperty("text-decoration", "none", "important");
+        }
+        const breadcrumb = clone.querySelector("a, .menu-drawer__menu-item");
+        if (breadcrumb) {
+          breadcrumb.style.setProperty("display", "inline-block", "important");
+          breadcrumb.style.setProperty("margin", "0 0 12px", "important");
+          breadcrumb.style.setProperty("font-size", "15px", "important");
+          breadcrumb.style.setProperty("font-weight", "400", "important");
+          breadcrumb.style.setProperty("line-height", "1.2", "important");
+          breadcrumb.style.setProperty("color", "#5f6874", "important");
+          breadcrumb.style.setProperty("border", "0", "important");
+          breadcrumb.style.setProperty("border-bottom", "0", "important");
+          breadcrumb.style.setProperty("box-shadow", "none", "important");
         }
         for (const listLink of clone.querySelectorAll(".menu-drawer__menu-item")) {
           listLink.style.setProperty("display", "flex", "important");
