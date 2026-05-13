@@ -9444,61 +9444,8 @@ async function clickShokzMobileNavigationLabel(client, label) {
             image.removeAttribute("loading");
           }
           for (const card of clone.querySelectorAll(".p-item")) {
-            if (!card.classList.contains("has_bg")) {
-              card.style.setProperty("display", "flex", "important");
-              card.style.setProperty("align-items", "center", "important");
-              card.style.setProperty("gap", "10px", "important");
-              card.style.setProperty("padding", targetKey === "sportsheadphones" ? "12px 12px" : targetKey === "communicationheadsets" ? "12px 12px" : "10px 10px", "important");
-              card.style.setProperty("margin", "0 0 12px", "important");
-              card.style.setProperty("min-height", targetKey === "sportsheadphones" ? "134px" : targetKey === "communicationheadsets" ? "102px" : "84px", "important");
-              card.style.setProperty("height", targetKey === "sportsheadphones" ? "148px" : targetKey === "communicationheadsets" ? "112px" : "92px", "important");
-              card.style.setProperty("overflow", "hidden", "important");
-            } else {
-              card.style.setProperty("margin", "0 0 12px", "important");
-              if (targetKey === "workoutandlifestyleearbuds") {
-                card.style.setProperty("max-height", "148px", "important");
-              }
-              card.style.setProperty("overflow", "hidden", "important");
-            }
             card.style.setProperty("visibility", "visible", "important");
             card.style.setProperty("opacity", "1", "important");
-          }
-          for (const wrapper of clone.querySelectorAll(".p-item:not(.has_bg) .feature-row__image-wrapper")) {
-            wrapper.style.setProperty("flex", "0 0 34%", "important");
-            wrapper.style.setProperty("max-width", "34%", "important");
-            wrapper.style.setProperty("width", "34%", "important");
-          }
-          for (const imageWrap of clone.querySelectorAll(".p-item:not(.has_bg) .feature-row__image")) {
-            imageWrap.style.setProperty("display", "flex", "important");
-            imageWrap.style.setProperty("align-items", "center", "important");
-            imageWrap.style.setProperty("justify-content", "center", "important");
-          }
-          for (const image of clone.querySelectorAll(".p-item:not(.has_bg) img")) {
-            image.style.setProperty("max-height", targetKey === "sportsheadphones" ? "74px" : targetKey === "communicationheadsets" ? "68px" : "58px", "important");
-            image.style.setProperty("width", "auto", "important");
-            image.style.setProperty("max-width", "100%", "important");
-            image.style.setProperty("object-fit", "contain", "important");
-          }
-          for (const image of clone.querySelectorAll(".p-item.has_bg img")) {
-            if (targetKey === "workoutandlifestyleearbuds") {
-              image.style.setProperty("max-height", "100px", "important");
-            }
-          }
-          for (const textWrapper of clone.querySelectorAll(".p-item:not(.has_bg) .text-wrapper")) {
-            textWrapper.style.setProperty("flex", "1 1 auto", "important");
-            textWrapper.style.setProperty("min-width", "0", "important");
-          }
-          for (const heading of clone.querySelectorAll(".p-item:not(.has_bg) .text-wrapper h1, .p-item:not(.has_bg) .text-wrapper h2, .p-item:not(.has_bg) .text-wrapper h3, .p-item:not(.has_bg) .text-wrapper h4, .p-item:not(.has_bg) .text-wrapper .title")) {
-            heading.style.setProperty("margin", "0 0 4px", "important");
-            heading.style.setProperty("line-height", "1.12", "important");
-          }
-          for (const desc of clone.querySelectorAll(".p-item:not(.has_bg) .desc")) {
-            desc.style.setProperty("font-size", "10px", "important");
-            desc.style.setProperty("line-height", "1.2", "important");
-            desc.style.setProperty("display", "-webkit-box", "important");
-            desc.style.setProperty("-webkit-line-clamp", "2", "important");
-            desc.style.setProperty("-webkit-box-orient", "vertical", "important");
-            desc.style.setProperty("overflow", "hidden", "important");
           }
           clone.style.setProperty("display", "block", "important");
           clone.style.setProperty("width", "100%", "important");
