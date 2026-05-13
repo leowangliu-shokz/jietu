@@ -604,8 +604,21 @@ function imagePreviewItemFromLink(link) {
   return {
     src: link.href,
     caption: imagePreviewCaptionForLink(link),
-    snapshot: link.classList.contains("shot-main-image") ? snapshotForPreviewLink(link) : null
+    snapshot: previewSnapshotForLink(link)
   };
+}
+
+function previewSnapshotForLink(link) {
+  if (!link) {
+    return null;
+  }
+  if (link.classList.contains("shot-main-image")) {
+    return snapshotForPreviewLink(link);
+  }
+  if (link.classList.contains("related-thumb")) {
+    return relatedShotSnapshotForPreviewLink(link);
+  }
+  return null;
 }
 
 function imagePreviewNavigationForRelatedThumb(link) {
@@ -815,14 +828,33 @@ function renderImagePreviewMode() {
   elements.imagePreviewScreenRail.innerHTML = "";
 
   if (comparison) {
-    renderImagePreviewDepthMarkers();
+    renderImagePreviewDepthMarkers(comparison, imagePreviewMarkerModeForSnapshot(imagePreviewZoomState.snapshot));
     renderImagePreviewScreenRail(comparison);
   }
 
   applyImagePreviewScale(imagePreviewZoomState.scale || 1);
 }
 
-function renderImagePreviewDepthMarkers() {
+function renderImagePreviewDepthMarkers(comparison, mode = "percent-depth") {
+  if (mode === "screen-dividers") {
+    const naturalHeight = Math.max(1, Number(imagePreviewZoomState.naturalHeight || 0));
+    for (const segment of comparison?.segments || []) {
+      const marker = document.createElement("div");
+      marker.className = [
+        "image-preview-depth-marker",
+        "is-screen-divider",
+        segment.index === 1 ? "is-first-screen" : ""
+      ].filter(Boolean).join(" ");
+      marker.style.top = `${Math.max(0, Math.min(100, (segment.y / naturalHeight) * 100))}%`;
+
+      const label = document.createElement("span");
+      label.textContent = `第${segment.index}屏`;
+      marker.append(label);
+      elements.imagePreviewDepthMarkers.append(marker);
+    }
+    return;
+  }
+
   for (let depth = 10; depth <= 100; depth += 10) {
     const marker = document.createElement("div");
     marker.className = [
@@ -859,6 +891,10 @@ function renderImagePreviewScreenRail(comparison) {
   }
 
   elements.imagePreviewScreenRail.append(fragment);
+}
+
+function imagePreviewMarkerModeForSnapshot(snapshot) {
+  return snapshot?.sectionKey === "navigation" ? "screen-dividers" : "percent-depth";
 }
 
 function applyImagePreviewScale(scale) {
@@ -970,6 +1006,45 @@ function snapshotForPreviewLink(link) {
 
   const hrefPath = safePathname(link.href);
   return state.snapshots.find((snapshot) => safePathname(snapshot.imageUrl) === hrefPath) || null;
+}
+
+function relatedShotSnapshotForPreviewLink(link) {
+  if (!link) {
+    return null;
+  }
+
+  const card = link.closest(".shot");
+  const mainLink = card?.querySelector(".shot-main-image");
+  const parentSnapshot = snapshotForPreviewLink(mainLink);
+  const width = Number(link.dataset.previewWidth || 0) || parentSnapshot?.width || 0;
+  const height = Number(link.dataset.previewHeight || 0) || parentSnapshot?.height || 0;
+  const scrollViewportHeight = Number(
+    link.dataset.previewViewportHeight ||
+    card?.dataset.viewportHeight ||
+    parentSnapshot?.scrollInfo?.viewportHeight ||
+    0
+  );
+
+  if (!width || !height) {
+    return parentSnapshot || null;
+  }
+
+  return {
+    ...(parentSnapshot || {}),
+    file: link.dataset.shotFile || parentSnapshot?.file || "",
+    imageUrl: link.href,
+    width,
+    height,
+    devicePresetId: parentSnapshot?.devicePresetId || card?.dataset.devicePresetId || null,
+    sectionKey: link.dataset.sectionKey || parentSnapshot?.sectionKey || null,
+    navigationLevel: link.dataset.navigationLevel || parentSnapshot?.navigationLevel || null,
+    scrollInfo: Number.isFinite(scrollViewportHeight) && scrollViewportHeight > 0
+      ? {
+          ...(parentSnapshot?.scrollInfo || {}),
+          viewportHeight: scrollViewportHeight
+        }
+      : parentSnapshot?.scrollInfo || null
+  };
 }
 
 function safePathname(value) {
@@ -1918,6 +1993,8 @@ function renderShotCard(card) {
   ].filter(Boolean).join(" ");
   item.dataset.galleryCardKey = cardKey;
   item.dataset.snapshotId = snapshot.id || "";
+  item.dataset.devicePresetId = snapshot.devicePresetId || "";
+  item.dataset.viewportHeight = String(Number(snapshot.scrollInfo?.viewportHeight || 0) || "");
   item.innerHTML = `
     <div class="shot-hero">
       <a class="shot-main-image" href="${snapshot.imageUrl}" target="_blank" rel="noreferrer" data-snapshot-id="${escapeHtml(snapshot.id || "")}" data-snapshot-file="${escapeHtml(snapshot.file || "")}">
@@ -2094,7 +2171,19 @@ function renderRelatedThumbGrid(shots) {
   return `
     <div class="related-grid">
       ${shots.map((shot) => `
-        <a class="related-thumb ${isLowConfidenceCapture(shot.captureConfidence) ? "related-thumb-low-confidence" : ""}" href="${shot.imageUrl}" target="_blank" rel="noreferrer" title="${escapeHtml(relatedShotTitle(shot))}">
+        <a
+          class="related-thumb ${isLowConfidenceCapture(shot.captureConfidence) ? "related-thumb-low-confidence" : ""}"
+          href="${shot.imageUrl}"
+          target="_blank"
+          rel="noreferrer"
+          title="${escapeHtml(relatedShotTitle(shot))}"
+          data-shot-file="${escapeHtml(shot.file || "")}"
+          data-preview-width="${escapeHtml(String(shot.width || ""))}"
+          data-preview-height="${escapeHtml(String(shot.height || ""))}"
+          data-preview-viewport-height="${escapeHtml(String(shot.scrollInfo?.viewportHeight || ""))}"
+          data-section-key="${escapeHtml(shot.sectionKey || "")}"
+          data-navigation-level="${escapeHtml(shot.navigationLevel || "")}"
+        >
           <img src="${shot.imageUrl}" alt="${escapeHtml(relatedShotDisplayLabel(shot))}" loading="lazy">
           ${isLowConfidenceCapture(shot.captureConfidence) ? `<span class="related-thumb-flag" title="${escapeHtml(captureConfidenceTitle(shot.captureConfidence))}">低可信</span>` : ""}
           <span>${escapeHtml(relatedThumbLabel(shot))}</span>

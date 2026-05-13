@@ -851,20 +851,43 @@ async function saveShokzNavigationCapture(client, outputPath, viewport, state, c
     await restoreShokzNavigationHover(client, state, viewport);
   }
 
-  const screenshotCapture = await captureScreenshotWithValidation(client, {
-    format: "png",
-    fromSurface: true
+  let mobileLongCapture = null;
+  const useMobileLongCapture = state.restoreMode === "mobile-tap" &&
+    isProductsNavigationLabel(state.topLevelLabel || state.tabLabel);
+  if (useMobileLongCapture) {
+    mobileLongCapture = await prepareShokzMobileNavigationExpandedCapture(client);
+  }
+
+  const screenshotCapture = await captureScreenshotWithValidation(client, () => {
+    if (mobileLongCapture?.clip) {
+      return {
+        format: "png",
+        fromSurface: true,
+        captureBeyondViewport: true,
+        clip: mobileLongCapture.clip
+      };
+    }
+    return {
+      format: "png",
+      fromSurface: true
+    };
   }, {
     label: `navigation ${state.stateLabel}`,
     acceptBlankAudit: (blankAudit) => shouldAcceptShokzNavigationBlankAudit(state, current, blankAudit),
     beforeAttempt: async ({ attempt }) => {
       if (attempt === 1) {
+        if (useMobileLongCapture) {
+          mobileLongCapture = await prepareShokzMobileNavigationExpandedCapture(client);
+        }
         return;
       }
       await prepareShokzNavigationRelatedScreenshot(client, state, viewport);
       const retryCleanup = await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 5, hideOnly: true });
       if (!retryCleanup.ok) {
         throw new Error(`Known popup remained before navigation retry screenshot: ${formatKnownPopupRemaining(retryCleanup)}.`);
+      }
+      if (useMobileLongCapture) {
+        mobileLongCapture = await prepareShokzMobileNavigationExpandedCapture(client);
       }
     }
   });
@@ -935,6 +958,12 @@ async function saveShokzNavigationCapture(client, outputPath, viewport, state, c
       width: imageSize.width,
       height: imageSize.height
     },
+    scrollInfo: mobileLongCapture
+      ? {
+          viewportHeight: mobileLongCapture.viewportHeight,
+          reachableHeight: mobileLongCapture.contentHeight
+        }
+      : null,
     isDefaultState: false,
     sectionState: {
       text: current.text || "",
@@ -1271,6 +1300,94 @@ async function prepareShokzNavigationMainScreenshot(client, captureContext) {
 async function prepareShokzNavigationRelatedScreenshot(client, state, captureContext) {
   await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 4, hideOnly: true });
   await restoreShokzNavigationHover(client, state, captureContext);
+}
+
+async function prepareShokzMobileNavigationExpandedCapture(client) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          rect.bottom > 0 &&
+          rect.right > 0 &&
+          rect.left < window.innerWidth &&
+          rect.top < window.innerHeight &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const overlay = Array.from(document.querySelectorAll("[data-page-shot-nav-secondary='true']"))
+        .find((element) => visible(element));
+      if (!overlay) {
+        return { ok: false, reason: "Visible mobile navigation overlay was not found." };
+      }
+      const scrollRegion = overlay.querySelector("[data-page-shot-nav-scroll='true']") || overlay;
+      if (!(scrollRegion instanceof Element)) {
+        return { ok: false, reason: "Mobile navigation scroll region was not found." };
+      }
+
+      scrollRegion.scrollTop = 0;
+      const overlayRect = overlay.getBoundingClientRect();
+      const scrollRect = scrollRegion.getBoundingClientRect();
+      const top = Math.max(0, Math.floor(overlayRect.top + window.scrollY));
+
+      overlay.dataset.pageShotNavExpanded = "true";
+      overlay.style.setProperty("position", "absolute", "important");
+      overlay.style.setProperty("top", top + "px", "important");
+      overlay.style.setProperty("bottom", "auto", "important");
+      overlay.style.setProperty("height", "auto", "important");
+      overlay.style.setProperty("max-height", "none", "important");
+      overlay.style.setProperty("overflow", "visible", "important");
+
+      scrollRegion.style.setProperty("flex", "0 0 auto", "important");
+      scrollRegion.style.setProperty("height", "auto", "important");
+      scrollRegion.style.setProperty("max-height", "none", "important");
+      scrollRegion.style.setProperty("overflow", "visible", "important");
+      scrollRegion.style.setProperty("overflow-y", "visible", "important");
+
+      const expandedOverlayRect = overlay.getBoundingClientRect();
+      const descendantBottom = Array.from(overlay.children || [])
+        .reduce((max, element) => Math.max(max, Math.ceil(element.getBoundingClientRect().bottom - expandedOverlayRect.top)), 0);
+      const contentHeight = Math.max(
+        Math.ceil(overlay.scrollHeight || 0),
+        Math.ceil(expandedOverlayRect.height || 0),
+        descendantBottom
+      );
+      const minDocumentHeight = Math.max(
+        Math.ceil(document.documentElement.scrollHeight || 0),
+        top + contentHeight + 24
+      );
+
+      overlay.style.setProperty("height", contentHeight + "px", "important");
+
+      document.documentElement.style.setProperty("min-height", minDocumentHeight + "px", "important");
+      document.body.style.setProperty("min-height", minDocumentHeight + "px", "important");
+      document.documentElement.style.setProperty("overflow", "visible", "important");
+      document.body.style.setProperty("overflow", "visible", "important");
+
+      return {
+        ok: true,
+        clip: {
+          x: Math.max(0, Math.floor(overlayRect.left + window.scrollX)),
+          y: top,
+          width: Math.max(1, Math.ceil(overlayRect.width || window.innerWidth)),
+          height: Math.max(1, contentHeight),
+          scale: 1
+        },
+        viewportHeight: Math.max(1, Math.ceil(window.innerHeight || 0)),
+        contentHeight: Math.max(1, contentHeight)
+      };
+    })()`,
+    returnByValue: true
+  }).catch(() => ({ result: { value: { ok: false, reason: "Could not prepare mobile navigation overlay capture." } } }));
+  const value = result.result?.value || { ok: false, reason: "Could not prepare mobile navigation overlay capture." };
+  if (!value.ok) {
+    throw new Error(value.reason || "Could not prepare mobile navigation overlay capture.");
+  }
+  return value;
 }
 
 async function restoreShokzNavigationHover(client, state, captureContext = null) {
@@ -9185,10 +9302,10 @@ async function clickShokzMobileNavigationLabel(client, label) {
               card.style.setProperty("display", "flex", "important");
               card.style.setProperty("align-items", "center", "important");
               card.style.setProperty("gap", "8px", "important");
-              card.style.setProperty("padding", targetKey === "sportsheadphones" ? "6px 8px" : targetKey === "communicationheadsets" ? "10px 12px" : "8px 10px", "important");
-              card.style.setProperty("margin", "0 0 8px", "important");
-              card.style.setProperty("min-height", targetKey === "sportsheadphones" ? "64px" : targetKey === "communicationheadsets" ? "94px" : "78px", "important");
-              card.style.setProperty("height", targetKey === "sportsheadphones" ? "84px" : targetKey === "communicationheadsets" ? "104px" : "88px", "important");
+              card.style.setProperty("padding", targetKey === "sportsheadphones" ? "8px 10px" : targetKey === "communicationheadsets" ? "12px 12px" : "10px 10px", "important");
+              card.style.setProperty("margin", "0 0 10px", "important");
+              card.style.setProperty("min-height", targetKey === "sportsheadphones" ? "76px" : targetKey === "communicationheadsets" ? "102px" : "84px", "important");
+              card.style.setProperty("height", targetKey === "sportsheadphones" ? "94px" : targetKey === "communicationheadsets" ? "112px" : "92px", "important");
               card.style.setProperty("overflow", "hidden", "important");
             } else {
               card.style.setProperty("margin", "0 0 8px", "important");
@@ -9211,7 +9328,7 @@ async function clickShokzMobileNavigationLabel(client, label) {
             imageWrap.style.setProperty("justify-content", "center", "important");
           }
           for (const image of clone.querySelectorAll(".p-item:not(.has_bg) img")) {
-            image.style.setProperty("max-height", targetKey === "sportsheadphones" ? "48px" : targetKey === "communicationheadsets" ? "62px" : "54px", "important");
+            image.style.setProperty("max-height", targetKey === "sportsheadphones" ? "56px" : targetKey === "communicationheadsets" ? "68px" : "58px", "important");
             image.style.setProperty("width", "auto", "important");
             image.style.setProperty("max-width", "100%", "important");
             image.style.setProperty("object-fit", "contain", "important");
@@ -9230,8 +9347,8 @@ async function clickShokzMobileNavigationLabel(client, label) {
             heading.style.setProperty("line-height", "1.12", "important");
           }
           for (const desc of clone.querySelectorAll(".p-item:not(.has_bg) .desc")) {
-            desc.style.setProperty("font-size", "9px", "important");
-            desc.style.setProperty("line-height", "1.15", "important");
+            desc.style.setProperty("font-size", "10px", "important");
+            desc.style.setProperty("line-height", "1.2", "important");
             desc.style.setProperty("display", "-webkit-box", "important");
             desc.style.setProperty("-webkit-line-clamp", "2", "important");
             desc.style.setProperty("-webkit-box-orient", "vertical", "important");

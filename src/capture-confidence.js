@@ -203,8 +203,18 @@ function toleratesLowDetailVisualAudit(shot, visualAudit) {
       : [];
   const textBlocks = Array.isArray(shot?.sectionState?.textBlocks) ? shot.sectionState.textBlocks : [];
   const images = Array.isArray(shot?.sectionState?.images) ? shot.sectionState.images : [];
-  return shot?.sectionKey === "media" &&
+  if (
+    shot?.sectionKey === "media" &&
     visibleItems.length >= 5 &&
     textBlocks.length >= 8 &&
-    images.length <= 2;
+    images.length <= 2
+  ) {
+    return true;
+  }
+  return shot?.sectionKey === "navigation" &&
+    shot?.navigationLevel === "secondary" &&
+    !/products/i.test(String(shot?.topLevelLabel || shot?.tabLabel || "")) &&
+    visibleItems.length >= 4 &&
+    textBlocks.length >= 4 &&
+    images.length === 0;
 }

@@ -121,6 +121,35 @@ test("keeps structured low-detail media panels as non-blocking hints", () => {
   assert.deepEqual(confidence.reasons, ["Image may be blurry or low detail."]);
 });
 
+test("keeps sparse text-only navigation secondary panels as non-blocking hints", () => {
+  const confidence = assessRelatedShotConfidence({
+    sectionKey: "navigation",
+    navigationLevel: "secondary",
+    topLevelLabel: "Support",
+    stateLabel: "Support",
+    visibleItems: new Array(4).fill(null).map((_, index) => ({ key: `item-${index + 1}` })),
+    visualAudit: {
+      status: "warning",
+      qualityStatus: "warning",
+      message: "Image may be blurry or low detail."
+    },
+    sectionState: {
+      textBlocks: new Array(5).fill(null).map((_, index) => ({ text: `block-${index + 1}` })),
+      images: []
+    }
+  }, {
+    warnings: [{
+      sectionKey: "navigation",
+      stateLabel: "Support",
+      message: "Image may be blurry or low detail."
+    }]
+  });
+
+  assert.equal(confidence.level, "high");
+  assert.equal(confidence.baselineEligible, true);
+  assert.deepEqual(confidence.reasons, ["Image may be blurry or low detail."]);
+});
+
 test("normalizes missing confidence payloads to high confidence", () => {
   const confidence = normalizeCaptureConfidence(null);
 

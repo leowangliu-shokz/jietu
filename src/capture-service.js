@@ -624,6 +624,7 @@ async function relatedShotsFromCaptureResult(relatedCapture, normalizedUrl, vali
       visualHash: item.visualHash || null,
       visualAudit: item.visualAudit || null,
       clip: item.clip || item.bannerClip || null,
+      scrollInfo: item.scrollInfo || null,
       isDefaultState: Boolean(item.isDefaultState),
       coverageKey: item.coverageKey || null,
       bannerIndex: item.bannerIndex,
