@@ -7,6 +7,7 @@ import { CdpClient } from "./cdp.js";
 import { decodePng, encodePng } from "./png.js";
 import { blankImageAuditForBuffer, hashBuffer, imageQualityAuditForBuffer, nearestVisualHash, visualAuditForBuffer, visualHashForBuffer } from "./image-audit.js";
 import {
+  findShokzCollectionRelatedSectionDefinition,
   findShokzHomeRelatedSectionDefinition,
   shokzHomeRelatedSectionDefinitions as importedShokzHomeRelatedSectionDefinitions,
   shokzMediaTrackDefinitions,
@@ -178,12 +179,15 @@ async function driveCapture(client, url, outputPath, options) {
     options.captureMode === "shokz-home-banners" ||
     options.captureMode === "shokz-home-related" ||
     options.captureMode === "shokz-products-nav-related" ||
-    options.captureMode === "shokz-home-related-section"
+    options.captureMode === "shokz-home-related-section" ||
+    options.captureMode === "shokz-collection-related-section"
   ) {
     stage = "reading page title";
     const titleResult = await readPageTitle(client);
     stage = options.captureMode === "shokz-products-nav-related"
       ? "capturing Shokz products navigation states"
+      : options.captureMode === "shokz-collection-related-section"
+        ? `capturing Shokz collection related section ${options.sectionKey || ""}`.trim()
       : options.captureMode === "shokz-home-related-section"
         ? `capturing Shokz home related section ${options.sectionKey || ""}`.trim()
       : options.captureMode === "shokz-home-related"
@@ -192,6 +196,29 @@ async function driveCapture(client, url, outputPath, options) {
     let relatedCapture;
     if (options.captureMode === "shokz-products-nav-related") {
       relatedCapture = await captureShokzProductsNavigationRelated(client, outputPath, captureContext);
+    } else if (options.captureMode === "shokz-collection-related-section") {
+      const definition = findShokzCollectionRelatedSectionDefinition(options.sectionKey);
+      if (!definition) {
+        throw new Error(`Unknown Shokz collection related section: ${options.sectionKey || "(missing)"}.`);
+      }
+      const sectionCapture = await captureShokzCollectionRelatedSection(client, outputPath, captureContext, definition);
+      relatedCapture = {
+        width: sectionCapture.width,
+        height: sectionCapture.height,
+        captures: sectionCapture.captures,
+        relatedValidation: {
+          status: sectionCapture.warnings.length ? "warning" : "ok",
+          warnings: sectionCapture.warnings,
+          sections: [{
+            sectionKey: definition.key,
+            sectionLabel: definition.sectionLabel,
+            expectedCount: sectionCapture.expectedCount,
+            capturedCount: sectionCapture.capturedCount,
+            savedCount: sectionCapture.captures.length,
+            status: sectionCapture.warnings.length ? "warning" : "ok"
+          }]
+        }
+      };
     } else if (options.captureMode === "shokz-home-related-section") {
       const definition = findShokzHomeRelatedSectionDefinition(options.sectionKey);
       if (!definition) {
@@ -239,7 +266,10 @@ async function driveCapture(client, url, outputPath, options) {
   let scrollInfo = null;
   if (options.fullPage && options.lazyLoadScroll !== false) {
     stage = "scrolling to trigger lazy content";
-    scrollInfo = await prepareFullPage(client, options);
+    scrollInfo = await prepareFullPage(client, {
+      ...options,
+      captureUrl: url
+    });
     await verifyCurrentUrl(client, url, "after lazy-load scrolling", urlCheck);
     if (shouldGuardShokzSearchOverlay(url, viewport, options)) {
       await ensureShokzSearchOverlayClosed(client, "after lazy-load scrolling");
@@ -278,72 +308,109 @@ async function driveCapture(client, url, outputPath, options) {
   let captureValidation = null;
   if (options.fullPage) {
     const guardShokzSearchOverlay = shouldGuardShokzSearchOverlay(url, viewport, options);
-    if (guardShokzSearchOverlay) {
-      await ensureShokzSearchOverlayClosed(client, "before screenshot capture");
-    }
-    const beforeSegmentCapture = async ({ attempt } = {}) => {
-      if (viewport.mobile && attempt > 1) {
-        await materializeFullPageContent(client);
-        await prepareForScreenshotCapture(client, {
-          rounds: 5,
-          shokzKnownPopups: cleanShokzKnownPopups,
-          guardSearchOverlay: guardShokzSearchOverlay,
-          stage: "after mobile full-page content materialization"
-        });
-        await sleep(220);
-      }
-      await prepareForScreenshotCapture(client, {
-        rounds: viewport.mobile ? 5 : 2,
-        shokzKnownPopups: cleanShokzKnownPopups,
-        guardSearchOverlay: guardShokzSearchOverlay,
-        stage: viewport.mobile
-          ? "before mobile stitched segment screenshot capture"
-          : "before stitched segment screenshot capture"
-      });
-    };
-    await freezePageMotion(client);
-    try {
-      const stitchedCapture = await captureStitchedScreenshot(client, outputPath, {
-        width: clipWidth,
-        height: clipHeight,
-        viewportHeight: viewport.height,
-        stepDelay: options.scrollStepMs ?? 350,
-        dismissObstructionsBeforeSegment: !cleanShokzKnownPopups,
-        hideFixedElementsAfterFirstSegment: options.hideFixedElementsAfterFirstSegment !== false,
-        beforeSegmentCapture,
-        beforeFirstSegmentCapture: guardShokzSearchOverlay
-          ? () => ensureShokzSearchOverlayClosed(client, "before first segment screenshot capture")
-          : null,
-        afterSegmentPositioned: async ({ isLastSegment }) => {
-          if (cleanShokzKnownPopups) {
-            await dismissShokzKnownPopupsBeforeScreenshot(client, {
-              rounds: isLastSegment ? 4 : 2,
-              hideOnly: true
+    if (shouldUseDirectFullPageClipCapture(options)) {
+      await freezePageMotion(client);
+      try {
+        const clipCapture = await captureFullPageClipScreenshot(client, outputPath, {
+          width: clipWidth,
+          height: clipHeight,
+          label: "Shokz collection full-page screenshot",
+          beforeAttempt: async ({ attempt }) => {
+            if (attempt > 1) {
+              await materializeFullPageContent(client);
+            }
+            await prepareForScreenshotCapture(client, {
+              rounds: viewport.mobile ? 5 : 2,
+              shokzKnownPopups: cleanShokzKnownPopups,
+              guardSearchOverlay: guardShokzSearchOverlay,
+              stage: viewport.mobile
+                ? "before mobile full-page clip screenshot capture"
+                : "before full-page clip screenshot capture"
+            });
+            if (guardShokzSearchOverlay) {
+              await ensureShokzSearchOverlayClosed(client, "before full-page clip screenshot capture");
+            }
+            await scrollTo(client, 0);
+            await settlePositionedViewport(client, {
+              delayMs: attempt > 1 ? 280 : 180,
+              frames: 2
             });
           }
-          if (guardShokzSearchOverlay) {
-            await ensureShokzSearchOverlayClosed(client, "after stitched segment positioning");
-          }
-          await freezePageMotion(client);
-          await settlePositionedViewport(client, {
-            delayMs: isLastSegment ? 520 : 140,
-            frames: isLastSegment ? 4 : 2
+        });
+        captureBuffer = clipCapture.buffer;
+        captureValidation = clipCapture.captureValidation;
+        captureHeight = clipHeight;
+      } finally {
+        await restorePageMotion(client);
+      }
+    } else {
+      if (guardShokzSearchOverlay) {
+        await ensureShokzSearchOverlayClosed(client, "before screenshot capture");
+      }
+      const beforeSegmentCapture = async ({ attempt } = {}) => {
+        if (viewport.mobile && attempt > 1) {
+          await materializeFullPageContent(client);
+          await prepareForScreenshotCapture(client, {
+            rounds: 5,
+            shokzKnownPopups: cleanShokzKnownPopups,
+            guardSearchOverlay: guardShokzSearchOverlay,
+            stage: "after mobile full-page content materialization"
           });
+          await sleep(220);
         }
-      });
-      const finalizedCapture = mobile && cleanShokzKnownPopups
-        ? await patchShokzMobileFooterInStitchedCapture(client, url, stitchedCapture, {
-          outputPath,
+        await prepareForScreenshotCapture(client, {
+          rounds: viewport.mobile ? 5 : 2,
+          shokzKnownPopups: cleanShokzKnownPopups,
+          guardSearchOverlay: guardShokzSearchOverlay,
+          stage: viewport.mobile
+            ? "before mobile stitched segment screenshot capture"
+            : "before stitched segment screenshot capture"
+        });
+      };
+      await freezePageMotion(client);
+      try {
+        const stitchedCapture = await captureStitchedScreenshot(client, outputPath, {
+          width: clipWidth,
+          height: clipHeight,
           viewportHeight: viewport.height,
-          waitAfterLoadMs: options.waitAfterLoadMs ?? 2500,
-          guardSearchOverlay: guardShokzSearchOverlay
-        })
-        : stitchedCapture;
-      captureBuffer = finalizedCapture.buffer;
-      captureValidation = finalizedCapture.captureValidation;
-      captureHeight = finalizedCapture.height || clipHeight;
-    } finally {
-      await restorePageMotion(client);
+          stepDelay: options.scrollStepMs ?? 350,
+          dismissObstructionsBeforeSegment: !cleanShokzKnownPopups,
+          hideFixedElementsAfterFirstSegment: options.hideFixedElementsAfterFirstSegment !== false,
+          beforeSegmentCapture,
+          beforeFirstSegmentCapture: guardShokzSearchOverlay
+            ? () => ensureShokzSearchOverlayClosed(client, "before first segment screenshot capture")
+            : null,
+          afterSegmentPositioned: async ({ isLastSegment }) => {
+            if (cleanShokzKnownPopups) {
+              await dismissShokzKnownPopupsBeforeScreenshot(client, {
+                rounds: isLastSegment ? 4 : 2,
+                hideOnly: true
+              });
+            }
+            if (guardShokzSearchOverlay) {
+              await ensureShokzSearchOverlayClosed(client, "after stitched segment positioning");
+            }
+            await freezePageMotion(client);
+            await settlePositionedViewport(client, {
+              delayMs: isLastSegment ? 520 : 140,
+              frames: isLastSegment ? 4 : 2
+            });
+          }
+        });
+        const finalizedCapture = mobile && cleanShokzKnownPopups
+          ? await patchShokzMobileFooterInStitchedCapture(client, url, stitchedCapture, {
+            outputPath,
+            viewportHeight: viewport.height,
+            waitAfterLoadMs: options.waitAfterLoadMs ?? 2500,
+            guardSearchOverlay: guardShokzSearchOverlay
+          })
+          : stitchedCapture;
+        captureBuffer = finalizedCapture.buffer;
+        captureValidation = finalizedCapture.captureValidation;
+        captureHeight = finalizedCapture.height || clipHeight;
+      } finally {
+        await restorePageMotion(client);
+      }
     }
   } else {
     if (options.captureMode === "shokz-products-nav") {
@@ -434,6 +501,18 @@ function shouldCleanShokzKnownPopups(url, options = {}) {
   } catch {
     return false;
   }
+}
+
+function shouldUseDirectFullPageClipCapture(options = {}) {
+  return String(options.captureMode || "").trim() === "shokz-collection-page";
+}
+
+function isViewMoreLabel(value) {
+  const normalized = String(value || "")
+    .replace(/[\u00a0\s]+/g, " ")
+    .replace(/[\u25bc\u25be\u25bf\u2228\u203a\u00bb>]+/g, " ")
+    .trim();
+  return /^view more\b/i.test(normalized);
 }
 
 const homeRelatedSectionDefinitions = [
@@ -3047,6 +3126,540 @@ async function captureShokzHomeRelatedSection(client, outputPath, captureContext
     expectedCount: plan.states.length,
     capturedCount: captures.length
   };
+}
+
+async function captureShokzCollectionRelatedSection(client, outputPath, captureContext, definition) {
+  const viewport = viewportForCaptureContext(captureContext);
+  const states = Array.isArray(definition?.states) ? definition.states : [];
+  if (!states.length) {
+    return {
+      width: 0,
+      height: 0,
+      captures: [],
+      warnings: [],
+      expectedCount: 0,
+      capturedCount: 0
+    };
+  }
+
+  await scrollTo(client, 0);
+  await sleep(500);
+  await primeLazyImages(client);
+
+  const captures = [];
+  const warnings = [];
+
+  for (const [index, state] of states.entries()) {
+    const activation = await activateShokzCollectionRelatedState(client, definition, state);
+    if (!activation.ok) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: state.stateLabel,
+        message: activation.reason || `Could not activate ${definition.sectionLabel} state.`
+      });
+      continue;
+    }
+
+    await sleep(700);
+    await primeLazyImages(client);
+    await waitForRelatedSectionImages(client, definition.key);
+    await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2 });
+    await dismissObstructions(client, { rounds: 3 });
+
+    let current = null;
+    let clip = null;
+    const refreshCollectionState = async () => {
+      current = await readShokzCollectionRelatedState(client, definition, state);
+      if (!current.ok) {
+        throw new Error(current.reason || `Could not read ${definition.sectionLabel} state.`);
+      }
+      if (collectionStateContainsSignupOverlay(current)) {
+        await dismissShokzCollectionSignupOverlay(client);
+        await sleep(260);
+        current = await readShokzCollectionRelatedState(client, definition, state);
+        if (!current.ok) {
+          throw new Error(current.reason || `Could not read ${definition.sectionLabel} state after popup cleanup.`);
+        }
+      }
+      clip = normalizeRelatedClip({
+        x: 0,
+        y: Math.max(0, Math.floor(Number(current.scrollY || 0))),
+        width: Number(viewport.width || 0) || 393,
+        height: Number(viewport.height || 0) || 852
+      }, viewport);
+      if (!clip) {
+        throw new Error(`Could not compute a valid crop for ${definition.sectionLabel} ${state.stateLabel}.`);
+      }
+    };
+
+    try {
+      await refreshCollectionState();
+    } catch (error) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: state.stateLabel,
+        message: error.message
+      });
+      continue;
+    }
+
+    const screenshotCapture = await captureScreenshotWithValidation(client, () => ({
+      format: "png",
+      fromSurface: true,
+      captureBeyondViewport: true,
+      clip
+    }), {
+      label: `${definition.key} ${state.stateLabel}`,
+      beforeAttempt: async ({ attempt }) => {
+        if (attempt > 1) {
+          const retryActivation = await activateShokzCollectionRelatedState(client, definition, state);
+          if (!retryActivation.ok) {
+            throw new Error(retryActivation.reason || `Could not reactivate ${definition.sectionLabel} state.`);
+          }
+          await sleep(700);
+          await primeLazyImages(client);
+        }
+        await prepareForScreenshotCapture(client, {
+          rounds: 2,
+          shokzKnownPopups: true,
+          stage: `before Shokz ${definition.sectionLabel} screenshot capture`
+        });
+        await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2 });
+        await dismissObstructions(client, { rounds: 3 });
+        await refreshCollectionState();
+      }
+    });
+
+    const buffer = screenshotCapture.buffer;
+    const visualSignature = hashBuffer(buffer);
+    const visualHash = visualHashForBuffer(buffer);
+    const visualAudit = visualAuditForBuffer(buffer, visualHash);
+    const logicalSignature = current.logicalSignature || state.logicalSignature || `${definition.key}:${state.fileId || state.stateLabel || index + 1}`;
+    const relatedOutput = relatedOutputPath(outputPath, definition.key, state.fileId || state.stateIndex || index + 1);
+    await fs.writeFile(relatedOutput, buffer);
+
+    const width = Number(viewport.width || 0) || 393;
+    const height = Number(viewport.height || 0) || 852;
+    captures.push({
+      outputPath: relatedOutput,
+      width,
+      height,
+      kind: "section",
+      sectionKey: definition.key,
+      sectionLabel: definition.sectionLabel,
+      sectionTitle: definition.title,
+      stateIndex: state.stateIndex || index + 1,
+      stateCount: states.length,
+      stateLabel: state.stateLabel,
+      label: state.stateLabel,
+      tabLabel: state.tabLabel || null,
+      tabIndex: state.tabIndex || null,
+      pageIndex: null,
+      interactionState: "default",
+      logicalSignature,
+      visualSignature,
+      visualHash,
+      visualAudit,
+      captureValidation: screenshotCapture.captureValidation,
+      scrollInfo: {
+        viewportHeight: height
+      },
+      clip: {
+        x: 0,
+        y: Math.max(0, Math.floor(Number(current.scrollY || 0))),
+        width,
+        height
+      },
+      isDefaultState: Boolean(state.isDefaultState),
+      coverageKey: `${definition.key}|${state.fileId || state.stateLabel || index + 1}`,
+      sectionState: {
+        text: current.text || "",
+        textBlocks: current.textBlocks || [],
+        images: current.images || [],
+        activeIndex: state.stateIndex || index + 1,
+        tabLabel: state.tabLabel || null,
+        tabIndex: state.tabIndex || null,
+        pageIndex: null,
+        interactionState: "default",
+        visibleItemCount: current.visibleItemCount || null,
+        visibleItems: current.visibleItems || null,
+        itemRects: current.itemRects || null,
+        windowSignature: current.windowSignature || null
+      }
+    });
+  }
+
+  return {
+    width: Number(viewport.width || 0) || 393,
+    height: Number(viewport.height || 0) || 852,
+    captures,
+    warnings,
+    expectedCount: states.length,
+    capturedCount: captures.length
+  };
+}
+
+function collectionStateContainsSignupOverlay(state) {
+  const text = String(state?.text || "");
+  return /(be the first to know|subscribe now|please enter a valid email|primary use case)/i.test(text);
+}
+
+async function dismissShokzCollectionSignupOverlay(client) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          rect.bottom > 0 &&
+          rect.right > 0 &&
+          rect.left < window.innerWidth &&
+          rect.top < window.innerHeight &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+      const textOf = (element) => clean([
+        element?.innerText,
+        element?.textContent,
+        element?.getAttribute?.("aria-label"),
+        element?.getAttribute?.("title"),
+        String(element?.className || "")
+      ].filter(Boolean).join(" "));
+      const popupMatch = (text) => /(be the first to know|subscribe now|please enter a valid email|primary use case)/i.test(text);
+      const selector = "button, [role='button'], a, [aria-label], [title], [tabindex], svg, [class]";
+      const closeMatch = /close|dismiss|no thanks|not now|icon-close|\\u00d7|^x$/i;
+      const containers = [];
+      const seen = new Set();
+      for (const element of Array.from(document.querySelectorAll("body *"))) {
+        if (!visible(element)) continue;
+        const text = textOf(element);
+        if (!popupMatch(text)) continue;
+        const container = element.closest("[role='dialog'], [aria-modal='true'], [class*='modal'], [class*='popup'], [class*='dialog'], [class*='klaviyo'], [class*='newsletter']") || element;
+        if (!visible(container) || seen.has(container)) continue;
+        seen.add(container);
+        containers.push(container);
+      }
+      const clicked = [];
+      const hidden = [];
+      for (const container of containers) {
+        const rect = container.getBoundingClientRect();
+        const controls = Array.from(container.querySelectorAll(selector))
+          .filter((control) => visible(control))
+          .sort((a, b) => {
+            const aRect = a.getBoundingClientRect();
+            const bRect = b.getBoundingClientRect();
+            const aTopRight = Math.abs(aRect.top - rect.top) + Math.abs(aRect.right - rect.right);
+            const bTopRight = Math.abs(bRect.top - rect.top) + Math.abs(bRect.right - rect.right);
+            return aTopRight - bTopRight;
+          });
+        let closed = false;
+        for (const control of controls) {
+          const controlText = textOf(control);
+          const controlRect = control.getBoundingClientRect();
+          const nearTopRight = controlRect.left >= rect.right - Math.max(140, rect.width * 0.35) &&
+            controlRect.top <= rect.top + Math.max(120, rect.height * 0.3) &&
+            controlRect.width <= 96 &&
+            controlRect.height <= 96;
+          if (!closeMatch.test(controlText) && !nearTopRight) {
+            continue;
+          }
+          if (typeof control.click === "function") {
+            control.click();
+          } else {
+            control.dispatchEvent(new MouseEvent("click", {
+              bubbles: true,
+              cancelable: true,
+              view: window
+            }));
+          }
+          clicked.push(controlText || "signup overlay close");
+          closed = true;
+          break;
+        }
+        if (!closed) {
+          container.dataset.pageShotHidden = "true";
+          container.style.setProperty("display", "none", "important");
+          container.style.setProperty("visibility", "hidden", "important");
+          container.style.setProperty("pointer-events", "none", "important");
+          hidden.push(textOf(container).slice(0, 80) || "signup overlay");
+        }
+      }
+      document.body.classList.remove("overflow-hidden");
+      document.documentElement.classList.remove("overflow-hidden");
+      return { ok: Boolean(clicked.length || hidden.length), clicked, hidden };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
+  if (result?.result?.value?.ok) {
+    await sleep(420);
+  }
+  return result?.result?.value || { ok: false, clicked: [], hidden: [] };
+}
+
+async function activateShokzCollectionRelatedState(client, definition, state) {
+  if (definition.key === "collection-tabs") {
+    return activateShokzCollectionTab(client, state);
+  }
+  if (definition.key === "compare-model") {
+    return positionShokzCollectionCompareSection(client, state);
+  }
+  return { ok: false, reason: `Unsupported collection section: ${definition.key || "(missing)"}.` };
+}
+
+async function activateShokzCollectionTab(client, state) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const label = ${JSON.stringify(String(state?.clickLabel || state?.tabLabel || state?.stateLabel || "").trim())};
+      const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const topLimit = Math.max(260, window.innerHeight * 0.5);
+      const findScrollParent = (element) => {
+        let current = element?.parentElement || null;
+        while (current && current !== document.body) {
+          if (current.scrollWidth > current.clientWidth + 8) {
+            return current;
+          }
+          current = current.parentElement;
+        }
+        return null;
+      };
+      const candidates = Array.from(document.querySelectorAll("button, a, [role='tab'], li, div, span, h1, h2, h3, h4"))
+        .filter((element) => clean(element.innerText || element.textContent) === label)
+        .map((element) => {
+          const clickTarget = element.matches("button, a, [role='tab']")
+            ? element
+            : element.closest("button, a, [role='tab'], li, div") || element.parentElement || element;
+          const rect = clickTarget.getBoundingClientRect();
+          return { clickTarget, rect };
+        })
+        .filter(({ clickTarget, rect }) =>
+          visible(clickTarget) &&
+          rect.top >= 40 &&
+          rect.top <= topLimit &&
+          rect.height <= 90
+        )
+        .sort((a, b) =>
+          a.rect.top - b.rect.top ||
+          Math.abs(a.rect.left) - Math.abs(b.rect.left)
+        );
+      const match = candidates[0];
+      if (!match) {
+        return { ok: false, reason: "Could not find collection tab " + label + "." };
+      }
+      const scrollParent = findScrollParent(match.clickTarget);
+      if (scrollParent) {
+        match.clickTarget.scrollIntoView({ block: "nearest", inline: "center" });
+      } else {
+        match.clickTarget.scrollIntoView({ block: "center", inline: "center" });
+      }
+      window.scrollTo(0, 0);
+      if (typeof match.clickTarget.click === "function") {
+        match.clickTarget.click();
+      } else {
+        match.clickTarget.dispatchEvent(new MouseEvent("click", {
+          bubbles: true,
+          cancelable: true,
+          view: window
+        }));
+      }
+      return { ok: true, label };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
+  return result?.result?.value || { ok: false, reason: `Could not activate collection tab ${state?.tabLabel || state?.stateLabel || ""}.` };
+}
+
+async function positionShokzCollectionCompareSection(client, state) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const anchorText = ${JSON.stringify(String(state?.anchorText || state?.stateLabel || "Compare Shokz Model").trim())};
+      const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const nodes = Array.from(document.querySelectorAll("h1, h2, h3, h4, p, a, button, div, span"))
+        .filter((element) => visible(element) && clean(element.innerText || element.textContent).includes(anchorText))
+        .map((element) => {
+          const section = element.closest("section, .shopify-section, [class*='section'], [class*='compare'], [class*='banner']") || element;
+          const rect = section.getBoundingClientRect();
+          return { section, rect };
+        })
+        .sort((a, b) => a.rect.top - b.rect.top);
+      const match = nodes[0];
+      if (!match) {
+        return { ok: false, reason: "Could not locate Compare Shokz Model section." };
+      }
+      const targetY = Math.max(0, Math.round(window.scrollY + match.rect.top - 92));
+      window.scrollTo(0, targetY);
+      return { ok: true, scrollY: targetY };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
+  return result?.result?.value || { ok: false, reason: "Could not position Compare Shokz Model section." };
+}
+
+async function readShokzCollectionRelatedState(client, definition, state) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const definition = ${JSON.stringify({
+        key: definition?.key || "",
+        sectionLabel: definition?.sectionLabel || "",
+        title: definition?.title || ""
+      })};
+      const state = ${JSON.stringify({
+        stateLabel: state?.stateLabel || "",
+        tabLabel: state?.tabLabel || "",
+        logicalSignature: state?.logicalSignature || "",
+        fileId: state?.fileId || ""
+      })};
+      const clean = (value, max = 300) => String(value || "").replace(/\\s+/g, " ").trim().slice(0, max);
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const inViewport = (rect) =>
+        rect.bottom > 0 &&
+        rect.right > 0 &&
+        rect.top < window.innerHeight &&
+        rect.left < window.innerWidth;
+      const rectInfo = (rect) => ({
+        x: Math.round(rect.left),
+        y: Math.round(rect.top),
+        top: rect.top,
+        left: rect.left,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height
+      });
+      const textBlocks = Array.from(document.querySelectorAll("h1, h2, h3, h4, p, a, button, span, strong, li"))
+        .filter((element) => visible(element) && inViewport(element.getBoundingClientRect()))
+        .map((element) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            text: clean(element.innerText || element.textContent, 160),
+            x: Math.round(rect.left),
+            y: Math.round(rect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height)
+          };
+        })
+        .filter((block) => block.text)
+        .filter((block, index, list) =>
+          list.findIndex((candidate) =>
+            candidate.text === block.text &&
+            Math.abs(candidate.x - block.x) <= 2 &&
+            Math.abs(candidate.y - block.y) <= 2
+          ) === index
+        )
+        .slice(0, 80);
+      const images = Array.from(document.images || [])
+        .filter((image) => visible(image) && inViewport(image.getBoundingClientRect()))
+        .map((image) => ({
+          src: image.currentSrc || image.src || "",
+          alt: clean(image.alt, 160),
+          rect: rectInfo(image.getBoundingClientRect())
+        }))
+        .slice(0, 20);
+      const productItems = Array.from(document.querySelectorAll("a[href*='/products/']"))
+        .map((link) => {
+          const card = link.closest("[data-product-card], article, li, [class*='product'][class*='card'], [class*='card'], [class*='slide']") || link;
+          const rect = card.getBoundingClientRect();
+          const href = (() => {
+            try {
+              return new URL(link.getAttribute("href") || link.href || "", window.location.href).pathname;
+            } catch {
+              return link.getAttribute("href") || link.href || "";
+            }
+          })();
+          const label = clean(
+            card.querySelector("h1, h2, h3, h4, [class*='title'], [class*='name']")?.innerText ||
+            card.innerText ||
+            link.innerText,
+            120
+          );
+          return {
+            key: href || label,
+            label,
+            text: clean(card.innerText, 260),
+            rect: rectInfo(rect),
+            visibleArea: Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0)) *
+              Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0))
+          };
+        })
+        .filter((item) => item.label && item.visibleArea >= 1800)
+        .filter((item, index, list) => list.findIndex((candidate) => candidate.key === item.key) === index)
+        .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left)
+        .slice(0, 6);
+      let visibleItems = productItems;
+      if (definition.key === "compare-model") {
+        const sectionNodes = Array.from(document.querySelectorAll("section, .shopify-section, [class*='section'], [class*='compare'], [class*='banner']"))
+          .filter((element) => visible(element) && clean(element.innerText || element.textContent, 260).includes("Compare Shokz Model"))
+          .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+        const section = sectionNodes[0] || null;
+        if (!section) {
+          return { ok: false, reason: "Could not read Compare Shokz Model section." };
+        }
+        visibleItems = [{
+          key: "compare-shokz-model",
+          label: "Compare Shokz Model",
+          text: clean(section.innerText, 260),
+          rect: rectInfo(section.getBoundingClientRect())
+        }];
+      }
+      const text = textBlocks.map((block) => block.text).join(" ").slice(0, 3200);
+      return {
+        ok: true,
+        scrollY: Math.max(0, Math.round(window.scrollY || 0)),
+        text,
+        textBlocks,
+        images,
+        logicalSignature: state.logicalSignature || [definition.key, state.fileId || state.tabLabel || state.stateLabel].filter(Boolean).join("|"),
+        visibleItemCount: visibleItems.length,
+        visibleItems,
+        itemRects: visibleItems.map((item) => ({
+          key: item.key,
+          label: item.label,
+          rect: item.rect
+        })),
+        windowSignature: JSON.stringify({
+          items: visibleItems.map((item) => item.key || item.label),
+          texts: textBlocks.slice(0, 24).map((block) => block.text),
+          images: images.slice(0, 12).map((image) => image.src)
+        }).slice(0, 1800)
+      };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
+  return result?.result?.value || { ok: false, reason: `Could not read ${definition?.sectionLabel || "collection"} state.` };
 }
 
 function relatedSectionCoverageWarnings(definition, plannedStates, captures) {
@@ -10429,11 +11042,13 @@ export const __testOnly = {
   captureStitchedScreenshot,
   freezePageMotion,
   restorePageMotion,
-  isAcceptableTrailingSegmentBlankAudit
+  isAcceptableTrailingSegmentBlankAudit,
+  isViewMoreLabel,
+  shouldUseDirectFullPageClipCapture
 };
 
 async function captureFullPageClipScreenshot(client, outputPath, options) {
-  const screenshotCapture = await captureScreenshotWithValidation(client, {
+  const screenshotCapture = await captureScreenshotWithValidation(client, () => ({
     format: "png",
     fromSurface: true,
     captureBeyondViewport: true,
@@ -10444,6 +11059,13 @@ async function captureFullPageClipScreenshot(client, outputPath, options) {
       height: Math.ceil(options.height),
       scale: 1
     }
+  }), {
+    label: options.label || "full-page clip screenshot",
+    beforeAttempt: options.beforeAttempt,
+    beforeRetry: options.beforeRetry,
+    acceptBlankAudit: options.acceptBlankAudit,
+    maxAttempts: options.maxAttempts,
+    retryDelayMs: options.retryDelayMs
   });
   await fs.writeFile(outputPath, screenshotCapture.buffer);
   return screenshotCapture;
@@ -10692,6 +11314,12 @@ async function prepareFullPage(client, options) {
   const stepDelay = options.scrollStepMs ?? 350;
   const maxHeight = options.maxFullPageHeight || 16000;
   await materializeFullPageContent(client);
+  await expandVisibleViewMoreControls(client, {
+    captureUrl: options.captureUrl,
+    captureMode: options.captureMode,
+    dismissPopups: options.dismissPopups,
+    clickDelayMs: stepDelay
+  });
 
   let state = await getPageState(client);
   let y = 0;
@@ -10705,6 +11333,12 @@ async function prepareFullPage(client, options) {
   while (stableRounds < 3 && scrolls < 160 && Date.now() - startedAt < 90000) {
     await scrollTo(client, y);
     await sleep(stepDelay);
+    await expandVisibleViewMoreControls(client, {
+      captureUrl: options.captureUrl,
+      captureMode: options.captureMode,
+      dismissPopups: options.dismissPopups,
+      clickDelayMs: stepDelay
+    });
     state = await getPageState(client);
     scrolls += 1;
 
@@ -10723,7 +11357,10 @@ async function prepareFullPage(client, options) {
 
   const bottomState = await settleFullPageBottom(client, state, {
     stepDelay,
-    maxHeight
+    maxHeight,
+    captureUrl: options.captureUrl,
+    captureMode: options.captureMode,
+    dismissPopups: options.dismissPopups
   });
   const reachableHeight = Math.max(
     viewportHeightForState(bottomState),
@@ -10732,6 +11369,12 @@ async function prepareFullPage(client, options) {
   await scrollTo(client, 0);
   await sleep(Math.max(stepDelay, 1200));
   await materializeFullPageContent(client);
+  await expandVisibleViewMoreControls(client, {
+    captureUrl: options.captureUrl,
+    captureMode: options.captureMode,
+    dismissPopups: options.dismissPopups,
+    clickDelayMs: stepDelay
+  });
   state = await getPageState(client);
 
   return {
@@ -10764,6 +11407,12 @@ async function settleFullPageBottom(client, state, options = {}) {
     await scrollTo(client, targetY);
     await sleep(settleDelay);
     await materializeFullPageContent(client);
+    await expandVisibleViewMoreControls(client, {
+      captureUrl: options.captureUrl,
+      captureMode: options.captureMode,
+      dismissPopups: options.dismissPopups,
+      clickDelayMs: stepDelay
+    });
     await sleep(postMaterializeDelay);
     currentState = await getPageState(client);
     bestState = currentState;
@@ -10778,6 +11427,131 @@ async function settleFullPageBottom(client, state, options = {}) {
   }
 
   return bestState;
+}
+
+async function expandVisibleViewMoreControls(client, options = {}) {
+  const maxPasses = Math.max(1, Math.min(4, Number(options.maxPasses) || 2));
+  const clicked = [];
+  const clickDelayMs = Math.max(180, Math.min(1200, Number(options.clickDelayMs) || 420));
+
+  for (let pass = 0; pass < maxPasses; pass += 1) {
+    const result = await client.send("Runtime.evaluate", {
+      expression: `(() => {
+        const interactiveSelector = "button, a, [role='button'], summary, [tabindex], .show_more, [class*='show-more'], [class*='show_more']";
+        const clean = (value) => String(value || "")
+          .replace(/[\\u00a0\\s]+/g, " ")
+          .replace(/[\\u25bc\\u25be\\u25bf\\u2228\\u203a\\u00bb>]+/g, " ")
+          .trim();
+        const isViewMoreLabel = (value) => /^view more\\b/i.test(clean(value));
+        const visible = (element) => {
+          if (!element || !(element instanceof Element)) return false;
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 0 &&
+            rect.height > 0 &&
+            rect.bottom > 0 &&
+            rect.right > 0 &&
+            rect.left < window.innerWidth &&
+            rect.top < window.innerHeight &&
+            style.visibility !== "hidden" &&
+            style.display !== "none" &&
+            Number(style.opacity || 1) > 0.01;
+        };
+        const navigatesAway = (target) => {
+          const link = target?.closest?.("a[href]");
+          if (!link) return false;
+          const rawHref = String(link.getAttribute("href") || "").trim();
+          if (!rawHref || rawHref === "#" || rawHref.startsWith("#") || /^javascript:/i.test(rawHref)) {
+            return false;
+          }
+          try {
+            const current = new URL(window.location.href);
+            const destination = new URL(rawHref, current);
+            return destination.origin !== current.origin ||
+              destination.pathname !== current.pathname ||
+              destination.search !== current.search;
+          } catch {
+            return true;
+          }
+        };
+        const seen = new Set();
+        const candidates = Array.from(document.querySelectorAll("button, a, [role='button'], summary, div, span, p, h1, h2, h3, h4"))
+          .map((element) => {
+            const label = clean(
+              element.innerText ||
+              element.textContent ||
+              element.getAttribute?.("aria-label") ||
+              element.getAttribute?.("title")
+            );
+            const clickTarget = element.matches(interactiveSelector)
+              ? element
+              : element.closest(interactiveSelector) || element;
+            const rect = element.getBoundingClientRect();
+            const clickRect = clickTarget.getBoundingClientRect();
+            return { element, clickTarget, label, rect, clickRect };
+          })
+          .filter(({ element, clickTarget, label, rect, clickRect }) => {
+            if (!label || !isViewMoreLabel(label)) return false;
+            if (!visible(element) || !visible(clickTarget)) return false;
+            if (rect.width > window.innerWidth * 0.92 || rect.height > 140) return false;
+            if (clickRect.bottom < 12 || clickRect.top > window.innerHeight - 12) return false;
+            if (String(clickTarget.getAttribute("aria-expanded") || element.getAttribute("aria-expanded") || "").toLowerCase() === "true") {
+              return false;
+            }
+            if (clickTarget.dataset.pageShotViewMoreClicked === "true" || element.dataset.pageShotViewMoreClicked === "true") {
+              return false;
+            }
+            if (navigatesAway(clickTarget)) return false;
+            if (seen.has(clickTarget)) return false;
+            seen.add(clickTarget);
+            return true;
+          })
+          .sort((a, b) =>
+            a.clickRect.top - b.clickRect.top ||
+            a.clickRect.left - b.clickRect.left
+          );
+        const clicked = [];
+        for (const { element, clickTarget, label } of candidates) {
+          element.dataset.pageShotViewMoreClicked = "true";
+          clickTarget.dataset.pageShotViewMoreClicked = "true";
+          clickTarget.scrollIntoView({ block: "center", inline: "center" });
+          if (typeof clickTarget.click === "function") {
+            clickTarget.click();
+          } else {
+            clickTarget.dispatchEvent(new MouseEvent("click", {
+              bubbles: true,
+              cancelable: true,
+              view: window
+            }));
+          }
+          clicked.push(label);
+        }
+        return { clicked };
+      })()`,
+      returnByValue: true
+    }).catch(() => null);
+    const value = result?.result?.value || {};
+    const passClicked = Array.isArray(value.clicked) ? value.clicked.filter(Boolean) : [];
+    if (!passClicked.length) {
+      break;
+    }
+    clicked.push(...passClicked);
+    await sleep(clickDelayMs);
+    await materializeFullPageContent(client);
+    if (options.dismissPopups !== false) {
+      if (shouldCleanShokzKnownPopups(options.captureUrl, options)) {
+        await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2 });
+      } else {
+        await dismissObstructions(client, { rounds: 2 });
+      }
+    }
+    await sleep(Math.max(160, Math.floor(clickDelayMs * 0.6)));
+  }
+
+  return {
+    clickedCount: clicked.length,
+    clicked
+  };
 }
 
 async function settlePositionedViewport(client, options = {}) {

@@ -150,6 +150,46 @@ export const shokzHomeRelatedSectionDefinitions = [
   }
 ];
 
+export const shokzCollectionRelatedSectionDefinitions = [
+  {
+    key: "collection-tabs",
+    sectionLabel: "Collection Tabs",
+    title: "Collection Tabs",
+    states: [
+      {
+        clickLabel: "Workout & Lifestyle",
+        stateLabel: "Workout & Lifestyle",
+        tabLabel: "Workout & Lifestyle",
+        tabIndex: 1,
+        stateIndex: 1,
+        fileId: "collection-workout-lifestyle"
+      },
+      {
+        clickLabel: "Accessories",
+        stateLabel: "Accessories",
+        tabLabel: "Accessories",
+        tabIndex: 2,
+        stateIndex: 2,
+        fileId: "collection-accessories"
+      }
+    ]
+  },
+  {
+    key: "compare-model",
+    sectionLabel: "Compare Model",
+    title: "Compare Shokz Model",
+    states: [
+      {
+        anchorText: "Compare Shokz Model",
+        stateLabel: "Compare Shokz Model",
+        stateIndex: 1,
+        fileId: "compare-shokz-model",
+        logicalSignature: "compare-shokz-model"
+      }
+    ]
+  }
+];
+
 export const shokzMediaTrackDefinitions = [
   {
     key: "pioneer",
@@ -175,6 +215,8 @@ export const shokzRelatedSectionOrder = [
   "topbar",
   "banner",
   "navigation",
+  "collection-tabs",
+  "compare-model",
   ...shokzHomeRelatedSectionDefinitions
     .map((definition) => definition.key)
     .filter((key) => key !== "topbar")
@@ -182,4 +224,8 @@ export const shokzRelatedSectionOrder = [
 
 export function findShokzHomeRelatedSectionDefinition(sectionKey) {
   return shokzHomeRelatedSectionDefinitions.find((definition) => definition.key === sectionKey) || null;
+}
+
+export function findShokzCollectionRelatedSectionDefinition(sectionKey) {
+  return shokzCollectionRelatedSectionDefinitions.find((definition) => definition.key === sectionKey) || null;
 }

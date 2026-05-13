@@ -1,6 +1,9 @@
 import { findDevicePreset, findDevicePresetByViewport, toPublicDevicePreset } from "./device-presets.js";
 import { annotateSnapshotRuntimeMetadata } from "./platform-metadata.js";
-import { shokzHomeRelatedSectionDefinitions } from "./shokz-capture-specs.js";
+import {
+  shokzCollectionRelatedSectionDefinitions,
+  shokzHomeRelatedSectionDefinitions
+} from "./shokz-capture-specs.js";
 
 const defaultTargetLabelsById = {
   "shokz-home": "https://shokz.com/（首页）",
@@ -19,6 +22,13 @@ const defaultSectionMetadataByKey = {
 };
 
 for (const definition of shokzHomeRelatedSectionDefinitions) {
+  defaultSectionMetadataByKey[definition.key] = {
+    sectionLabel: definition.sectionLabel,
+    sectionTitle: definition.title
+  };
+}
+
+for (const definition of shokzCollectionRelatedSectionDefinitions) {
   defaultSectionMetadataByKey[definition.key] = {
     sectionLabel: definition.sectionLabel,
     sectionTitle: definition.title

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  shokzCollectionRelatedSectionDefinitions,
   shokzHomeRelatedSectionDefinitions,
   shokzMobileNavigationSecondaryStateDefinitions,
   shokzRelatedSectionOrder
@@ -100,4 +101,57 @@ test("defines the six mobile navigation secondary states with stable metadata", 
       }
     ]
   );
+});
+
+test("defines collection page related sections with stable ordering metadata", () => {
+  const tabs = shokzCollectionRelatedSectionDefinitions.find((definition) => definition.key === "collection-tabs");
+  const compare = shokzCollectionRelatedSectionDefinitions.find((definition) => definition.key === "compare-model");
+
+  assert.ok(tabs);
+  assert.equal(tabs.sectionLabel, "Collection Tabs");
+  assert.equal(tabs.title, "Collection Tabs");
+  assert.deepEqual(
+    tabs.states.map((state) => ({
+      clickLabel: state.clickLabel,
+      stateLabel: state.stateLabel,
+      tabLabel: state.tabLabel,
+      tabIndex: state.tabIndex,
+      stateIndex: state.stateIndex,
+      fileId: state.fileId
+    })),
+    [
+      {
+        clickLabel: "Workout & Lifestyle",
+        stateLabel: "Workout & Lifestyle",
+        tabLabel: "Workout & Lifestyle",
+        tabIndex: 1,
+        stateIndex: 1,
+        fileId: "collection-workout-lifestyle"
+      },
+      {
+        clickLabel: "Accessories",
+        stateLabel: "Accessories",
+        tabLabel: "Accessories",
+        tabIndex: 2,
+        stateIndex: 2,
+        fileId: "collection-accessories"
+      }
+    ]
+  );
+
+  assert.ok(compare);
+  assert.equal(compare.sectionLabel, "Compare Model");
+  assert.equal(compare.title, "Compare Shokz Model");
+  assert.deepEqual(compare.states, [
+    {
+      anchorText: "Compare Shokz Model",
+      stateLabel: "Compare Shokz Model",
+      stateIndex: 1,
+      fileId: "compare-shokz-model",
+      logicalSignature: "compare-shokz-model"
+    }
+  ]);
+
+  assert.ok(shokzRelatedSectionOrder.indexOf("collection-tabs") > shokzRelatedSectionOrder.indexOf("navigation"));
+  assert.ok(shokzRelatedSectionOrder.indexOf("compare-model") > shokzRelatedSectionOrder.indexOf("collection-tabs"));
 });

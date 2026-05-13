@@ -10,7 +10,9 @@ const {
   captureStitchedScreenshot,
   freezePageMotion,
   restorePageMotion,
-  isAcceptableTrailingSegmentBlankAudit
+  isAcceptableTrailingSegmentBlankAudit,
+  isViewMoreLabel,
+  shouldUseDirectFullPageClipCapture
 } = __testOnly;
 
 test("flags flat images as low-detail quality warnings", () => {
@@ -233,6 +235,20 @@ test("stitched capture keeps the full last segment when only the tail is near-wh
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
+});
+
+test("collection page capture mode prefers direct full-page clip capture", () => {
+  assert.equal(shouldUseDirectFullPageClipCapture({ captureMode: "shokz-collection-page" }), true);
+  assert.equal(shouldUseDirectFullPageClipCapture({ captureMode: "shokz-products-nav" }), false);
+  assert.equal(shouldUseDirectFullPageClipCapture({}), false);
+});
+
+test("matches view more labels with icon suffixes", () => {
+  assert.equal(isViewMoreLabel("View More"), true);
+  assert.equal(isViewMoreLabel("View More ▼"), true);
+  assert.equal(isViewMoreLabel("  View More   > "), true);
+  assert.equal(isViewMoreLabel("Learn More"), false);
+  assert.equal(isViewMoreLabel("View All"), false);
 });
 
 function solidImage(width, height, color) {

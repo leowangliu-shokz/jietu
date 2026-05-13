@@ -69,7 +69,7 @@
       "targetId": "shokz-headphones-accessories",
       "deviceProfileId": "mobile-default",
       "enabled": true,
-      "fullPage": false
+      "captureMode": "shokz-collection-page"
     }
   ],
   "intervalMinutes": 0,

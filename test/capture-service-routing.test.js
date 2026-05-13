@@ -51,6 +51,16 @@ test("navigation related captures run for both desktop and mobile navigation tar
   );
 });
 
+test("collection page capture mode routes to isolated related section captures", () => {
+  assert.equal(
+    relatedCaptureModeForTarget(
+      { id: "shokz-headphones-accessories" },
+      { platform: "mobile", captureMode: "shokz-collection-page" }
+    ),
+    "shokz-collection-related-section"
+  );
+});
+
 test("resolveAdHocCaptureExecution can bind a manual URL to the requested mobile profile", () => {
   const config = normalizeConfig({
     targets: [{ id: "home", url: "https://example.com/", label: "Example" }],

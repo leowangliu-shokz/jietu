@@ -60,11 +60,24 @@ const elements = {
 };
 
 const homeBannerWindowMs = 5 * 60 * 1000;
-const relatedSectionOrder = ["topbar", "banner", "navigation", "product-showcase", "scene-explore", "athletes", "media", "voices"];
+const relatedSectionOrder = [
+  "topbar",
+  "banner",
+  "navigation",
+  "collection-tabs",
+  "compare-model",
+  "product-showcase",
+  "scene-explore",
+  "athletes",
+  "media",
+  "voices"
+];
 const relatedSectionTitles = {
   topbar: "Topbar 轮播图",
   navigation: "导航栏分级截图",
   banner: "Banner 轮播图",
+  "collection-tabs": "Collection Tabs",
+  "compare-model": "Compare Shokz Model",
   "product-showcase": "产品橱窗轮播图",
   "scene-explore": "场景探索轮播图",
   athletes: "运动员区轮播图",
@@ -839,7 +852,7 @@ function renderImagePreviewMode() {
 }
 
 function renderImagePreviewDepthMarkers(comparison, mode = "percent-depth") {
-  if (mode === "screen-dividers") {
+  if (mode === "screen-dividers" || mode === "percent-depth-with-screen-dividers") {
     const naturalHeight = Math.max(1, Number(imagePreviewZoomState.naturalHeight || 0));
     for (const segment of comparison?.segments || []) {
       const marker = document.createElement("div");
@@ -855,7 +868,9 @@ function renderImagePreviewDepthMarkers(comparison, mode = "percent-depth") {
       marker.append(label);
       elements.imagePreviewDepthMarkers.append(marker);
     }
-    return;
+    if (mode === "screen-dividers") {
+      return;
+    }
   }
 
   for (let depth = 10; depth <= 100; depth += 10) {
@@ -897,7 +912,9 @@ function renderImagePreviewScreenRail(comparison) {
 }
 
 function imagePreviewMarkerModeForSnapshot(snapshot) {
-  return snapshot?.sectionKey === "navigation" ? "screen-dividers" : "percent-depth";
+  return snapshot?.sectionKey === "navigation"
+    ? "screen-dividers"
+    : "percent-depth-with-screen-dividers";
 }
 
 function imagePreviewShowsScreenRail(snapshot) {

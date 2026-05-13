@@ -6,7 +6,11 @@ import { createCaptureDiagnosticRun, finalizeCaptureDiagnostic, recordCaptureDia
 import { rebuildChanges } from "./changes.js";
 import { findDevicePreset, toPublicDevicePreset } from "./device-presets.js";
 import { archiveDir } from "./paths.js";
-import { shokzHomeRelatedSectionDefinitions, shokzRelatedSectionOrder } from "./shokz-capture-specs.js";
+import {
+  shokzCollectionRelatedSectionDefinitions,
+  shokzHomeRelatedSectionDefinitions,
+  shokzRelatedSectionOrder
+} from "./shokz-capture-specs.js";
 import {
   appendSnapshot,
   createSnapshotFilePath,
@@ -349,6 +353,9 @@ function relatedCaptureModeForTarget(target, captureConfig) {
   if (target.id === "shokz-products-nav" || captureConfig.captureMode === "shokz-products-nav") {
     return "shokz-products-nav-related";
   }
+  if (captureConfig.captureMode === "shokz-collection-page") {
+    return "shokz-collection-related-section";
+  }
 
   return null;
 }
@@ -356,6 +363,9 @@ function relatedCaptureModeForTarget(target, captureConfig) {
 async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPath, captureConfig, diagnosticRun = null) {
   if (target.id === "shokz-home" && !captureConfig.captureMode) {
     return captureShokzHomeRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun);
+  }
+  if (captureConfig.captureMode === "shokz-collection-page") {
+    return captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun);
   }
 
   const relatedMode = relatedCaptureModeForTarget(target, captureConfig);
@@ -494,6 +504,36 @@ async function captureShokzHomeRelatedShotsIsolated(normalizedUrl, baseOutputPat
       sectionCaptureKey: definition.key
     }))
   ];
+  const shots = [];
+  const warnings = [];
+  const sections = [];
+
+  for (const descriptor of descriptors) {
+    const result = await captureIsolatedRelatedSection(normalizedUrl, baseOutputPath, captureConfig, descriptor, diagnosticRun);
+    shots.push(...result.shots);
+    warnings.push(...(result.validation?.warnings || []));
+    sections.push(...(result.validation?.sections || []));
+  }
+
+  sections.sort(compareRelatedSectionEntries);
+
+  return {
+    shots: shots.sort(compareRelatedShots),
+    validation: {
+      status: warnings.length ? "warning" : "ok",
+      warnings,
+      sections
+    }
+  };
+}
+
+async function captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun) {
+  const descriptors = shokzCollectionRelatedSectionDefinitions.map((definition) => ({
+    sectionKey: definition.key,
+    sectionLabel: definition.sectionLabel,
+    captureMode: "shokz-collection-related-section",
+    sectionCaptureKey: definition.key
+  }));
   const shots = [];
   const warnings = [];
   const sections = [];
