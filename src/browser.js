@@ -854,43 +854,28 @@ async function saveShokzNavigationCapture(client, outputPath, viewport, state, c
   let mobileLongCapture = null;
   const useMobileLongCapture = state.restoreMode === "mobile-tap" &&
     isProductsNavigationLabel(state.topLevelLabel || state.tabLabel);
-  if (useMobileLongCapture) {
-    mobileLongCapture = await prepareShokzMobileNavigationExpandedCapture(client);
-  }
-
-  const screenshotCapture = await captureScreenshotWithValidation(client, () => {
-    if (mobileLongCapture?.clip) {
-      return {
+  const screenshotCapture = useMobileLongCapture
+    ? await captureShokzMobileNavigationViewportStack(client, state)
+    : await captureScreenshotWithValidation(client, {
         format: "png",
-        fromSurface: true,
-        captureBeyondViewport: true,
-        clip: mobileLongCapture.clip
-      };
-    }
-    return {
-      format: "png",
-      fromSurface: true
-    };
-  }, {
-    label: `navigation ${state.stateLabel}`,
-    acceptBlankAudit: (blankAudit) => shouldAcceptShokzNavigationBlankAudit(state, current, blankAudit),
-    beforeAttempt: async ({ attempt }) => {
-      if (attempt === 1) {
-        if (useMobileLongCapture) {
-          mobileLongCapture = await prepareShokzMobileNavigationExpandedCapture(client);
+        fromSurface: true
+      }, {
+        label: `navigation ${state.stateLabel}`,
+        acceptBlankAudit: (blankAudit) => shouldAcceptShokzNavigationBlankAudit(state, current, blankAudit),
+        beforeAttempt: async ({ attempt }) => {
+          if (attempt === 1) {
+            return;
+          }
+          await prepareShokzNavigationRelatedScreenshot(client, state, viewport);
+          const retryCleanup = await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 5, hideOnly: true });
+          if (!retryCleanup.ok) {
+            throw new Error(`Known popup remained before navigation retry screenshot: ${formatKnownPopupRemaining(retryCleanup)}.`);
+          }
         }
-        return;
-      }
-      await prepareShokzNavigationRelatedScreenshot(client, state, viewport);
-      const retryCleanup = await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 5, hideOnly: true });
-      if (!retryCleanup.ok) {
-        throw new Error(`Known popup remained before navigation retry screenshot: ${formatKnownPopupRemaining(retryCleanup)}.`);
-      }
-      if (useMobileLongCapture) {
-        mobileLongCapture = await prepareShokzMobileNavigationExpandedCapture(client);
-      }
-    }
-  });
+      });
+  if (useMobileLongCapture) {
+    mobileLongCapture = screenshotCapture;
+  }
   const buffer = screenshotCapture.buffer;
   const visualSignature = hashBuffer(buffer);
   const visualHash = visualHashForBuffer(buffer);
@@ -1300,6 +1285,147 @@ async function prepareShokzNavigationMainScreenshot(client, captureContext) {
 async function prepareShokzNavigationRelatedScreenshot(client, state, captureContext) {
   await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 4, hideOnly: true });
   await restoreShokzNavigationHover(client, state, captureContext);
+}
+
+async function captureShokzMobileNavigationViewportStack(client, state) {
+  const stackState = await readShokzMobileNavigationViewportStackState(client);
+  if (!stackState.ok) {
+    throw new Error(stackState.reason || `Could not inspect ${state.stateLabel} mobile viewport stack state.`);
+  }
+
+  const width = Math.max(1, Math.ceil(Number(stackState.viewportWidth) || 0));
+  const viewportHeight = Math.max(1, Math.ceil(Number(stackState.viewportHeight) || 0));
+  const positions = createShokzMobileViewportStackPositions(
+    Math.max(0, Math.ceil(Number(stackState.maxScrollTop) || 0)),
+    Math.max(1, Math.ceil(Number(stackState.scrollStep) || viewportHeight))
+  );
+  const rgba = new Uint8Array(width * viewportHeight * positions.length * 4);
+  const attempts = [];
+
+  for (const [index, scrollTop] of positions.entries()) {
+    const screenshot = await captureScreenshotWithValidation(client, {
+      format: "png",
+      fromSurface: true
+    }, {
+      label: `navigation ${state.stateLabel} screen ${index + 1}/${positions.length}`,
+      beforeAttempt: async ({ attempt }) => {
+        await setShokzMobileNavigationViewportStackPosition(client, scrollTop);
+        await settlePositionedViewport(client, {
+          delayMs: attempt > 1 ? 760 : 460,
+          frames: 4
+        });
+        await primeLazyImages(client);
+      }
+    });
+    const image = decodePng(screenshot.buffer);
+    if (image.width !== width || image.height !== viewportHeight) {
+      throw new Error(`Unexpected viewport stack segment size ${image.width}x${image.height} for ${state.stateLabel}.`);
+    }
+    copySegment(image, rgba, width, viewportHeight * positions.length, index * viewportHeight);
+    attempts.push({
+      index,
+      scrollTop,
+      ...screenshot.captureValidation
+    });
+  }
+
+  const buffer = encodePng(width, viewportHeight * positions.length, rgba);
+  return {
+    buffer,
+    viewportHeight,
+    contentHeight: viewportHeight * positions.length,
+    captureValidation: {
+      ok: true,
+      label: `navigation ${state.stateLabel} viewport stack`,
+      maxAttempts: Math.max(...attempts.map((item) => Number(item.maxAttempts) || 1), 1),
+      retries: attempts.reduce((sum, item) => sum + (Number(item.retries) || 0), 0),
+      attempts
+    }
+  };
+}
+
+function createShokzMobileViewportStackPositions(maxScrollTop, step) {
+  const safeMax = Math.max(0, Math.ceil(Number(maxScrollTop) || 0));
+  const safeStep = Math.max(1, Math.ceil(Number(step) || 0));
+  const positions = [0];
+  for (let next = safeStep; next < safeMax; next += safeStep) {
+    positions.push(next);
+  }
+  if (positions[positions.length - 1] !== safeMax) {
+    positions.push(safeMax);
+  }
+  return positions.filter((value, index, list) => index === 0 || value !== list[index - 1]);
+}
+
+async function readShokzMobileNavigationViewportStackState(client) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          rect.bottom > 0 &&
+          rect.right > 0 &&
+          rect.left < window.innerWidth &&
+          rect.top < window.innerHeight &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const overlay = Array.from(document.querySelectorAll("[data-page-shot-nav-secondary='true']"))
+        .find((element) => visible(element));
+      if (!overlay) {
+        return { ok: false, reason: "Visible mobile navigation overlay was not found." };
+      }
+      const scrollRegion = overlay.querySelector("[data-page-shot-nav-scroll='true']");
+      if (!(scrollRegion instanceof Element)) {
+        return { ok: false, reason: "Mobile navigation scroll region was not found." };
+      }
+      return {
+        ok: true,
+        viewportWidth: Math.max(1, Math.ceil(window.innerWidth || 0)),
+        viewportHeight: Math.max(1, Math.ceil(window.innerHeight || 0)),
+        clientHeight: Math.max(1, Math.ceil(scrollRegion.clientHeight || 0)),
+        scrollHeight: Math.max(1, Math.ceil(scrollRegion.scrollHeight || 0)),
+        maxScrollTop: Math.max(0, Math.ceil((scrollRegion.scrollHeight || 0) - (scrollRegion.clientHeight || 0))),
+        scrollStep: Math.max(1, Math.ceil(scrollRegion.clientHeight || 0))
+      };
+    })()`,
+    returnByValue: true
+  }).catch(() => ({ result: { value: { ok: false, reason: "Could not inspect mobile navigation viewport stack state." } } }));
+  return result.result?.value || { ok: false, reason: "Could not inspect mobile navigation viewport stack state." };
+}
+
+async function setShokzMobileNavigationViewportStackPosition(client, scrollTop) {
+  await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const target = Math.max(0, Math.ceil(${Number(scrollTop) || 0}));
+      const overlay = Array.from(document.querySelectorAll("[data-page-shot-nav-secondary='true']"))
+        .find((element) => {
+          if (!(element instanceof Element)) return false;
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 0 &&
+            rect.height > 0 &&
+            rect.bottom > 0 &&
+            rect.right > 0 &&
+            rect.left < window.innerWidth &&
+            rect.top < window.innerHeight &&
+            style.visibility !== "hidden" &&
+            style.display !== "none" &&
+            Number(style.opacity || 1) > 0.01;
+        });
+      const scrollRegion = overlay?.querySelector?.("[data-page-shot-nav-scroll='true']");
+      if (!(scrollRegion instanceof Element)) {
+        return { ok: false };
+      }
+      scrollRegion.scrollTop = target;
+      return { ok: true, scrollTop: scrollRegion.scrollTop };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
 }
 
 async function prepareShokzMobileNavigationExpandedCapture(client) {
@@ -9301,16 +9427,16 @@ async function clickShokzMobileNavigationLabel(client, label) {
             if (!card.classList.contains("has_bg")) {
               card.style.setProperty("display", "flex", "important");
               card.style.setProperty("align-items", "center", "important");
-              card.style.setProperty("gap", "8px", "important");
-              card.style.setProperty("padding", targetKey === "sportsheadphones" ? "8px 10px" : targetKey === "communicationheadsets" ? "12px 12px" : "10px 10px", "important");
-              card.style.setProperty("margin", "0 0 10px", "important");
-              card.style.setProperty("min-height", targetKey === "sportsheadphones" ? "76px" : targetKey === "communicationheadsets" ? "102px" : "84px", "important");
-              card.style.setProperty("height", targetKey === "sportsheadphones" ? "94px" : targetKey === "communicationheadsets" ? "112px" : "92px", "important");
+              card.style.setProperty("gap", "10px", "important");
+              card.style.setProperty("padding", targetKey === "sportsheadphones" ? "12px 12px" : targetKey === "communicationheadsets" ? "12px 12px" : "10px 10px", "important");
+              card.style.setProperty("margin", "0 0 12px", "important");
+              card.style.setProperty("min-height", targetKey === "sportsheadphones" ? "134px" : targetKey === "communicationheadsets" ? "102px" : "84px", "important");
+              card.style.setProperty("height", targetKey === "sportsheadphones" ? "148px" : targetKey === "communicationheadsets" ? "112px" : "92px", "important");
               card.style.setProperty("overflow", "hidden", "important");
             } else {
-              card.style.setProperty("margin", "0 0 8px", "important");
+              card.style.setProperty("margin", "0 0 12px", "important");
               if (targetKey === "workoutandlifestyleearbuds") {
-                card.style.setProperty("max-height", "132px", "important");
+                card.style.setProperty("max-height", "148px", "important");
               }
               card.style.setProperty("overflow", "hidden", "important");
             }
@@ -9328,7 +9454,7 @@ async function clickShokzMobileNavigationLabel(client, label) {
             imageWrap.style.setProperty("justify-content", "center", "important");
           }
           for (const image of clone.querySelectorAll(".p-item:not(.has_bg) img")) {
-            image.style.setProperty("max-height", targetKey === "sportsheadphones" ? "56px" : targetKey === "communicationheadsets" ? "68px" : "58px", "important");
+            image.style.setProperty("max-height", targetKey === "sportsheadphones" ? "74px" : targetKey === "communicationheadsets" ? "68px" : "58px", "important");
             image.style.setProperty("width", "auto", "important");
             image.style.setProperty("max-width", "100%", "important");
             image.style.setProperty("object-fit", "contain", "important");
@@ -9396,11 +9522,7 @@ async function clickShokzMobileNavigationLabel(client, label) {
           appendFooterLink("Compare Products", "#fff", "#3f3f3f", "1px solid #d7d7d7");
           appendFooterLink("All Products", "#ff6f2c", "#fff", "1px solid #ff6f2c");
           overlay.append(scrollRegion);
-          if (targetKey === "communicationheadsets") {
-            scrollRegion.append(footer);
-          } else {
-            overlay.append(footer);
-          }
+          scrollRegion.append(footer);
           document.body.append(overlay);
           drawer?.style?.setProperty("display", "none", "important");
           drawer?.style?.setProperty("visibility", "hidden", "important");
