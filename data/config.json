@@ -1,27 +1,77 @@
 {
-  "urls": [
+  "version": 2,
+  "targets": [
     {
       "id": "shokz-home",
       "url": "https://shokz.com/",
-      "label": "https://shokz.com/\uff08\u9996\u9875\uff09"
+      "label": "https://shokz.com/（首页）"
     },
     {
       "id": "shokz-products-nav",
       "url": "https://shokz.com/",
-      "label": "https://shokz.com/\uff08\u5bfc\u822a\u680f\uff09",
+      "label": "https://shokz.com/（导航栏）",
       "captureMode": "shokz-products-nav",
       "fullPage": false
+    },
+    {
+      "id": "shokz-headphones-accessories",
+      "url": "https://shokz.com/collections/headphones-accessories",
+      "label": "https://shokz.com/collections/headphones-accessories"
+    }
+  ],
+  "deviceProfiles": [
+    {
+      "id": "pc-default",
+      "platform": "pc",
+      "devicePresetId": "pc-hd",
+      "enabled": true
+    },
+    {
+      "id": "mobile-default",
+      "platform": "mobile",
+      "devicePresetId": "iphone-15",
+      "enabled": true
+    }
+  ],
+  "capturePlans": [
+    {
+      "id": "plan-shokz-home-pc-default",
+      "targetId": "shokz-home",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-home-mobile-default",
+      "targetId": "shokz-home",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-products-nav-pc-default",
+      "targetId": "shokz-products-nav",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-products-nav-mobile-default",
+      "targetId": "shokz-products-nav",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-headphones-accessories-pc-default",
+      "targetId": "shokz-headphones-accessories",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-headphones-accessories-mobile-default",
+      "targetId": "shokz-headphones-accessories",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
     }
   ],
   "intervalMinutes": 0,
-  "devicePresetId": "pc-hd",
-  "viewport": {
-    "width": 1920,
-    "height": 1080,
-    "mobile": false,
-    "touch": false,
-    "deviceScaleFactor": 1
-  },
   "fullPage": true,
   "waitAfterLoadMs": 2500,
   "dismissPopups": true,
