@@ -175,6 +175,31 @@ async function driveCapture(client, url, outputPath, options) {
     await verifyCurrentUrl(client, url, "after opening Shokz products navigation", urlCheck);
   }
 
+  if (options.captureMode === "shokz-collection-page") {
+    stage = "activating Shokz collection All tab";
+    const activation = await activateShokzCollectionTab(client, {
+      clickLabel: "All",
+      stateLabel: "All"
+    });
+    if (!activation.ok) {
+      throw new Error(activation.reason || "Could not activate Shokz collection All tab.");
+    }
+    const ready = await waitForShokzCollectionTabActivated(client, {
+      clickLabel: "All",
+      stateLabel: "All"
+    });
+    if (!ready.ok) {
+      throw new Error(ready.reason || "Shokz collection All tab did not become active.");
+    }
+    await sleep(700);
+    await primeLazyImages(client);
+    if (options.dismissPopups !== false) {
+      await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2 });
+      await dismissObstructions(client, { rounds: 2 });
+    }
+    await verifyCurrentUrl(client, url, "after activating Shokz collection All tab", urlCheck);
+  }
+
   if (
     options.captureMode === "shokz-home-banners" ||
     options.captureMode === "shokz-home-related" ||
@@ -3160,6 +3185,18 @@ async function captureShokzCollectionRelatedSection(client, outputPath, captureC
       });
       continue;
     }
+    if (definition.key === "collection-tabs") {
+      const ready = await waitForShokzCollectionTabActivated(client, state);
+      if (!ready.ok) {
+        warnings.push({
+          sectionKey: definition.key,
+          sectionLabel: definition.sectionLabel,
+          stateLabel: state.stateLabel,
+          message: ready.reason || `Could not confirm ${state.stateLabel} tab activation.`
+        });
+        continue;
+      }
+    }
 
     await sleep(700);
     await primeLazyImages(client);
@@ -3169,7 +3206,17 @@ async function captureShokzCollectionRelatedSection(client, outputPath, captureC
 
     let current = null;
     let clip = null;
+    let scrollInfo = null;
+    let captureHeight = Number(viewport.height || 0) || 852;
+    let captureWidth = Number(viewport.width || 0) || 393;
     const refreshCollectionState = async () => {
+      if (definition.key === "collection-tabs") {
+        scrollInfo = await prepareFullPage(client, {
+          captureUrl: "https://shokz.com/collections/headphones-accessories",
+          captureMode: "shokz-collection-page",
+          dismissPopups: true
+        });
+      }
       current = await readShokzCollectionRelatedState(client, definition, state);
       if (!current.ok) {
         throw new Error(current.reason || `Could not read ${definition.sectionLabel} state.`);
@@ -3182,12 +3229,32 @@ async function captureShokzCollectionRelatedSection(client, outputPath, captureC
           throw new Error(current.reason || `Could not read ${definition.sectionLabel} state after popup cleanup.`);
         }
       }
-      clip = normalizeRelatedClip({
-        x: 0,
-        y: Math.max(0, Math.floor(Number(current.scrollY || 0))),
-        width: Number(viewport.width || 0) || 393,
-        height: Number(viewport.height || 0) || 852
-      }, viewport);
+      if (definition.key === "collection-tabs") {
+        const metrics = await client.send("Page.getLayoutMetrics");
+        const contentSize = metrics.cssContentSize || metrics.contentSize || {};
+        const pageWidth = Math.max(captureWidth, Math.ceil(contentSize.width || captureWidth));
+        let pageHeight = Math.max(captureHeight, Math.ceil(contentSize.height || captureHeight));
+        if (Number.isFinite(scrollInfo?.reachableHeight)) {
+          pageHeight = Math.min(pageHeight, Math.max(captureHeight, Math.ceil(scrollInfo.reachableHeight)));
+        }
+        const maxHeight = 16000;
+        captureWidth = pageWidth;
+        captureHeight = Math.min(pageHeight, maxHeight);
+        clip = {
+          x: 0,
+          y: 0,
+          width: captureWidth,
+          height: captureHeight,
+          scale: 1
+        };
+      } else {
+        clip = normalizeRelatedClip({
+          x: 0,
+          y: Math.max(0, Math.floor(Number(current.scrollY || 0))),
+          width: captureWidth,
+          height: captureHeight
+        }, viewport);
+      }
       if (!clip) {
         throw new Error(`Could not compute a valid crop for ${definition.sectionLabel} ${state.stateLabel}.`);
       }
@@ -3218,6 +3285,12 @@ async function captureShokzCollectionRelatedSection(client, outputPath, captureC
           if (!retryActivation.ok) {
             throw new Error(retryActivation.reason || `Could not reactivate ${definition.sectionLabel} state.`);
           }
+          if (definition.key === "collection-tabs") {
+            const ready = await waitForShokzCollectionTabActivated(client, state);
+            if (!ready.ok) {
+              throw new Error(ready.reason || `Could not confirm ${state.stateLabel} tab activation.`);
+            }
+          }
           await sleep(700);
           await primeLazyImages(client);
         }
@@ -3228,6 +3301,11 @@ async function captureShokzCollectionRelatedSection(client, outputPath, captureC
         });
         await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2 });
         await dismissObstructions(client, { rounds: 3 });
+        await scrollTo(client, 0);
+        await settlePositionedViewport(client, {
+          delayMs: attempt > 1 ? 280 : 180,
+          frames: 2
+        });
         await refreshCollectionState();
       }
     });
@@ -3240,8 +3318,8 @@ async function captureShokzCollectionRelatedSection(client, outputPath, captureC
     const relatedOutput = relatedOutputPath(outputPath, definition.key, state.fileId || state.stateIndex || index + 1);
     await fs.writeFile(relatedOutput, buffer);
 
-    const width = Number(viewport.width || 0) || 393;
-    const height = Number(viewport.height || 0) || 852;
+    const width = Math.round(clip.width);
+    const height = Math.round(clip.height);
     captures.push({
       outputPath: relatedOutput,
       width,
@@ -3263,12 +3341,19 @@ async function captureShokzCollectionRelatedSection(client, outputPath, captureC
       visualHash,
       visualAudit,
       captureValidation: screenshotCapture.captureValidation,
-      scrollInfo: {
-        viewportHeight: height
-      },
+      scrollInfo: definition.key === "collection-tabs"
+        ? {
+            height: height,
+            viewportHeight: Number(viewport.height || 0) || 852,
+            reachableHeight: Number(scrollInfo?.reachableHeight || 0) || height,
+            scrolls: Number(scrollInfo?.scrolls || 0) || null
+          }
+        : {
+            viewportHeight: Number(viewport.height || 0) || 852
+          },
       clip: {
-        x: 0,
-        y: Math.max(0, Math.floor(Number(current.scrollY || 0))),
+        x: Math.round(clip.x),
+        y: Math.round(clip.y),
         width,
         height
       },
@@ -3292,8 +3377,8 @@ async function captureShokzCollectionRelatedSection(client, outputPath, captureC
   }
 
   return {
-    width: Number(viewport.width || 0) || 393,
-    height: Number(viewport.height || 0) || 852,
+    width: captures.reduce((max, capture) => Math.max(max, Number(capture.width || 0)), Number(viewport.width || 0) || 393),
+    height: captures.reduce((max, capture) => Math.max(max, Number(capture.height || 0)), Number(viewport.height || 0) || 852),
     captures,
     warnings,
     expectedCount: states.length,
@@ -3416,8 +3501,15 @@ async function activateShokzCollectionTab(client, state) {
   const result = await client.send("Runtime.evaluate", {
     expression: `(() => {
       const label = ${JSON.stringify(String(state?.clickLabel || state?.tabLabel || state?.stateLabel || "").trim())};
+      const handle = ${JSON.stringify(String(state?.matchHandle || "").trim().toLowerCase())};
+      const matchPatterns = ${JSON.stringify(
+        Array.isArray(state?.matchPatterns) && state.matchPatterns.length
+          ? state.matchPatterns
+          : [String(state?.clickLabel || state?.tabLabel || state?.stateLabel || "")]
+      )};
       const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
-      const visible = (element) => {
+      const normalize = (value) => clean(value).toLowerCase().replace(/[^a-z0-9]+/g, "");
+      const rendered = (element) => {
         if (!element || !(element instanceof Element)) return false;
         const rect = element.getBoundingClientRect();
         const style = getComputedStyle(element);
@@ -3428,6 +3520,17 @@ async function activateShokzCollectionTab(client, state) {
           Number(style.opacity || 1) > 0.01;
       };
       const topLimit = Math.max(260, window.innerHeight * 0.5);
+      const targetPatterns = matchPatterns
+        .map((pattern) => normalize(pattern))
+        .filter(Boolean);
+      const matchesPattern = (text) => {
+        const normalized = normalize(text);
+        if (!normalized) return false;
+        if (targetPatterns.some((pattern) => normalized === pattern || normalized.includes(pattern) || pattern.includes(normalized))) {
+          return true;
+        }
+        return false;
+      };
       const findScrollParent = (element) => {
         let current = element?.parentElement || null;
         while (current && current !== document.body) {
@@ -3438,25 +3541,57 @@ async function activateShokzCollectionTab(client, state) {
         }
         return null;
       };
-      const candidates = Array.from(document.querySelectorAll("button, a, [role='tab'], li, div, span, h1, h2, h3, h4"))
-        .filter((element) => clean(element.innerText || element.textContent) === label)
+      const tabSelector = ".fitler_list .filter_item, .filter_item";
+      const collectCandidates = (selector) => Array.from(document.querySelectorAll(selector))
         .map((element) => {
-          const clickTarget = element.matches("button, a, [role='tab']")
+          const clickTarget = element.matches(".filter_item, [data-handle], button, a, [role='tab']")
             ? element
-            : element.closest("button, a, [role='tab'], li, div") || element.parentElement || element;
+            : element.closest(".filter_item, [data-handle], button, a, [role='tab']") || element;
+          const elementHandle = String(element.getAttribute?.("data-handle") || "").trim().toLowerCase();
+          const clickHandle = String(clickTarget.getAttribute?.("data-handle") || "").trim().toLowerCase();
+          const text = clean(element.innerText || element.textContent);
+          const textNormalized = normalize(text);
+          const targetNormalized = normalize(label);
+          const exactTextMatch = Boolean(targetNormalized) && textNormalized === targetNormalized;
+          const fuzzyTextMatch = matchesPattern(text);
+          const handleMatch = Boolean(handle) && (elementHandle === handle || clickHandle === handle);
           const rect = clickTarget.getBoundingClientRect();
-          return { clickTarget, rect };
+          return {
+            clickTarget,
+            rect,
+            elementHandle,
+            clickHandle,
+            exactTextMatch,
+            fuzzyTextMatch,
+            handleMatch
+          };
+        })
+        .map((element) => {
+          return element;
         })
         .filter(({ clickTarget, rect }) =>
-          visible(clickTarget) &&
+          rendered(clickTarget) &&
           rect.top >= 40 &&
           rect.top <= topLimit &&
           rect.height <= 90
         )
+        .filter(({ handleMatch, exactTextMatch, fuzzyTextMatch }) => {
+          if (handle) {
+            return handleMatch;
+          }
+          return exactTextMatch || fuzzyTextMatch;
+        })
         .sort((a, b) =>
+          Number(b.handleMatch) - Number(a.handleMatch) ||
+          Number(b.exactTextMatch) - Number(a.exactTextMatch) ||
+          a.rect.width * a.rect.height - b.rect.width * b.rect.height ||
           a.rect.top - b.rect.top ||
           Math.abs(a.rect.left) - Math.abs(b.rect.left)
         );
+      let candidates = collectCandidates(tabSelector);
+      if (!candidates.length) {
+        candidates = collectCandidates("button, a, [role='tab'], li, div, span, h1, h2, h3, h4");
+      }
       const match = candidates[0];
       if (!match) {
         return { ok: false, reason: "Could not find collection tab " + label + "." };
@@ -3477,11 +3612,51 @@ async function activateShokzCollectionTab(client, state) {
           view: window
         }));
       }
-      return { ok: true, label };
+      return { ok: true, label, handle };
     })()`,
     returnByValue: true
   }).catch(() => null);
   return result?.result?.value || { ok: false, reason: `Could not activate collection tab ${state?.tabLabel || state?.stateLabel || ""}.` };
+}
+
+async function waitForShokzCollectionTabActivated(client, state, options = {}) {
+  const timeoutMs = Math.max(400, Math.min(5000, Number(options.timeoutMs) || 2600));
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const result = await client.send("Runtime.evaluate", {
+      expression: `(() => {
+        const label = ${JSON.stringify(String(state?.clickLabel || state?.tabLabel || state?.stateLabel || "").trim())};
+        const handle = ${JSON.stringify(String(state?.matchHandle || "").trim().toLowerCase())};
+        const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+        const normalize = (value) => clean(value).toLowerCase().replace(/[^a-z0-9]+/g, "");
+        const active = document.querySelector(".fitler_list .filter_item.active, .filter_item.active") || null;
+        if (!active) {
+          return { ok: false, reason: "No active collection tab found." };
+        }
+        const activeHandle = String(active.getAttribute("data-handle") || "").trim().toLowerCase();
+        const activeText = clean(active.innerText || active.textContent);
+        const activeNormalized = normalize(activeText);
+        const targetNormalized = normalize(label);
+        const ok = handle
+          ? activeHandle === handle
+          : activeNormalized === targetNormalized ||
+            activeNormalized.includes(targetNormalized) ||
+            targetNormalized.includes(activeNormalized);
+        return {
+          ok,
+          activeHandle,
+          activeText
+        };
+      })()`,
+      returnByValue: true
+    }).catch(() => null);
+    const value = result?.result?.value || {};
+    if (value.ok) {
+      return { ok: true, activeHandle: value.activeHandle || "", activeText: value.activeText || "" };
+    }
+    await sleep(160);
+  }
+  return { ok: false, reason: `Collection tab ${state?.tabLabel || state?.stateLabel || ""} did not become active.` };
 }
 
 async function positionShokzCollectionCompareSection(client, state) {

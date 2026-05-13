@@ -157,34 +157,54 @@ export const shokzCollectionRelatedSectionDefinitions = [
     title: "Collection Tabs",
     states: [
       {
-        clickLabel: "Workout & Lifestyle",
-        stateLabel: "Workout & Lifestyle",
-        tabLabel: "Workout & Lifestyle",
+        clickLabel: "Sports",
+        matchHandle: "sports",
+        matchPatterns: ["sport"],
+        stateLabel: "Sports",
+        tabLabel: "Sports",
         tabIndex: 1,
         stateIndex: 1,
+        fileId: "collection-sports"
+      },
+      {
+        clickLabel: "Workout & Lifestyle",
+        matchHandle: "workout-lifestyle",
+        matchPatterns: ["workout", "lifestyle"],
+        stateLabel: "Workout & Lifestyle",
+        tabLabel: "Workout & Lifestyle",
+        tabIndex: 2,
+        stateIndex: 2,
         fileId: "collection-workout-lifestyle"
       },
       {
+        clickLabel: "Communication",
+        matchHandle: "communication",
+        matchPatterns: ["communication"],
+        stateLabel: "Communication",
+        tabLabel: "Communication",
+        tabIndex: 3,
+        stateIndex: 3,
+        fileId: "collection-communication"
+      },
+      {
+        clickLabel: "Refurbished",
+        matchHandle: "refurbished",
+        matchPatterns: ["refurbi"],
+        stateLabel: "Refurbished",
+        tabLabel: "Refurbished",
+        tabIndex: 4,
+        stateIndex: 4,
+        fileId: "collection-refurbished"
+      },
+      {
         clickLabel: "Accessories",
+        matchHandle: "accessories",
+        matchPatterns: ["acce"],
         stateLabel: "Accessories",
         tabLabel: "Accessories",
-        tabIndex: 2,
-        stateIndex: 2,
+        tabIndex: 5,
+        stateIndex: 5,
         fileId: "collection-accessories"
-      }
-    ]
-  },
-  {
-    key: "compare-model",
-    sectionLabel: "Compare Model",
-    title: "Compare Shokz Model",
-    states: [
-      {
-        anchorText: "Compare Shokz Model",
-        stateLabel: "Compare Shokz Model",
-        stateIndex: 1,
-        fileId: "compare-shokz-model",
-        logicalSignature: "compare-shokz-model"
       }
     ]
   }
@@ -216,7 +236,6 @@ export const shokzRelatedSectionOrder = [
   "banner",
   "navigation",
   "collection-tabs",
-  "compare-model",
   ...shokzHomeRelatedSectionDefinitions
     .map((definition) => definition.key)
     .filter((key) => key !== "topbar")

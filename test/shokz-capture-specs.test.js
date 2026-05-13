@@ -105,7 +105,6 @@ test("defines the six mobile navigation secondary states with stable metadata", 
 
 test("defines collection page related sections with stable ordering metadata", () => {
   const tabs = shokzCollectionRelatedSectionDefinitions.find((definition) => definition.key === "collection-tabs");
-  const compare = shokzCollectionRelatedSectionDefinitions.find((definition) => definition.key === "compare-model");
 
   assert.ok(tabs);
   assert.equal(tabs.sectionLabel, "Collection Tabs");
@@ -121,37 +120,48 @@ test("defines collection page related sections with stable ordering metadata", (
     })),
     [
       {
+        clickLabel: "Sports",
+        stateLabel: "Sports",
+        tabLabel: "Sports",
+        tabIndex: 1,
+        stateIndex: 1,
+        fileId: "collection-sports"
+      },
+      {
         clickLabel: "Workout & Lifestyle",
         stateLabel: "Workout & Lifestyle",
         tabLabel: "Workout & Lifestyle",
-        tabIndex: 1,
-        stateIndex: 1,
+        tabIndex: 2,
+        stateIndex: 2,
         fileId: "collection-workout-lifestyle"
+      },
+      {
+        clickLabel: "Communication",
+        stateLabel: "Communication",
+        tabLabel: "Communication",
+        tabIndex: 3,
+        stateIndex: 3,
+        fileId: "collection-communication"
+      },
+      {
+        clickLabel: "Refurbished",
+        stateLabel: "Refurbished",
+        tabLabel: "Refurbished",
+        tabIndex: 4,
+        stateIndex: 4,
+        fileId: "collection-refurbished"
       },
       {
         clickLabel: "Accessories",
         stateLabel: "Accessories",
         tabLabel: "Accessories",
-        tabIndex: 2,
-        stateIndex: 2,
+        tabIndex: 5,
+        stateIndex: 5,
         fileId: "collection-accessories"
       }
     ]
   );
 
-  assert.ok(compare);
-  assert.equal(compare.sectionLabel, "Compare Model");
-  assert.equal(compare.title, "Compare Shokz Model");
-  assert.deepEqual(compare.states, [
-    {
-      anchorText: "Compare Shokz Model",
-      stateLabel: "Compare Shokz Model",
-      stateIndex: 1,
-      fileId: "compare-shokz-model",
-      logicalSignature: "compare-shokz-model"
-    }
-  ]);
-
   assert.ok(shokzRelatedSectionOrder.indexOf("collection-tabs") > shokzRelatedSectionOrder.indexOf("navigation"));
-  assert.ok(shokzRelatedSectionOrder.indexOf("compare-model") > shokzRelatedSectionOrder.indexOf("collection-tabs"));
+  assert.equal(shokzCollectionRelatedSectionDefinitions.some((definition) => definition.key === "compare-model"), false);
 });
