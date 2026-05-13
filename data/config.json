@@ -16,7 +16,7 @@
     {
       "id": "shokz-headphones-accessories",
       "url": "https://shokz.com/collections/headphones-accessories",
-      "label": "https://shokz.com/collections/headphones-accessories"
+      "label": "https://shokz.com/collections/headphones-accessories（集合页）"
     }
   ],
   "deviceProfiles": [
@@ -68,7 +68,8 @@
       "id": "plan-shokz-headphones-accessories-mobile-default",
       "targetId": "shokz-headphones-accessories",
       "deviceProfileId": "mobile-default",
-      "enabled": true
+      "enabled": true,
+      "fullPage": false
     }
   ],
   "intervalMinutes": 0,
