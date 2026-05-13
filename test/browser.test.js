@@ -237,8 +237,9 @@ test("stitched capture keeps the full last segment when only the tail is near-wh
   }
 });
 
-test("collection page capture mode prefers direct full-page clip capture", () => {
+test("collection and comparison page capture modes prefer direct full-page clip capture", () => {
   assert.equal(shouldUseDirectFullPageClipCapture({ captureMode: "shokz-collection-page" }), true);
+  assert.equal(shouldUseDirectFullPageClipCapture({ captureMode: "shokz-comparison-page" }), true);
   assert.equal(shouldUseDirectFullPageClipCapture({ captureMode: "shokz-products-nav" }), false);
   assert.equal(shouldUseDirectFullPageClipCapture({}), false);
 });

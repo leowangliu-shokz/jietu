@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   shokzCollectionRelatedSectionDefinitions,
+  shokzComparisonRelatedSectionDefinitions,
   shokzHomeRelatedSectionDefinitions,
   shokzMobileNavigationSecondaryStateDefinitions,
   shokzRelatedSectionOrder
@@ -164,4 +165,18 @@ test("defines collection page related sections with stable ordering metadata", (
 
   assert.ok(shokzRelatedSectionOrder.indexOf("collection-tabs") > shokzRelatedSectionOrder.indexOf("navigation"));
   assert.equal(shokzCollectionRelatedSectionDefinitions.some((definition) => definition.key === "compare-model"), false);
+});
+
+test("defines comparison page related sections with stable ordering metadata", () => {
+  assert.deepEqual(shokzComparisonRelatedSectionDefinitions, [
+    {
+      key: "comparison-quick-look",
+      sectionLabel: "Quick Look",
+      title: "Quick Look",
+      maxTracks: 2,
+      maxPagesPerTrack: 3
+    }
+  ]);
+
+  assert.ok(shokzRelatedSectionOrder.indexOf("comparison-quick-look") > shokzRelatedSectionOrder.indexOf("collection-tabs"));
 });

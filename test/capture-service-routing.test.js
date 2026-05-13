@@ -61,6 +61,16 @@ test("collection page capture mode routes to isolated related section captures",
   );
 });
 
+test("comparison page capture mode routes to isolated related section captures", () => {
+  assert.equal(
+    relatedCaptureModeForTarget(
+      { id: "shokz-product-comparison" },
+      { platform: "mobile", captureMode: "shokz-comparison-page" }
+    ),
+    "shokz-comparison-related-section"
+  );
+});
+
 test("resolveAdHocCaptureExecution can bind a manual URL to the requested mobile profile", () => {
   const config = normalizeConfig({
     targets: [{ id: "home", url: "https://example.com/", label: "Example" }],

@@ -210,6 +210,16 @@ export const shokzCollectionRelatedSectionDefinitions = [
   }
 ];
 
+export const shokzComparisonRelatedSectionDefinitions = [
+  {
+    key: "comparison-quick-look",
+    sectionLabel: "Quick Look",
+    title: "Quick Look",
+    maxTracks: 2,
+    maxPagesPerTrack: 3
+  }
+];
+
 export const shokzMediaTrackDefinitions = [
   {
     key: "pioneer",
@@ -236,6 +246,7 @@ export const shokzRelatedSectionOrder = [
   "banner",
   "navigation",
   "collection-tabs",
+  "comparison-quick-look",
   ...shokzHomeRelatedSectionDefinitions
     .map((definition) => definition.key)
     .filter((key) => key !== "topbar")
@@ -247,4 +258,8 @@ export function findShokzHomeRelatedSectionDefinition(sectionKey) {
 
 export function findShokzCollectionRelatedSectionDefinition(sectionKey) {
   return shokzCollectionRelatedSectionDefinitions.find((definition) => definition.key === sectionKey) || null;
+}
+
+export function findShokzComparisonRelatedSectionDefinition(sectionKey) {
+  return shokzComparisonRelatedSectionDefinitions.find((definition) => definition.key === sectionKey) || null;
 }

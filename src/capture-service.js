@@ -8,6 +8,7 @@ import { findDevicePreset, toPublicDevicePreset } from "./device-presets.js";
 import { archiveDir } from "./paths.js";
 import {
   shokzCollectionRelatedSectionDefinitions,
+  shokzComparisonRelatedSectionDefinitions,
   shokzHomeRelatedSectionDefinitions,
   shokzRelatedSectionOrder
 } from "./shokz-capture-specs.js";
@@ -356,6 +357,9 @@ function relatedCaptureModeForTarget(target, captureConfig) {
   if (captureConfig.captureMode === "shokz-collection-page") {
     return "shokz-collection-related-section";
   }
+  if (captureConfig.captureMode === "shokz-comparison-page") {
+    return "shokz-comparison-related-section";
+  }
 
   return null;
 }
@@ -366,6 +370,9 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
   }
   if (captureConfig.captureMode === "shokz-collection-page") {
     return captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun);
+  }
+  if (captureConfig.captureMode === "shokz-comparison-page") {
+    return captureShokzComparisonRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun);
   }
 
   const relatedMode = relatedCaptureModeForTarget(target, captureConfig);
@@ -532,6 +539,36 @@ async function captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOut
     sectionKey: definition.key,
     sectionLabel: definition.sectionLabel,
     captureMode: "shokz-collection-related-section",
+    sectionCaptureKey: definition.key
+  }));
+  const shots = [];
+  const warnings = [];
+  const sections = [];
+
+  for (const descriptor of descriptors) {
+    const result = await captureIsolatedRelatedSection(normalizedUrl, baseOutputPath, captureConfig, descriptor, diagnosticRun);
+    shots.push(...result.shots);
+    warnings.push(...(result.validation?.warnings || []));
+    sections.push(...(result.validation?.sections || []));
+  }
+
+  sections.sort(compareRelatedSectionEntries);
+
+  return {
+    shots: shots.sort(compareRelatedShots),
+    validation: {
+      status: warnings.length ? "warning" : "ok",
+      warnings,
+      sections
+    }
+  };
+}
+
+async function captureShokzComparisonRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun) {
+  const descriptors = shokzComparisonRelatedSectionDefinitions.map((definition) => ({
+    sectionKey: definition.key,
+    sectionLabel: definition.sectionLabel,
+    captureMode: "shokz-comparison-related-section",
     sectionCaptureKey: definition.key
   }));
   const shots = [];

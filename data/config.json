@@ -17,6 +17,11 @@
       "id": "shokz-headphones-accessories",
       "url": "https://shokz.com/collections/headphones-accessories",
       "label": "https://shokz.com/collections/headphones-accessories（集合页）"
+    },
+    {
+      "id": "shokz-product-comparison",
+      "url": "https://shokz.com/pages/product-comparison",
+      "label": "https://shokz.com/pages/product-comparison（对比页）"
     }
   ],
   "deviceProfiles": [
@@ -70,6 +75,19 @@
       "deviceProfileId": "mobile-default",
       "enabled": true,
       "captureMode": "shokz-collection-page"
+    },
+    {
+      "id": "plan-shokz-product-comparison-pc-default",
+      "targetId": "shokz-product-comparison",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-product-comparison-mobile-default",
+      "targetId": "shokz-product-comparison",
+      "deviceProfileId": "mobile-default",
+      "enabled": true,
+      "captureMode": "shokz-comparison-page"
     }
   ],
   "intervalMinutes": 0,
