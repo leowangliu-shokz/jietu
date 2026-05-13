@@ -823,13 +823,16 @@ function handleImagePreviewImageLoad() {
 
 function renderImagePreviewMode() {
   const comparison = imagePreviewZoomState.comparison;
+  const showScreenRail = imagePreviewShowsScreenRail(imagePreviewZoomState.snapshot);
   elements.imagePreviewLongView.dataset.mode = comparison ? "comparison" : "single";
   elements.imagePreviewDepthMarkers.innerHTML = "";
   elements.imagePreviewScreenRail.innerHTML = "";
 
   if (comparison) {
     renderImagePreviewDepthMarkers(comparison, imagePreviewMarkerModeForSnapshot(imagePreviewZoomState.snapshot));
-    renderImagePreviewScreenRail(comparison);
+    if (showScreenRail) {
+      renderImagePreviewScreenRail(comparison);
+    }
   }
 
   applyImagePreviewScale(imagePreviewZoomState.scale || 1);
@@ -897,6 +900,10 @@ function imagePreviewMarkerModeForSnapshot(snapshot) {
   return snapshot?.sectionKey === "navigation" ? "screen-dividers" : "percent-depth";
 }
 
+function imagePreviewShowsScreenRail(snapshot) {
+  return snapshot?.sectionKey !== "navigation";
+}
+
 function applyImagePreviewScale(scale) {
   if (!imagePreviewZoomState.naturalWidth || !imagePreviewZoomState.naturalHeight) {
     return;
@@ -915,7 +922,14 @@ function applyImagePreviewScale(scale) {
     return;
   }
 
-  elements.imagePreviewLongView.style.columnGap = `${imagePreviewScreenRailGap * scale}px`;
+  const showScreenRail = imagePreviewShowsScreenRail(imagePreviewZoomState.snapshot);
+  elements.imagePreviewLongView.style.columnGap = showScreenRail ? `${imagePreviewScreenRailGap * scale}px` : "0px";
+  if (!showScreenRail) {
+    elements.imagePreviewScreenRail.style.display = "none";
+    elements.imagePreviewScreenRail.style.width = "0px";
+    return;
+  }
+  elements.imagePreviewScreenRail.style.removeProperty("display");
   elements.imagePreviewScreenRail.style.width = `${imageWidth}px`;
 
   for (const screen of elements.imagePreviewScreenRail.querySelectorAll(".image-preview-screen")) {
@@ -931,8 +945,9 @@ function applyImagePreviewScale(scale) {
 function imagePreviewContentNaturalSize() {
   const width = imagePreviewZoomState.naturalWidth || 1;
   const height = imagePreviewZoomState.naturalHeight || 1;
+  const showScreenRail = imagePreviewShowsScreenRail(imagePreviewZoomState.snapshot);
   return {
-    width: imagePreviewZoomState.comparison ? width * 2 + imagePreviewScreenRailGap : width,
+    width: imagePreviewZoomState.comparison && showScreenRail ? width * 2 + imagePreviewScreenRailGap : width,
     height
   };
 }

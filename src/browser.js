@@ -854,8 +854,31 @@ async function saveShokzNavigationCapture(client, outputPath, viewport, state, c
   let mobileLongCapture = null;
   const useMobileLongCapture = state.restoreMode === "mobile-tap" &&
     isProductsNavigationLabel(state.topLevelLabel || state.tabLabel);
+  if (useMobileLongCapture) {
+    mobileLongCapture = await prepareShokzMobileNavigationExpandedCapture(client);
+  }
   const screenshotCapture = useMobileLongCapture
-    ? await captureShokzMobileNavigationViewportStack(client, state)
+    ? await captureScreenshotWithValidation(client, () => ({
+        format: "png",
+        fromSurface: true,
+        captureBeyondViewport: true,
+        clip: mobileLongCapture.clip
+      }), {
+        label: `navigation ${state.stateLabel}`,
+        acceptBlankAudit: (blankAudit) => shouldAcceptShokzNavigationBlankAudit(state, current, blankAudit),
+        beforeAttempt: async ({ attempt }) => {
+          if (attempt === 1) {
+            mobileLongCapture = await prepareShokzMobileNavigationExpandedCapture(client);
+            return;
+          }
+          await prepareShokzNavigationRelatedScreenshot(client, state, viewport);
+          const retryCleanup = await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 5, hideOnly: true });
+          if (!retryCleanup.ok) {
+            throw new Error(`Known popup remained before navigation retry screenshot: ${formatKnownPopupRemaining(retryCleanup)}.`);
+          }
+          mobileLongCapture = await prepareShokzMobileNavigationExpandedCapture(client);
+        }
+      })
     : await captureScreenshotWithValidation(client, {
         format: "png",
         fromSurface: true
@@ -873,9 +896,6 @@ async function saveShokzNavigationCapture(client, outputPath, viewport, state, c
           }
         }
       });
-  if (useMobileLongCapture) {
-    mobileLongCapture = screenshotCapture;
-  }
   const buffer = screenshotCapture.buffer;
   const visualSignature = hashBuffer(buffer);
   const visualHash = visualHashForBuffer(buffer);
