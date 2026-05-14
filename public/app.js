@@ -2244,6 +2244,9 @@ function renderNavigationTabShots(shots) {
 }
 
 function renderProductShowcaseTabShots(shots) {
+  if (shots.some((shot) => shot.kind === "collection-tab-composite" || shot.categoryKey)) {
+    return renderRelatedThumbGrid(shots);
+  }
   const defaultShots = shots.filter((shot) => shot.interactionState !== "hover");
   const hoverShots = shots.filter((shot) => shot.interactionState === "hover");
   return `
@@ -2265,6 +2268,12 @@ function renderProductShowcaseTabShots(shots) {
 function groupHasTabbedPages(group) {
   if (group.sectionKey === "collection-tabs") {
     return group.shots.some((shot) => shot.tabLabel && (shot.categoryKey || shot.productKey || shot.variantKey));
+  }
+  if (group.sectionKey === "product-showcase") {
+    return group.shots.some((shot) =>
+      shot.tabLabel &&
+      (shot.kind === "collection-tab-composite" || shot.categoryKey || relatedShotPageIndex(shot) || shot.interactionState === "hover")
+    );
   }
   return group.shots.some((shot) => shot.tabLabel && (relatedShotPageIndex(shot) || shot.interactionState === "hover"));
 }
@@ -2321,6 +2330,9 @@ function groupRelatedShotsByTab(shots) {
 function relatedThumbLabel(shot) {
   if (shot.sectionKey === "navigation") {
     return shot.hoverItemLabel || relatedShotDisplayLabel(shot);
+  }
+  if (shot.kind === "collection-tab-composite" && shot.categoryLabel) {
+    return shot.categoryLabel;
   }
   if (shot.interactionState === "hover") {
     return `Hover ${shot.hoverItemLabel || relatedShotDisplayLabel(shot)}`;

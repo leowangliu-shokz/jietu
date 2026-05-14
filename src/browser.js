@@ -3235,6 +3235,28 @@ async function captureShokzHomeRelatedSection(client, outputPath, captureContext
     await clearRelatedHover(client);
   }
 
+  if (definition.key === "product-showcase") {
+    const compositeResult = await composeShokzHomeProductShowcaseCompositeCaptures({
+      captures,
+      definition,
+      outputPath,
+      plan,
+      viewport
+    });
+    warnings.push(...compositeResult.warnings);
+    if (compositeResult.captures.length) {
+      await removeIntermediateRelatedOutputs(captures, compositeResult.captures);
+      return {
+        width: compositeResult.width,
+        height: compositeResult.height,
+        captures: compositeResult.captures,
+        warnings,
+        expectedCount: compositeResult.expectedCount,
+        capturedCount: compositeResult.captures.length
+      };
+    }
+  }
+
   warnings.push(...relatedSectionCoverageWarnings(definition, plan.states, captures));
 
   return {
@@ -3245,6 +3267,553 @@ async function captureShokzHomeRelatedSection(client, outputPath, captureContext
     expectedCount: plan.states.length,
     capturedCount: captures.length
   };
+}
+
+async function composeShokzHomeProductShowcaseCompositeCaptures({
+  captures,
+  definition,
+  outputPath,
+  plan,
+  viewport
+}) {
+  const warnings = [];
+  const composites = [];
+  const capturesByTab = groupHomeProductShowcaseCapturesByTab(captures);
+  const tabEntries = homeProductShowcaseTabEntries(plan?.states || [], captures);
+  let maxWidth = Number(viewport.width || 0) || 393;
+  let maxHeight = Number(viewport.height || 0) || 852;
+
+  for (const tab of tabEntries) {
+    const tabCaptures = capturesByTab.get(tab.key) || [];
+    const defaultCaptures = tabCaptures
+      .filter((capture) => capture.interactionState !== "hover")
+      .sort(compareHomeProductShowcaseDefaultCaptures);
+    const hoverCaptures = tabCaptures
+      .filter((capture) => capture.interactionState === "hover")
+      .sort((a, b) =>
+        Number(a.basePageIndex || a.pageIndex || 0) - Number(b.basePageIndex || b.pageIndex || 0) ||
+        Number(a.hoverIndex || 0) - Number(b.hoverIndex || 0) ||
+        String(a.hoverItemLabel || a.stateLabel || "").localeCompare(String(b.hoverItemLabel || b.stateLabel || ""), "zh-CN")
+      );
+
+    if (!defaultCaptures.length) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: tab.tabLabel,
+        message: `Could not compose ${tab.tabLabel || "product showcase tab"} because no default screenshots were captured.`
+      });
+      continue;
+    }
+
+    const defaultWithBuffers = [];
+    const hoverWithBuffers = [];
+    for (const capture of defaultCaptures) {
+      try {
+        defaultWithBuffers.push({ ...capture, buffer: await fs.readFile(capture.outputPath) });
+      } catch (error) {
+        warnings.push({
+          sectionKey: definition.key,
+          sectionLabel: definition.sectionLabel,
+          stateLabel: capture.stateLabel || tab.tabLabel,
+          message: `Could not read captured screenshot for composition: ${error.message}`
+        });
+      }
+    }
+    for (const capture of hoverCaptures) {
+      try {
+        hoverWithBuffers.push({ ...capture, buffer: await fs.readFile(capture.outputPath) });
+      } catch (error) {
+        warnings.push({
+          sectionKey: definition.key,
+          sectionLabel: definition.sectionLabel,
+          stateLabel: capture.stateLabel || tab.tabLabel,
+          message: `Could not read hover screenshot for composition: ${error.message}`
+        });
+      }
+    }
+
+    if (!defaultWithBuffers.length) {
+      continue;
+    }
+
+    let composite;
+    try {
+      composite = composeShokzHomeProductShowcaseComposite({
+        defaultCaptures: defaultWithBuffers,
+        hoverCaptures: hoverWithBuffers,
+        viewport
+      });
+    } catch (error) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: tab.tabLabel,
+        message: `Could not compose ${tab.tabLabel || "product showcase tab"} product map: ${error.message}`
+      });
+      continue;
+    }
+
+    const categoryKey = safeFilePart(tab.tabLabel || `tab-${tab.tabIndex || composites.length + 1}`);
+    const categoryLabel = tab.tabLabel || `Tab ${tab.tabIndex || composites.length + 1}`;
+    const relatedOutput = relatedOutputPath(outputPath, definition.key, `${categoryKey}-product-map`);
+    await fs.writeFile(relatedOutput, composite.buffer);
+
+    const visualSignature = hashBuffer(composite.buffer);
+    const visualHash = visualHashForBuffer(composite.buffer);
+    const visualAudit = visualAuditForBuffer(composite.buffer, visualHash);
+    const visibleProducts = homeProductShowcaseVisibleProducts(defaultCaptures, hoverCaptures);
+    const variantItems = composite.variantCaptures.map((item) => ({
+      key: [item.state.productKey, item.state.variantKey || item.state.stateLabel].filter(Boolean).join(":") ||
+        item.state.productKey ||
+        item.state.stateLabel,
+      label: item.state.variantLabel || item.state.productLabel || item.state.stateLabel,
+      text: item.current?.text || item.state.stateLabel || "",
+      productKey: item.state.productKey || null,
+      productLabel: item.state.productLabel || null,
+      productIndex: item.state.productIndex || null,
+      variantKey: item.state.variantKey || null,
+      variantLabel: item.state.variantLabel || null,
+      rect: item.compositeRect || null,
+      sourceClip: item.clip || null
+    }));
+    const defaultText = combinedRelatedCaptureText(defaultCaptures);
+    const hoverText = combinedRelatedCaptureText(hoverCaptures);
+    const stateLabel = `${categoryLabel} Product Map`;
+    const width = composite.width;
+    const height = composite.height;
+    maxWidth = Math.max(maxWidth, width);
+    maxHeight = Math.max(maxHeight, height);
+
+    composites.push({
+      outputPath: relatedOutput,
+      width,
+      height,
+      kind: "collection-tab-composite",
+      sectionKey: definition.key,
+      sectionLabel: definition.sectionLabel,
+      sectionTitle: definition.title,
+      stateIndex: tab.tabIndex || composites.length + 1,
+      stateCount: tabEntries.length || null,
+      stateLabel,
+      label: stateLabel,
+      tabLabel: categoryLabel,
+      tabIndex: tab.tabIndex || null,
+      pageIndex: null,
+      interactionState: "default",
+      categoryKey,
+      categoryLabel,
+      productKey: null,
+      productLabel: null,
+      productIndex: null,
+      variantKey: null,
+      variantLabel: `${variantItems.length} hover states`,
+      variantOptions: null,
+      logicalSignature: [definition.key, categoryKey, "product-map"].join("|"),
+      visualSignature,
+      visualHash,
+      visualAudit,
+      captureValidation: {
+        ok: true,
+        label: `${definition.key} ${categoryLabel} product map`,
+        attempts: [
+          ...defaultCaptures.map((item) => item.captureValidation),
+          ...hoverCaptures.map((item) => item.captureValidation)
+        ].filter(Boolean)
+      },
+      clip: {
+        x: 0,
+        y: 0,
+        width,
+        height
+      },
+      scrollInfo: {
+        height,
+        viewportWidth: Number(viewport.width || 0) || composite.layout?.mainWidth || width,
+        viewportHeight: Number(viewport.height || 0) || 852,
+        pageCount: defaultCaptures.length
+      },
+      composite: composite.layout,
+      isDefaultState: Boolean(tab.tabIndex === 1),
+      coverageKey: relatedCoverageKeyForState({
+        sectionKey: definition.key,
+        tabLabel: categoryLabel,
+        tabIndex: tab.tabIndex || null,
+        fileId: `${categoryKey}-product-map`
+      }),
+      productCount: visibleProducts.length || null,
+      visibleProductCount: visibleProducts.length || null,
+      visibleProducts,
+      itemCount: variantItems.length || visibleProducts.length || null,
+      visibleItemCount: variantItems.length || visibleProducts.length || null,
+      visibleItems: variantItems.length ? variantItems : visibleProducts,
+      itemRects: variantItems.length
+        ? variantItems.map((item) => ({
+            key: item.key,
+            label: item.label,
+            rect: item.rect
+          }))
+        : visibleProducts.map((item) => ({
+            key: item.key,
+            label: item.label,
+            rect: item.rect || null
+          })),
+      windowSignature: JSON.stringify({
+        categoryKey,
+        pages: defaultCaptures.map((item) => item.logicalSignature || item.windowSignature || item.stateLabel),
+        hover: variantItems.map((item) => item.key || item.label)
+      }).slice(0, 1800),
+      sectionState: {
+        text: [defaultText, hoverText].filter(Boolean).join(" ").slice(0, 3200),
+        textBlocks: combinedRelatedCaptureTextBlocks(defaultCaptures),
+        images: combinedRelatedCaptureImages(defaultCaptures),
+        activeIndex: tab.tabIndex || composites.length + 1,
+        tabLabel: categoryLabel,
+        tabIndex: tab.tabIndex || null,
+        interactionState: "default",
+        categoryKey,
+        categoryLabel,
+        productCount: visibleProducts.length || null,
+        visibleProductCount: visibleProducts.length || null,
+        visibleProducts,
+        visibleItemCount: variantItems.length || visibleProducts.length || null,
+        visibleItems: variantItems.length ? variantItems : visibleProducts,
+        itemRects: variantItems.length
+          ? variantItems.map((item) => ({
+              key: item.key,
+              label: item.label,
+              rect: item.rect
+            }))
+          : visibleProducts.map((item) => ({
+              key: item.key,
+              label: item.label,
+              rect: item.rect || null
+            })),
+        windowSignature: JSON.stringify({
+          categoryKey,
+          products: visibleProducts.map((item) => item.key || item.label),
+          hover: variantItems.map((item) => item.key || item.label)
+        }).slice(0, 1800),
+        composite: composite.layout
+      }
+    });
+  }
+
+  return {
+    width: maxWidth,
+    height: maxHeight,
+    captures: composites,
+    warnings,
+    expectedCount: tabEntries.length,
+    capturedCount: composites.length
+  };
+}
+
+function composeShokzHomeProductShowcaseComposite({ defaultCaptures, hoverCaptures = [], viewport = {} }) {
+  const main = composeVerticalCaptureStack(defaultCaptures, {
+    gap: defaultCaptures.length > 1 ? 18 : 0
+  });
+  const variantCaptures = hoverCaptures
+    .map((capture, index) => homeProductShowcaseVariantCapture(capture, main, index))
+    .filter(Boolean);
+  const composite = composeShokzCollectionTabComposite({
+    longCapture: main,
+    variantCaptures,
+    viewport
+  });
+
+  return {
+    ...composite,
+    layout: {
+      ...composite.layout,
+      sourceKind: "home-product-showcase",
+      mainStack: main.layout
+    },
+    main,
+    variantCaptures
+  };
+}
+
+function composeVerticalCaptureStack(captures, { gap = 0 } = {}) {
+  const decoded = captures.map((capture, index) => ({
+    capture,
+    image: decodePng(capture.buffer),
+    index
+  }));
+  if (!decoded.length) {
+    throw new Error("No default captures to compose.");
+  }
+
+  const width = Math.max(...decoded.map((item) => item.image.width), 1);
+  const height = decoded.reduce((sum, item) => sum + item.image.height, 0) + Math.max(0, decoded.length - 1) * gap;
+  const rgba = new Uint8Array(width * height * 4);
+  fillRgba(rgba, [246, 248, 248, 255]);
+  const offsetsByPageIndex = new Map();
+  const pages = [];
+  let y = 0;
+
+  for (const item of decoded) {
+    const x = Math.max(0, Math.floor((width - item.image.width) / 2));
+    copyRgbaImage({
+      source: item.image.rgba,
+      sourceWidth: item.image.width,
+      sourceHeight: item.image.height,
+      target: rgba,
+      targetWidth: width,
+      targetHeight: height,
+      x,
+      y
+    });
+    const pageIndex = Number(item.capture.pageIndex || item.index + 1) || item.index + 1;
+    offsetsByPageIndex.set(pageIndex, y);
+    pages.push({
+      pageIndex,
+      stateLabel: item.capture.stateLabel || item.capture.label || "",
+      y,
+      width: item.image.width,
+      height: item.image.height
+    });
+    y += item.image.height + gap;
+  }
+
+  return {
+    buffer: encodePng(width, height, rgba),
+    width,
+    height,
+    offsetsByPageIndex,
+    layout: {
+      kind: "home-product-showcase-stack",
+      gap,
+      pageCount: pages.length,
+      pages
+    }
+  };
+}
+
+function homeProductShowcaseVariantCapture(capture, main, index) {
+  try {
+    const image = decodePng(capture.buffer);
+    const cropRect = homeProductShowcaseHoverCropRect(capture, image);
+    const crop = cropRgbaImage(image, cropRect);
+    const pageIndex = Number(capture.basePageIndex || capture.pageIndex || 0) || 1;
+    const pageOffset = main.offsetsByPageIndex.get(pageIndex) ?? 0;
+    const productKey = capture.hoverItemKey || capture.sectionState?.hoveredProduct?.key || `hover-${index + 1}`;
+    const productLabel = capture.hoverItemLabel || capture.sectionState?.hoveredProduct?.label || capture.stateLabel || `Hover ${index + 1}`;
+    const productIndex = Number(capture.hoverIndex || index + 1) || index + 1;
+    return {
+      buffer: crop.buffer,
+      width: crop.width,
+      height: crop.height,
+      state: {
+        productKey,
+        productLabel,
+        productIndex,
+        variantKey: "hover",
+        variantLabel: "Hover",
+        stateLabel: capture.stateLabel || `Hover ${productLabel}`,
+        stateIndex: productIndex
+      },
+      current: {
+        text: capture.sectionState?.text || "",
+        textBlocks: capture.sectionState?.textBlocks || [],
+        images: capture.sectionState?.images || [],
+        visibleItems: capture.sectionState?.visibleItems || capture.visibleItems || []
+      },
+      clip: {
+        x: cropRect.x,
+        y: pageOffset + cropRect.y,
+        width: crop.width,
+        height: crop.height
+      },
+      captureValidation: capture.captureValidation || null
+    };
+  } catch {
+    return null;
+  }
+}
+
+function homeProductShowcaseHoverCropRect(capture, image) {
+  const rect = capture.hoverItemRect ||
+    capture.sectionState?.hoverItemRect ||
+    capture.sectionState?.hoveredProduct?.rect ||
+    null;
+  if (!rect) {
+    return {
+      x: 0,
+      y: 0,
+      width: image.width,
+      height: image.height
+    };
+  }
+
+  const pad = 8;
+  const x = Math.max(0, Math.floor(Number(rect.x ?? rect.left ?? 0) - pad));
+  const y = Math.max(0, Math.floor(Number(rect.y ?? rect.top ?? 0) - pad));
+  const right = Math.min(image.width, Math.ceil(Number(rect.x ?? rect.left ?? 0) + Number(rect.width || 0) + pad));
+  const bottom = Math.min(image.height, Math.ceil(Number(rect.y ?? rect.top ?? 0) + Number(rect.height || 0) + pad));
+  return {
+    x,
+    y,
+    width: Math.max(1, right - x),
+    height: Math.max(1, bottom - y)
+  };
+}
+
+function cropRgbaImage(image, rect) {
+  const x = Math.max(0, Math.min(image.width - 1, Math.floor(Number(rect.x || 0))));
+  const y = Math.max(0, Math.min(image.height - 1, Math.floor(Number(rect.y || 0))));
+  const width = Math.max(1, Math.min(image.width - x, Math.ceil(Number(rect.width || image.width))));
+  const height = Math.max(1, Math.min(image.height - y, Math.ceil(Number(rect.height || image.height))));
+  const rgba = new Uint8Array(width * height * 4);
+  for (let row = 0; row < height; row += 1) {
+    const sourceStart = ((y + row) * image.width + x) * 4;
+    const sourceEnd = sourceStart + width * 4;
+    const targetStart = row * width * 4;
+    rgba.set(image.rgba.subarray(sourceStart, sourceEnd), targetStart);
+  }
+  return {
+    buffer: encodePng(width, height, rgba),
+    width,
+    height
+  };
+}
+
+function groupHomeProductShowcaseCapturesByTab(captures) {
+  const groups = new Map();
+  for (const capture of captures || []) {
+    const key = homeProductShowcaseTabKey(capture);
+    if (!groups.has(key)) {
+      groups.set(key, []);
+    }
+    groups.get(key).push(capture);
+  }
+  return groups;
+}
+
+function homeProductShowcaseTabEntries(states, captures) {
+  const entries = new Map();
+  const add = (item) => {
+    const key = homeProductShowcaseTabKey(item);
+    if (!key || entries.has(key)) {
+      return;
+    }
+    const tabIndex = Number(item.tabIndex || 0) || null;
+    entries.set(key, {
+      key,
+      tabLabel: item.tabLabel || item.categoryLabel || item.trackLabel || item.stateLabel || `Tab ${tabIndex || entries.size + 1}`,
+      tabIndex
+    });
+  };
+  (states || []).filter((state) => state?.tabLabel).forEach(add);
+  (captures || []).filter((capture) => capture?.tabLabel).forEach(add);
+  return [...entries.values()].sort((a, b) =>
+    Number(a.tabIndex || 0) - Number(b.tabIndex || 0) ||
+    String(a.tabLabel || "").localeCompare(String(b.tabLabel || ""), "zh-CN")
+  );
+}
+
+function homeProductShowcaseTabKey(item) {
+  const tabIndex = Number(item?.tabIndex || 0) || "";
+  const tabLabel = String(item?.tabLabel || item?.categoryLabel || item?.trackLabel || "").trim();
+  return `${tabIndex}|${tabLabel}`;
+}
+
+function compareHomeProductShowcaseDefaultCaptures(a, b) {
+  return Number(a.pageIndex || 0) - Number(b.pageIndex || 0) ||
+    Number(a.stateIndex || 0) - Number(b.stateIndex || 0) ||
+    String(a.stateLabel || "").localeCompare(String(b.stateLabel || ""), "zh-CN");
+}
+
+function homeProductShowcaseVisibleProducts(...captureGroups) {
+  const products = new Map();
+  for (const capture of captureGroups.flat()) {
+    const items = [
+      ...(Array.isArray(capture.visibleProducts) ? capture.visibleProducts : []),
+      ...(Array.isArray(capture.visibleItems) ? capture.visibleItems : []),
+      ...(Array.isArray(capture.sectionState?.visibleProducts) ? capture.sectionState.visibleProducts : []),
+      ...(Array.isArray(capture.sectionState?.visibleItems) ? capture.sectionState.visibleItems : [])
+    ];
+    for (const item of items) {
+      const key = item?.key || item?.productKey || item?.href || item?.label;
+      if (!key || products.has(key)) {
+        continue;
+      }
+      products.set(key, {
+        key,
+        label: item.label || item.productLabel || item.text || key,
+        productKey: item.productKey || key,
+        productLabel: item.productLabel || item.label || null,
+        productIndex: Number(item.productIndex || products.size + 1) || products.size + 1,
+        href: item.href || null,
+        image: item.image || null,
+        rect: item.rect || null
+      });
+    }
+  }
+  return [...products.values()].sort((a, b) =>
+    Number(a.productIndex || 0) - Number(b.productIndex || 0) ||
+    String(a.label || "").localeCompare(String(b.label || ""), "zh-CN")
+  );
+}
+
+function combinedRelatedCaptureText(captures) {
+  const texts = [];
+  const seen = new Set();
+  for (const capture of captures || []) {
+    const text = String(capture.sectionState?.text || "").replace(/\s+/g, " ").trim();
+    if (!text || seen.has(text)) {
+      continue;
+    }
+    seen.add(text);
+    texts.push(text);
+  }
+  return texts.join(" ").slice(0, 3200);
+}
+
+function combinedRelatedCaptureTextBlocks(captures) {
+  const blocks = [];
+  const seen = new Set();
+  for (const capture of captures || []) {
+    for (const block of capture.sectionState?.textBlocks || []) {
+      const key = [block.text, block.x, block.y].join("|");
+      if (!block.text || seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      blocks.push(block);
+      if (blocks.length >= 120) {
+        return blocks;
+      }
+    }
+  }
+  return blocks;
+}
+
+function combinedRelatedCaptureImages(captures) {
+  const images = [];
+  const seen = new Set();
+  for (const capture of captures || []) {
+    for (const image of capture.sectionState?.images || capture.images || []) {
+      const key = typeof image === "string" ? image : image?.src || JSON.stringify(image);
+      if (!key || seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      images.push(image);
+      if (images.length >= 48) {
+        return images;
+      }
+    }
+  }
+  return images;
+}
+
+async function removeIntermediateRelatedOutputs(sourceCaptures, keepCaptures) {
+  const keepPaths = new Set((keepCaptures || []).map((capture) => capture.outputPath).filter(Boolean));
+  await Promise.all((sourceCaptures || [])
+    .map((capture) => capture.outputPath)
+    .filter((outputPath) => outputPath && !keepPaths.has(outputPath))
+    .map((outputPath) => fs.rm(outputPath, { force: true }).catch(() => null)));
 }
 
 async function captureShokzCollectionRelatedSection(client, outputPath, captureContext, definition) {
@@ -13114,6 +13683,7 @@ export const __testOnly = {
   isAcceptableTrailingSegmentBlankAudit,
   isViewMoreLabel,
   composeShokzCollectionTabComposite,
+  composeShokzHomeProductShowcaseComposite,
   shouldUseDedicatedViewMoreExpansion,
   shouldUseDirectFullPageClipCapture
 };

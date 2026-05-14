@@ -13,6 +13,7 @@ const {
   isAcceptableTrailingSegmentBlankAudit,
   isViewMoreLabel,
   composeShokzCollectionTabComposite,
+  composeShokzHomeProductShowcaseComposite,
   shouldUseDedicatedViewMoreExpansion,
   shouldUseDirectFullPageClipCapture
 } = __testOnly;
@@ -274,6 +275,50 @@ test("collection tab composite keeps the long screenshot and lays variants to th
   assert.equal(pixelAt(decoded, 214, 140)[2], 200);
 });
 
+test("home product showcase composite stacks default pages and crops hover cards", () => {
+  const firstPage = encodePng(100, 80, solidImage(100, 80, [200, 20, 20, 255]));
+  const secondPage = encodePng(100, 80, solidImage(100, 80, [20, 200, 20, 255]));
+  const hoverPage = encodePng(100, 80, solidImage(100, 80, [20, 20, 200, 255]));
+
+  const result = composeShokzHomeProductShowcaseComposite({
+    viewport: {
+      width: 100,
+      height: 80
+    },
+    defaultCaptures: [
+      homeShowcaseCapture(firstPage, 1),
+      homeShowcaseCapture(secondPage, 2)
+    ],
+    hoverCaptures: [
+      {
+        ...homeShowcaseCapture(hoverPage, 2),
+        interactionState: "hover",
+        basePageIndex: 2,
+        hoverIndex: 1,
+        hoverItemKey: "openfit-pro",
+        hoverItemLabel: "OpenFit Pro",
+        hoverItemRect: {
+          x: 10,
+          y: 20,
+          width: 40,
+          height: 30
+        }
+      }
+    ]
+  });
+
+  const decoded = decodePng(result.buffer);
+
+  assert.equal(result.layout.sourceKind, "home-product-showcase");
+  assert.equal(result.layout.mainStack.pageCount, 2);
+  assert.equal(result.layout.variantCount, 1);
+  assert.ok(decoded.width > 100);
+  assert.equal(decoded.height, 198);
+  assert.equal(pixelAt(decoded, 10, 10)[0], 200);
+  assert.equal(pixelAt(decoded, 10, 100)[1], 200);
+  assert.equal(pixelAt(decoded, 211, 115)[2], 200);
+});
+
 test("collection and comparison page capture modes prefer direct full-page clip capture", () => {
   assert.equal(shouldUseDirectFullPageClipCapture({ captureMode: "shokz-collection-page" }), true);
   assert.equal(shouldUseDirectFullPageClipCapture({ captureMode: "shokz-comparison-page" }), true);
@@ -312,6 +357,19 @@ function collectionVariantCapture(buffer, productKey, productIndex, variantKey, 
       variantKey,
       variantLabel: variantKey,
       stateIndex: productIndex
+    }
+  };
+}
+
+function homeShowcaseCapture(buffer, pageIndex) {
+  return {
+    buffer,
+    pageIndex,
+    stateLabel: `Best Selling ${pageIndex}`,
+    sectionState: {
+      text: `Best Selling ${pageIndex}`,
+      textBlocks: [],
+      images: []
     }
   };
 }
