@@ -918,6 +918,9 @@ function imagePreviewMarkerModeForSnapshot(snapshot) {
 }
 
 function imagePreviewShowsScreenRail(snapshot) {
+  if (snapshot?.kind === "collection-tab-composite") {
+    return false;
+  }
   return snapshot?.sectionKey !== "navigation";
 }
 
@@ -971,6 +974,15 @@ function imagePreviewContentNaturalSize() {
 
 function imagePreviewFitScaleForViewport(viewportWidth, viewportHeight) {
   const contentSize = imagePreviewContentNaturalSize();
+  if (imagePreviewZoomState.snapshot?.kind === "collection-tab-composite") {
+    const mainWidth = Number(
+      imagePreviewZoomState.snapshot?.composite?.mainWidth ||
+      imagePreviewZoomState.snapshot?.scrollInfo?.viewportWidth ||
+      0
+    );
+    const baseWidth = Number.isFinite(mainWidth) && mainWidth > 0 ? mainWidth : contentSize.width;
+    return Math.min(viewportWidth / baseWidth, 1);
+  }
   const widthScale = viewportWidth / contentSize.width;
   const heightScale = viewportHeight / contentSize.height;
   const fitScale = imagePreviewZoomState.comparison
@@ -1067,12 +1079,17 @@ function relatedShotSnapshotForPreviewLink(link) {
     imageUrl: link.href,
     width,
     height,
+    kind: link.dataset.shotKind || parentSnapshot?.kind || null,
     devicePresetId: parentSnapshot?.devicePresetId || card?.dataset.devicePresetId || null,
     sectionKey: link.dataset.sectionKey || parentSnapshot?.sectionKey || null,
     navigationLevel: link.dataset.navigationLevel || parentSnapshot?.navigationLevel || null,
+    composite: Number(link.dataset.previewMainWidth || 0)
+      ? { mainWidth: Number(link.dataset.previewMainWidth || 0) }
+      : null,
     scrollInfo: Number.isFinite(scrollViewportHeight) && scrollViewportHeight > 0
       ? {
           ...(parentSnapshot?.scrollInfo || {}),
+          viewportWidth: Number(link.dataset.previewViewportWidth || 0) || parentSnapshot?.scrollInfo?.viewportWidth || null,
           viewportHeight: scrollViewportHeight
         }
       : parentSnapshot?.scrollInfo || null
@@ -1173,6 +1190,11 @@ function clampImagePreviewScale(scale) {
 
 function centerImagePreviewViewport() {
   const viewport = elements.imagePreviewViewport;
+  if (imagePreviewZoomState.snapshot?.kind === "collection-tab-composite") {
+    viewport.scrollLeft = 0;
+    viewport.scrollTop = 0;
+    return;
+  }
   viewport.scrollLeft = Math.max(0, (viewport.scrollWidth - viewport.clientWidth) / 2);
   viewport.scrollTop = imagePreviewZoomState.comparison
     ? 0
@@ -2164,6 +2186,9 @@ function renderTabbedRelatedShots(sectionKey, shots) {
 }
 
 function renderCollectionTabShots(shots) {
+  if (shots.some((shot) => shot.kind === "collection-tab-composite" || (!shot.productKey && !shot.variantKey))) {
+    return renderRelatedThumbGrid(shots);
+  }
   const productGroups = groupCollectionShotsByProduct(shots);
   if (!productGroups.length) {
     return renderRelatedThumbGrid(shots);
@@ -2239,7 +2264,7 @@ function renderProductShowcaseTabShots(shots) {
 
 function groupHasTabbedPages(group) {
   if (group.sectionKey === "collection-tabs") {
-    return group.shots.some((shot) => shot.tabLabel && shot.productKey && shot.variantKey);
+    return group.shots.some((shot) => shot.tabLabel && (shot.categoryKey || shot.productKey || shot.variantKey));
   }
   return group.shots.some((shot) => shot.tabLabel && (relatedShotPageIndex(shot) || shot.interactionState === "hover"));
 }
@@ -2257,7 +2282,10 @@ function renderRelatedThumbGrid(shots) {
           data-shot-file="${escapeHtml(shot.file || "")}"
           data-preview-width="${escapeHtml(String(shot.width || ""))}"
           data-preview-height="${escapeHtml(String(shot.height || ""))}"
+          data-preview-viewport-width="${escapeHtml(String(shot.scrollInfo?.viewportWidth || shot.composite?.mainWidth || ""))}"
           data-preview-viewport-height="${escapeHtml(String(shot.scrollInfo?.viewportHeight || ""))}"
+          data-preview-main-width="${escapeHtml(String(shot.composite?.mainWidth || shot.scrollInfo?.viewportWidth || ""))}"
+          data-shot-kind="${escapeHtml(shot.kind || "")}"
           data-section-key="${escapeHtml(shot.sectionKey || "")}"
           data-navigation-level="${escapeHtml(shot.navigationLevel || "")}"
         >
@@ -2472,6 +2500,7 @@ function normalizeRelatedShot(shot) {
     visibleItemCount: shot.visibleItemCount || null,
     visibleItems: shot.visibleItems || null,
     itemRects: shot.itemRects || null,
+    composite: shot.composite || shot.sectionState?.composite || null,
     windowSignature: shot.windowSignature || null,
     logicalSignature: shot.logicalSignature || shot.bannerSignature || null,
     visualHash: shot.visualHash || null,

@@ -4,7 +4,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { __testOnly, blankImageAuditForBuffer, captureScreenshotWithValidation, imageQualityAuditForBuffer } from "../src/browser.js";
-import { encodePng } from "../src/png.js";
+import { decodePng, encodePng } from "../src/png.js";
 
 const {
   captureStitchedScreenshot,
@@ -12,6 +12,7 @@ const {
   restorePageMotion,
   isAcceptableTrailingSegmentBlankAudit,
   isViewMoreLabel,
+  composeShokzCollectionTabComposite,
   shouldUseDedicatedViewMoreExpansion,
   shouldUseDirectFullPageClipCapture
 } = __testOnly;
@@ -238,6 +239,41 @@ test("stitched capture keeps the full last segment when only the tail is near-wh
   }
 });
 
+test("collection tab composite keeps the long screenshot and lays variants to the right by product row", () => {
+  const longBuffer = encodePng(100, 240, solidImage(100, 240, [30, 40, 50, 255]));
+  const firstCard = encodePng(40, 50, solidImage(40, 50, [200, 20, 20, 255]));
+  const secondCard = encodePng(40, 50, solidImage(40, 50, [20, 200, 20, 255]));
+  const thirdCard = encodePng(40, 50, solidImage(40, 50, [20, 20, 200, 255]));
+
+  const result = composeShokzCollectionTabComposite({
+    longCapture: {
+      buffer: longBuffer
+    },
+    viewport: {
+      width: 100,
+      height: 120
+    },
+    variantCaptures: [
+      collectionVariantCapture(firstCard, "openfit-pro", 1, "black", 24),
+      collectionVariantCapture(secondCard, "openfit-pro", 1, "white", 24),
+      collectionVariantCapture(thirdCard, "openrun-pro-2", 2, "orange", 140)
+    ]
+  });
+
+  const decoded = decodePng(result.buffer);
+
+  assert.ok(decoded.width > 100);
+  assert.equal(decoded.height, 240);
+  assert.equal(result.layout.kind, "collection-tab-composite");
+  assert.equal(result.layout.mainWidth, 100);
+  assert.equal(result.layout.variantCount, 3);
+  assert.equal(result.layout.productCount, 2);
+  assert.equal(pixelAt(decoded, 10, 10)[0], 30);
+  assert.equal(pixelAt(decoded, 214, 24)[0], 200);
+  assert.equal(pixelAt(decoded, 452, 24)[1], 200);
+  assert.equal(pixelAt(decoded, 214, 140)[2], 200);
+});
+
 test("collection and comparison page capture modes prefer direct full-page clip capture", () => {
   assert.equal(shouldUseDirectFullPageClipCapture({ captureMode: "shokz-collection-page" }), true);
   assert.equal(shouldUseDirectFullPageClipCapture({ captureMode: "shokz-comparison-page" }), true);
@@ -259,6 +295,31 @@ test("matches view more labels with icon suffixes", () => {
   assert.equal(isViewMoreLabel("Learn More"), false);
   assert.equal(isViewMoreLabel("View All"), false);
 });
+
+function collectionVariantCapture(buffer, productKey, productIndex, variantKey, y) {
+  return {
+    buffer,
+    clip: {
+      x: 0,
+      y,
+      width: 40,
+      height: 50
+    },
+    state: {
+      productKey,
+      productLabel: productKey,
+      productIndex,
+      variantKey,
+      variantLabel: variantKey,
+      stateIndex: productIndex
+    }
+  };
+}
+
+function pixelAt(image, x, y) {
+  const offset = (y * image.width + x) * 4;
+  return image.rgba.slice(offset, offset + 4);
+}
 
 function solidImage(width, height, color) {
   const rgba = new Uint8Array(width * height * 4);

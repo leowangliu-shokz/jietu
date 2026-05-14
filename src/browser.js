@@ -3489,7 +3489,6 @@ async function captureShokzCollectionProductVariantSection(client, outputPath, c
   const categories = Array.isArray(definition?.states) ? definition.states : [];
   const captures = [];
   const warnings = [];
-  const plannedStates = [];
   let maxWidth = Number(viewport.width || 0) || 393;
   let maxHeight = Number(viewport.height || 0) || 852;
 
@@ -3536,10 +3535,22 @@ async function captureShokzCollectionProductVariantSection(client, outputPath, c
         stateLabel: category.stateLabel,
         message: plan.reason || `Could not read products for ${category.stateLabel}.`
       });
+    }
+
+    let categoryLongCapture = null;
+    try {
+      categoryLongCapture = await captureShokzCollectionCategoryLongScreenshot(client, definition, category, captureContext);
+    } catch (error) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: category.stateLabel,
+        message: error.message
+      });
       continue;
     }
 
-    const states = Array.isArray(plan.states) ? plan.states : [];
+    const states = plan.ok && Array.isArray(plan.states) ? plan.states : [];
     if (!states.length) {
       warnings.push({
         sectionKey: definition.key,
@@ -3547,179 +3558,533 @@ async function captureShokzCollectionProductVariantSection(client, outputPath, c
         stateLabel: category.stateLabel,
         message: `No product cards were found for ${category.stateLabel}.`
       });
-      continue;
     }
 
-    for (const state of states) {
-      state.stateIndex = plannedStates.length + 1;
-      plannedStates.push(state);
+    const variantCaptures = [];
+    for (const [stateOffset, state] of states.entries()) {
+      state.stateIndex = stateOffset + 1;
 
-      const variantActivation = await activateShokzCollectionProductVariantState(client, state);
-      if (!variantActivation.ok) {
+      const variantCapture = await captureShokzCollectionProductVariantCard(client, definition, state, viewport);
+      if (!variantCapture.ok) {
         warnings.push({
           sectionKey: definition.key,
           sectionLabel: definition.sectionLabel,
           stateLabel: state.stateLabel,
-          message: variantActivation.reason || `Could not activate ${state.stateLabel}.`
+          message: variantCapture.reason || `Could not capture ${state.stateLabel}.`
         });
         continue;
       }
+      variantCaptures.push(variantCapture);
+    }
 
-      await sleep(260);
-      await primeLazyImages(client);
-      await waitForRelatedSectionImages(client, definition.key);
-      await prepareForScreenshotCapture(client, {
-        rounds: 2,
-        shokzKnownPopups: true,
-        stage: `before Shokz ${definition.sectionLabel} product variant screenshot capture`
-      });
-      await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2 });
-      await dismissObstructions(client, { rounds: 2 });
+    const composite = composeShokzCollectionTabComposite({
+      longCapture: categoryLongCapture,
+      variantCaptures,
+      viewport
+    });
+    const visualSignature = hashBuffer(composite.buffer);
+    const visualHash = visualHashForBuffer(composite.buffer);
+    const visualAudit = visualAuditForBuffer(composite.buffer, visualHash);
+    const categoryKey = category.categoryKey || category.matchHandle || category.fileId || `category-${captures.length + 1}`;
+    const categoryLabel = category.categoryLabel || category.tabLabel || category.stateLabel || categoryKey;
+    const relatedOutput = relatedOutputPath(outputPath, definition.key, category.fileId || categoryKey);
+    await fs.writeFile(relatedOutput, composite.buffer);
 
-      let current = await readShokzCollectionProductVariantState(client, definition, state);
-      if (!current.ok) {
-        warnings.push({
-          sectionKey: definition.key,
-          sectionLabel: definition.sectionLabel,
-          stateLabel: state.stateLabel,
-          message: current.reason || `Could not read ${state.stateLabel}.`
-        });
-        continue;
-      }
-
-      let clip = normalizeRelatedClip(current.clip, viewport);
-      if (!clip) {
-        warnings.push({
-          sectionKey: definition.key,
-          sectionLabel: definition.sectionLabel,
-          stateLabel: state.stateLabel,
-          message: `Could not compute a valid product-card crop for ${state.stateLabel}.`
-        });
-        continue;
-      }
-
-      const screenshotCapture = await captureScreenshotWithValidation(client, () => ({
-        format: "png",
-        fromSurface: true,
-        captureBeyondViewport: true,
-        clip
-      }), {
-        label: `${definition.key} ${state.stateLabel}`,
-        acceptBlankAudit: (blankAudit) => isAcceptableCollectionProductVariantBlankAudit(blankAudit, current),
-        beforeAttempt: async ({ attempt }) => {
-          if (attempt > 1) {
-            const retryActivation = await activateShokzCollectionProductVariantState(client, state);
-            if (!retryActivation.ok) {
-              throw new Error(retryActivation.reason || `Could not reactivate ${state.stateLabel}.`);
-            }
-            await sleep(360);
-            await primeLazyImages(client);
-          }
-          await prepareForScreenshotCapture(client, {
-            rounds: 2,
-            shokzKnownPopups: true,
-            stage: `retrying Shokz ${definition.sectionLabel} product variant screenshot capture`
-          });
-          await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2 });
-          await dismissObstructions(client, { rounds: 2 });
-          current = await readShokzCollectionProductVariantState(client, definition, state);
-          if (!current.ok) {
-            throw new Error(current.reason || `Could not reread ${state.stateLabel}.`);
-          }
-          clip = normalizeRelatedClip(current.clip, viewport);
-          if (!clip) {
-            throw new Error(`Could not compute a valid product-card crop for ${state.stateLabel}.`);
-          }
-        }
-      });
-
-      const buffer = screenshotCapture.buffer;
-      const visualSignature = hashBuffer(buffer);
-      const visualHash = visualHashForBuffer(buffer);
-      const visualAudit = visualAuditForBuffer(buffer, visualHash);
-      const logicalSignature = current.logicalSignature || state.logicalSignature;
-      const relatedOutput = relatedOutputPath(outputPath, definition.key, state.fileId || state.stateIndex);
-      await fs.writeFile(relatedOutput, buffer);
-
-      const width = Math.round(clip.width);
-      const height = Math.round(clip.height);
-      maxWidth = Math.max(maxWidth, width);
-      maxHeight = Math.max(maxHeight, height);
-      captures.push({
-        outputPath: relatedOutput,
+    const variantItems = variantCaptures.map((item) => ({
+      key: item.state.variantKey || item.state.stateLabel,
+      label: item.state.variantLabel || item.state.stateLabel,
+      text: item.current.text || item.state.stateLabel || "",
+      productKey: item.state.productKey || null,
+      productLabel: item.state.productLabel || null,
+      productIndex: item.state.productIndex || null,
+      variantKey: item.state.variantKey || null,
+      variantLabel: item.state.variantLabel || null,
+      variantOptions: item.state.variantOptions || [],
+      rect: item.compositeRect || null,
+      sourceClip: item.clip || null
+    }));
+    const visibleProducts = collectionProductsFromVariantCaptures(variantCaptures, plan);
+    const stateLabel = `${categoryLabel} Product Map`;
+    const width = composite.width;
+    const height = composite.height;
+    maxWidth = Math.max(maxWidth, width);
+    maxHeight = Math.max(maxHeight, height);
+    captures.push({
+      outputPath: relatedOutput,
+      width,
+      height,
+      kind: "collection-tab-composite",
+      sectionKey: definition.key,
+      sectionLabel: definition.sectionLabel,
+      sectionTitle: definition.title,
+      stateIndex: category.stateIndex || captures.length + 1,
+      stateCount: categories.length || null,
+      stateLabel,
+      label: stateLabel,
+      tabLabel: category.tabLabel || categoryLabel,
+      tabIndex: category.tabIndex || null,
+      pageIndex: null,
+      interactionState: "default",
+      categoryKey,
+      categoryLabel,
+      productKey: null,
+      productLabel: null,
+      productIndex: null,
+      variantKey: null,
+      variantLabel: `${variantCaptures.length} product card states`,
+      variantOptions: null,
+      logicalSignature: [definition.key, categoryKey, "product-map"].join("|"),
+      visualSignature,
+      visualHash,
+      visualAudit,
+      captureValidation: {
+        ok: true,
+        label: `${definition.key} ${categoryLabel} product map`,
+        attempts: [
+          categoryLongCapture.captureValidation,
+          ...variantCaptures.map((item) => item.captureValidation)
+        ].filter(Boolean)
+      },
+      clip: {
+        x: 0,
+        y: 0,
         width,
+        height
+      },
+      scrollInfo: {
         height,
-        kind: "product-variant",
-        sectionKey: definition.key,
-        sectionLabel: definition.sectionLabel,
-        sectionTitle: definition.title,
-        stateIndex: state.stateIndex,
-        stateCount: null,
-        stateLabel: state.stateLabel,
-        label: state.stateLabel,
-        tabLabel: state.tabLabel || category.tabLabel || null,
-        tabIndex: state.tabIndex || category.tabIndex || null,
-        pageIndex: null,
+        viewportWidth: Number(viewport.width || 0) || 393,
+        viewportHeight: Number(viewport.height || 0) || 852,
+        reachableHeight: Number(categoryLongCapture.scrollInfo?.reachableHeight || 0) || categoryLongCapture.height,
+        scrolls: Number(categoryLongCapture.scrollInfo?.scrolls || 0) || null
+      },
+      composite: composite.layout,
+      isDefaultState: Boolean(category.isDefaultState || category.stateIndex === 1),
+      coverageKey: relatedCoverageKeyForState({ ...category, sectionKey: definition.key }),
+      productCount: Number(plan.productCount || visibleProducts.length || 0) || null,
+      visibleProductCount: visibleProducts.length || null,
+      visibleProducts,
+      itemCount: variantCaptures.length,
+      visibleItemCount: variantCaptures.length,
+      visibleItems: variantItems,
+      itemRects: variantItems.map((item) => ({
+        key: item.key,
+        label: item.label,
+        rect: item.rect
+      })),
+      windowSignature: JSON.stringify({
+        categoryKey,
+        products: visibleProducts.map((item) => item.key || item.label),
+        variants: variantItems.map((item) => item.key || item.label)
+      }).slice(0, 1800),
+      sectionState: {
+        text: [
+          categoryLongCapture.current?.text || "",
+          ...variantCaptures.map((item) => item.current?.text || item.state?.stateLabel || "")
+        ].filter(Boolean).join(" ").slice(0, 3200),
+        textBlocks: categoryLongCapture.current?.textBlocks || [],
+        images: categoryLongCapture.current?.images || [],
+        activeIndex: category.stateIndex || captures.length,
+        tabLabel: category.tabLabel || categoryLabel,
+        tabIndex: category.tabIndex || null,
         interactionState: "default",
-        categoryKey: state.categoryKey || null,
-        categoryLabel: state.categoryLabel || state.tabLabel || null,
-        productKey: state.productKey || null,
-        productLabel: state.productLabel || null,
-        productIndex: state.productIndex || null,
-        variantKey: state.variantKey || null,
-        variantLabel: state.variantLabel || null,
-        variantOptions: state.variantOptions || [],
-        logicalSignature,
-        visualSignature,
-        visualHash,
-        visualAudit,
-        captureValidation: screenshotCapture.captureValidation,
-        clip: {
-          x: Math.round(clip.x),
-          y: Math.round(clip.y),
-          width,
-          height
-        },
-        isDefaultState: Boolean(state.isDefaultState),
-        coverageKey: relatedCoverageKeyForState(state),
-        sectionState: {
-          text: current.text || "",
-          textBlocks: current.textBlocks || [],
-          images: current.images || [],
-          activeIndex: state.stateIndex,
-          tabLabel: state.tabLabel || null,
-          tabIndex: state.tabIndex || null,
-          interactionState: "default",
-          categoryKey: state.categoryKey || null,
-          categoryLabel: state.categoryLabel || null,
-          productKey: state.productKey || null,
-          productLabel: state.productLabel || null,
-          productIndex: state.productIndex || null,
-          variantKey: state.variantKey || null,
-          variantLabel: state.variantLabel || null,
-          variantOptions: state.variantOptions || [],
-          visibleItemCount: current.visibleItemCount || 1,
-          visibleItems: current.visibleItems || [],
-          itemRects: current.itemRects || [],
-          windowSignature: current.windowSignature || null
-        }
-      });
-    }
+        categoryKey,
+        categoryLabel,
+        productCount: Number(plan.productCount || visibleProducts.length || 0) || null,
+        visibleProductCount: visibleProducts.length || null,
+        visibleProducts,
+        visibleItemCount: variantCaptures.length,
+        visibleItems: variantItems,
+        itemRects: variantItems.map((item) => ({
+          key: item.key,
+          label: item.label,
+          rect: item.rect
+        })),
+        windowSignature: JSON.stringify({
+          categoryKey,
+          variants: variantItems.map((item) => item.key || item.label)
+        }).slice(0, 1800),
+        composite: composite.layout
+      }
+    });
   }
 
-  for (const capture of captures) {
-    capture.stateCount = plannedStates.length || captures.length || null;
-  }
-  warnings.push(...relatedSectionCoverageWarnings(definition, plannedStates, captures));
+  const plannedCategories = categories.map((category) => ({ ...category, sectionKey: definition.key }));
+  warnings.push(...relatedSectionCoverageWarnings(definition, plannedCategories, captures));
 
   return {
     width: maxWidth,
     height: maxHeight,
     captures,
     warnings,
-    expectedCount: plannedStates.length,
+    expectedCount: categories.length,
     capturedCount: captures.length
   };
+}
+
+async function captureShokzCollectionCategoryLongScreenshot(client, definition, category, captureContext) {
+  const viewport = viewportForCaptureContext(captureContext);
+  const viewportWidth = Number(viewport.width || 0) || 393;
+  const viewportHeight = Number(viewport.height || 0) || 852;
+  let scrollInfo = null;
+  let current = null;
+  let clip = null;
+
+  const refresh = async () => {
+    scrollInfo = await prepareFullPage(client, {
+      captureUrl: "https://shokz.com/collections/headphones-accessories",
+      captureMode: "shokz-collection-page",
+      dismissPopups: true
+    });
+    await scrollTo(client, 0);
+    await settlePositionedViewport(client, { delayMs: 180, frames: 2 });
+    current = await readShokzCollectionRelatedState(client, definition, category);
+    if (!current.ok) {
+      throw new Error(current.reason || `Could not read ${category.stateLabel || "collection tab"} state.`);
+    }
+    const metrics = await client.send("Page.getLayoutMetrics");
+    const contentSize = metrics.cssContentSize || metrics.contentSize || {};
+    const pageWidth = Math.max(viewportWidth, Math.ceil(Number(contentSize.width || viewportWidth)));
+    let pageHeight = Math.max(viewportHeight, Math.ceil(Number(contentSize.height || viewportHeight)));
+    if (Number.isFinite(Number(scrollInfo?.reachableHeight))) {
+      pageHeight = Math.min(pageHeight, Math.max(viewportHeight, Math.ceil(Number(scrollInfo.reachableHeight))));
+    }
+    clip = {
+      x: 0,
+      y: 0,
+      width: pageWidth,
+      height: Math.min(pageHeight, 16000),
+      scale: 1
+    };
+  };
+
+  await refresh();
+  const screenshotCapture = await captureScreenshotWithValidation(client, () => ({
+    format: "png",
+    fromSurface: true,
+    captureBeyondViewport: true,
+    clip
+  }), {
+    label: `${definition.key} ${category.stateLabel || category.tabLabel || "collection tab"} full tab`,
+    beforeAttempt: async ({ attempt }) => {
+      if (attempt > 1) {
+        const activation = await activateShokzCollectionTab(client, category);
+        if (!activation.ok) {
+          throw new Error(activation.reason || `Could not reactivate ${category.stateLabel || "collection tab"}.`);
+        }
+        await waitForShokzCollectionTabActivated(client, category);
+        await expandShokzCollectionViewMoreControls(client, {
+          captureMode: "shokz-collection-related-section",
+          dismissPopups: true
+        });
+      }
+      await prepareForScreenshotCapture(client, {
+        rounds: 2,
+        shokzKnownPopups: true,
+        stage: `before Shokz ${definition.sectionLabel} full tab screenshot capture`
+      });
+      await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2 });
+      await dismissObstructions(client, { rounds: 3 });
+      await refresh();
+    }
+  });
+
+  return {
+    buffer: screenshotCapture.buffer,
+    width: Math.round(clip.width),
+    height: Math.round(clip.height),
+    clip: {
+      x: Math.round(clip.x),
+      y: Math.round(clip.y),
+      width: Math.round(clip.width),
+      height: Math.round(clip.height)
+    },
+    current,
+    scrollInfo,
+    captureValidation: screenshotCapture.captureValidation
+  };
+}
+
+async function captureShokzCollectionProductVariantCard(client, definition, state, viewport) {
+  const variantActivation = await activateShokzCollectionProductVariantState(client, state);
+  if (!variantActivation.ok) {
+    return {
+      ok: false,
+      reason: variantActivation.reason || `Could not activate ${state.stateLabel}.`
+    };
+  }
+
+  await sleep(260);
+  await primeLazyImages(client);
+  await waitForRelatedSectionImages(client, definition.key);
+  await prepareForScreenshotCapture(client, {
+    rounds: 2,
+    shokzKnownPopups: true,
+    stage: `before Shokz ${definition.sectionLabel} product variant screenshot capture`
+  });
+  await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2 });
+  await dismissObstructions(client, { rounds: 2 });
+
+  let current = await readShokzCollectionProductVariantState(client, definition, state);
+  if (!current.ok) {
+    return {
+      ok: false,
+      reason: current.reason || `Could not read ${state.stateLabel}.`
+    };
+  }
+
+  let clip = normalizeRelatedClip(current.clip, viewport);
+  if (!clip) {
+    return {
+      ok: false,
+      reason: `Could not compute a valid product-card crop for ${state.stateLabel}.`
+    };
+  }
+
+  try {
+    const screenshotCapture = await captureScreenshotWithValidation(client, () => ({
+      format: "png",
+      fromSurface: true,
+      captureBeyondViewport: true,
+      clip
+    }), {
+      label: `${definition.key} ${state.stateLabel}`,
+      acceptBlankAudit: (blankAudit) => isAcceptableCollectionProductVariantBlankAudit(blankAudit, current),
+      beforeAttempt: async ({ attempt }) => {
+        if (attempt > 1) {
+          const retryActivation = await activateShokzCollectionProductVariantState(client, state);
+          if (!retryActivation.ok) {
+            throw new Error(retryActivation.reason || `Could not reactivate ${state.stateLabel}.`);
+          }
+          await sleep(360);
+          await primeLazyImages(client);
+        }
+        await prepareForScreenshotCapture(client, {
+          rounds: 2,
+          shokzKnownPopups: true,
+          stage: `retrying Shokz ${definition.sectionLabel} product variant screenshot capture`
+        });
+        await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2 });
+        await dismissObstructions(client, { rounds: 2 });
+        current = await readShokzCollectionProductVariantState(client, definition, state);
+        if (!current.ok) {
+          throw new Error(current.reason || `Could not reread ${state.stateLabel}.`);
+        }
+        clip = normalizeRelatedClip(current.clip, viewport);
+        if (!clip) {
+          throw new Error(`Could not compute a valid product-card crop for ${state.stateLabel}.`);
+        }
+      }
+    });
+
+    return {
+      ok: true,
+      buffer: screenshotCapture.buffer,
+      width: Math.round(clip.width),
+      height: Math.round(clip.height),
+      state,
+      current,
+      clip: {
+        x: Math.round(clip.x),
+        y: Math.round(clip.y),
+        width: Math.round(clip.width),
+        height: Math.round(clip.height)
+      },
+      captureValidation: screenshotCapture.captureValidation
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error.message
+    };
+  }
+}
+
+function composeShokzCollectionTabComposite({ longCapture, variantCaptures, viewport = {} }) {
+  const longImage = decodePng(longCapture.buffer);
+  const cardGap = 18;
+  const rowGap = 18;
+  const gutter = 24;
+  const outerPad = 24;
+  const minCardWidth = Math.max(220, Math.round((Number(viewport.width || 0) || longImage.width || 393) * 0.62));
+  const cards = (variantCaptures || [])
+    .map((capture, index) => {
+      try {
+        const image = decodePng(capture.buffer);
+        return {
+          capture,
+          image,
+          index,
+          productKey: capture.state?.productKey || `product-${index + 1}`,
+          productIndex: Number(capture.state?.productIndex || 0) || index + 1,
+          y: Math.max(0, Math.round(Number(capture.clip?.y || 0))),
+          width: image.width,
+          height: image.height
+        };
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+  const groups = collectionCompositeCardGroups(cards);
+  const cardSlotWidth = Math.max(minCardWidth, ...cards.map((card) => card.width), 0);
+  let nextY = 0;
+  let maxColumns = 0;
+  for (const group of groups) {
+    group.cards.sort((a, b) =>
+      Number(a.capture.state?.stateIndex || a.index || 0) - Number(b.capture.state?.stateIndex || b.index || 0) ||
+      String(a.capture.state?.variantKey || "").localeCompare(String(b.capture.state?.variantKey || ""), "en")
+    );
+    group.y = Math.max(Math.round(group.sourceY), nextY);
+    group.height = Math.max(...group.cards.map((card) => card.height), 1);
+    nextY = group.y + group.height + rowGap;
+    maxColumns = Math.max(maxColumns, group.cards.length);
+  }
+
+  const rightWidth = maxColumns
+    ? maxColumns * cardSlotWidth + Math.max(0, maxColumns - 1) * cardGap
+    : 0;
+  const width = Math.max(1, longImage.width + (rightWidth ? gutter + rightWidth + outerPad : 0));
+  const height = Math.max(longImage.height, nextY + outerPad);
+  const rgba = new Uint8Array(width * height * 4);
+  fillRgba(rgba, [246, 248, 248, 255]);
+  copyRgbaImage({
+    source: longImage.rgba,
+    sourceWidth: longImage.width,
+    sourceHeight: longImage.height,
+    target: rgba,
+    targetWidth: width,
+    targetHeight: height,
+    x: 0,
+    y: 0
+  });
+
+  const mainWidth = longImage.width;
+  const variants = [];
+  for (const group of groups) {
+    for (const [columnIndex, card] of group.cards.entries()) {
+      const x = mainWidth + gutter + columnIndex * (cardSlotWidth + cardGap) + Math.max(0, Math.floor((cardSlotWidth - card.width) / 2));
+      const y = group.y;
+      copyRgbaImage({
+        source: card.image.rgba,
+        sourceWidth: card.image.width,
+        sourceHeight: card.image.height,
+        target: rgba,
+        targetWidth: width,
+        targetHeight: height,
+        x,
+        y
+      });
+      card.capture.compositeRect = {
+        x,
+        y,
+        width: card.image.width,
+        height: card.image.height
+      };
+      variants.push({
+        productKey: card.capture.state?.productKey || null,
+        productLabel: card.capture.state?.productLabel || null,
+        productIndex: card.capture.state?.productIndex || null,
+        variantKey: card.capture.state?.variantKey || null,
+        variantLabel: card.capture.state?.variantLabel || null,
+        rect: card.capture.compositeRect,
+        sourceClip: card.capture.clip || null
+      });
+    }
+  }
+
+  return {
+    buffer: encodePng(width, height, rgba),
+    width,
+    height,
+    layout: {
+      kind: "collection-tab-composite",
+      mainWidth,
+      mainHeight: longImage.height,
+      gutter,
+      cardGap,
+      rowGap,
+      cardSlotWidth,
+      variantCount: cards.length,
+      productCount: groups.length,
+      variants
+    }
+  };
+}
+
+function collectionCompositeCardGroups(cards) {
+  const groups = new Map();
+  for (const card of cards) {
+    const key = card.productKey || `product-${card.productIndex}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        productIndex: card.productIndex,
+        sourceY: card.y,
+        cards: []
+      });
+    }
+    const group = groups.get(key);
+    group.sourceY = Math.min(group.sourceY, card.y);
+    group.productIndex = Math.min(group.productIndex, card.productIndex);
+    group.cards.push(card);
+  }
+  return [...groups.values()].sort((a, b) =>
+    Number(a.productIndex || 0) - Number(b.productIndex || 0) ||
+    Number(a.sourceY || 0) - Number(b.sourceY || 0) ||
+    String(a.key || "").localeCompare(String(b.key || ""), "en")
+  );
+}
+
+function collectionProductsFromVariantCaptures(variantCaptures, plan = {}) {
+  const products = new Map();
+  for (const item of variantCaptures || []) {
+    const state = item.state || {};
+    const key = state.productKey || state.productLabel || `product-${products.size + 1}`;
+    if (!products.has(key)) {
+      products.set(key, {
+        key,
+        label: state.productLabel || key,
+        productKey: state.productKey || null,
+        productLabel: state.productLabel || null,
+        productIndex: state.productIndex || products.size + 1,
+        variantCount: 0
+      });
+    }
+    products.get(key).variantCount += 1;
+  }
+  if (!products.size && Array.isArray(plan.visibleProducts)) {
+    return plan.visibleProducts;
+  }
+  return [...products.values()].sort((a, b) =>
+    Number(a.productIndex || 0) - Number(b.productIndex || 0) ||
+    String(a.label || "").localeCompare(String(b.label || ""), "zh-CN")
+  );
+}
+
+function fillRgba(rgba, color) {
+  for (let index = 0; index < rgba.length; index += 4) {
+    rgba[index] = color[0];
+    rgba[index + 1] = color[1];
+    rgba[index + 2] = color[2];
+    rgba[index + 3] = color[3];
+  }
+}
+
+function copyRgbaImage({ source, sourceWidth, sourceHeight, target, targetWidth, targetHeight, x, y }) {
+  const targetX = Math.max(0, Math.floor(x));
+  const targetY = Math.max(0, Math.floor(y));
+  const copyWidth = Math.min(sourceWidth, targetWidth - targetX);
+  const copyHeight = Math.min(sourceHeight, targetHeight - targetY);
+  if (copyWidth <= 0 || copyHeight <= 0) {
+    return;
+  }
+  for (let row = 0; row < copyHeight; row += 1) {
+    const sourceStart = row * sourceWidth * 4;
+    const sourceEnd = sourceStart + copyWidth * 4;
+    const targetStart = ((targetY + row) * targetWidth + targetX) * 4;
+    target.set(source.subarray(sourceStart, sourceEnd), targetStart);
+  }
 }
 
 async function readShokzCollectionProductVariantPlan(client, definition, category, captureContext = {}) {
@@ -12748,6 +13113,7 @@ export const __testOnly = {
   restorePageMotion,
   isAcceptableTrailingSegmentBlankAudit,
   isViewMoreLabel,
+  composeShokzCollectionTabComposite,
   shouldUseDedicatedViewMoreExpansion,
   shouldUseDirectFullPageClipCapture
 };

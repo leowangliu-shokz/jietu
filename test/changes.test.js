@@ -133,6 +133,51 @@ test("does not compare different collection product variant combinations", async
   assert.equal(changes.length, 0);
 });
 
+test("matches collection tab composites by category when state index changes", async () => {
+  const before = collectionCompositeShot("collection-all-before.png", {
+    stateIndex: 1,
+    sectionState: { text: "All OpenFit Pro $249.95" }
+  });
+  const after = collectionCompositeShot("collection-all-after.png", {
+    stateIndex: 6,
+    sectionState: { text: "All OpenFit Pro $239.95" }
+  });
+
+  const changes = await compareSnapshots([
+    snapshot("snap-1", "2026-05-03T08:00:00.000Z", [before]),
+    snapshot("snap-2", "2026-05-03T09:00:00.000Z", [after])
+  ], { writeDiffImages: false });
+
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].location.sectionKey, "collection-tabs");
+  assert.equal(changes[0].location.categoryKey, "all");
+  assert.equal(changes[0].location.productKey, null);
+  assert.equal(changes[0].textChange.beforeFragment, "$249.95");
+  assert.equal(changes[0].textChange.afterFragment, "$239.95");
+});
+
+test("does not compare different collection tab composite categories", async () => {
+  const before = collectionCompositeShot("collection-all-before.png", {
+    categoryKey: "all",
+    categoryLabel: "All",
+    sectionState: { text: "All OpenFit Pro $249.95" }
+  });
+  const after = collectionCompositeShot("collection-sports-after.png", {
+    categoryKey: "sports",
+    categoryLabel: "Sports",
+    tabIndex: 2,
+    stateIndex: 2,
+    sectionState: { text: "Sports OpenRun Pro 2 $179.95" }
+  });
+
+  const changes = await compareSnapshots([
+    snapshot("snap-1", "2026-05-03T08:00:00.000Z", [before]),
+    snapshot("snap-2", "2026-05-03T09:00:00.000Z", [after])
+  ], { writeDiffImages: false });
+
+  assert.equal(changes.length, 0);
+});
+
 test("skips low-confidence captures as future compare baselines", async () => {
   const before = snapshot("snap-1", "2026-05-02T10:00:00.000Z", [{
     file: "missing-before.png",
@@ -803,6 +848,49 @@ function collectionVariantShot(file, overrides = {}) {
     imageUrl: `/archive/${file}`,
     width: overrides.width || 120,
     height: overrides.height || 80,
+    ...overrides,
+    sectionState
+  };
+}
+
+function collectionCompositeShot(file, overrides = {}) {
+  const categoryKey = overrides.categoryKey || "all";
+  const categoryLabel = overrides.categoryLabel || "All";
+  const sectionState = {
+    text: "All OpenFit Pro $249.95",
+    textBlocks: [{ text: "All OpenFit Pro $249.95", x: 10, y: 8, width: 220, height: 24 }],
+    categoryKey,
+    categoryLabel,
+    composite: {
+      kind: "collection-tab-composite",
+      mainWidth: 393,
+      variantCount: 4,
+      productCount: 2
+    },
+    ...(overrides.sectionState || {})
+  };
+  return {
+    kind: "collection-tab-composite",
+    sectionKey: "collection-tabs",
+    sectionLabel: "Collection Tabs",
+    sectionTitle: "Collection Tabs",
+    tabLabel: categoryLabel,
+    tabIndex: Object.hasOwn(overrides, "tabIndex") ? overrides.tabIndex : 1,
+    stateIndex: Object.hasOwn(overrides, "stateIndex") ? overrides.stateIndex : 1,
+    stateLabel: `${categoryLabel} Product Map`,
+    label: `${categoryLabel} Product Map`,
+    categoryKey,
+    categoryLabel,
+    productKey: null,
+    productLabel: null,
+    productIndex: null,
+    variantKey: null,
+    variantLabel: null,
+    file,
+    imageUrl: `/archive/${file}`,
+    width: overrides.width || 120,
+    height: overrides.height || 80,
+    composite: sectionState.composite,
     ...overrides,
     sectionState
   };
