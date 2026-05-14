@@ -317,11 +317,18 @@ async function driveCapture(client, url, outputPath, options) {
 
   let scrollInfo = null;
   if (options.fullPage && options.lazyLoadScroll !== false) {
-    stage = "scrolling to trigger lazy content";
-    scrollInfo = await prepareFullPage(client, {
-      ...options,
-      captureUrl: url
-    });
+    stage = shouldUseDedicatedViewMoreExpansion(options)
+      ? "preparing expanded comparison full-page capture"
+      : "scrolling to trigger lazy content";
+    scrollInfo = shouldUseDedicatedViewMoreExpansion(options)
+      ? await prepareExpandedShokzComparisonFullPage(client, {
+        ...options,
+        captureUrl: url
+      })
+      : await prepareFullPage(client, {
+        ...options,
+        captureUrl: url
+      });
     await verifyCurrentUrl(client, url, "after lazy-load scrolling", urlCheck);
     if (shouldGuardShokzSearchOverlay(url, viewport, options)) {
       await ensureShokzSearchOverlayClosed(client, "after lazy-load scrolling");
@@ -339,6 +346,29 @@ async function driveCapture(client, url, outputPath, options) {
     }
   }
 
+  if (options.fullPage && shouldUseDedicatedViewMoreExpansion(options)) {
+    stage = "expanding comparison page tech specs";
+    const expandedState = await ensureShokzComparisonPageExpandedForFullPageCapture(client, {
+      captureUrl: url,
+      captureMode: options.captureMode,
+      dismissPopups: options.dismissPopups
+    });
+    if (expandedState) {
+      const expandedHeight = Math.max(0, Number(expandedState.height || 0));
+      const reachableHeight = Math.max(
+        expandedHeight,
+        Number(scrollInfo?.reachableHeight || 0),
+        Number(scrollInfo?.height || 0)
+      );
+      scrollInfo = {
+        ...(scrollInfo || {}),
+        ...expandedState,
+        reachableHeight
+      };
+    }
+    await verifyCurrentUrl(client, url, "after expanding comparison page tech specs", urlCheck);
+  }
+
   stage = "reading page title";
   const titleResult = await readPageTitle(client);
 
@@ -348,7 +378,10 @@ async function driveCapture(client, url, outputPath, options) {
   const pageWidth = Math.max(viewport.width, Math.ceil(contentSize.width || viewport.width));
   let pageHeight = Math.max(viewport.height, Math.ceil(contentSize.height || viewport.height));
   if (options.fullPage && Number.isFinite(scrollInfo?.reachableHeight)) {
-    pageHeight = Math.min(pageHeight, Math.max(viewport.height, Math.ceil(scrollInfo.reachableHeight)));
+    const reachableHeight = Math.max(viewport.height, Math.ceil(scrollInfo.reachableHeight));
+    pageHeight = shouldUseDedicatedViewMoreExpansion(options)
+      ? Math.max(pageHeight, reachableHeight)
+      : Math.min(pageHeight, reachableHeight);
   }
   const maxHeight = options.maxFullPageHeight || 16000;
   const clipHeight = options.fullPage ? Math.min(pageHeight, maxHeight) : viewport.height;
@@ -363,35 +396,55 @@ async function driveCapture(client, url, outputPath, options) {
     if (shouldUseDirectFullPageClipCapture(options)) {
       await freezePageMotion(client);
       try {
-        const clipCapture = await captureFullPageClipScreenshot(client, outputPath, {
-          width: clipWidth,
-          height: clipHeight,
-          label: "Shokz collection full-page screenshot",
-          beforeAttempt: async ({ attempt }) => {
-            if (attempt > 1) {
-              await materializeFullPageContent(client);
+        const clipCapture = shouldUseDedicatedViewMoreExpansion(options)
+          ? await captureExpandedShokzComparisonFullPageScreenshot(client, outputPath, {
+            width: clipWidth,
+            height: clipHeight,
+            viewportHeight: viewport.height,
+            maxHeight,
+            guardSearchOverlay: guardShokzSearchOverlay,
+            shokzKnownPopups: cleanShokzKnownPopups
+          })
+          : await captureFullPageClipScreenshot(client, outputPath, {
+            width: clipWidth,
+            height: clipHeight,
+            label: "Shokz collection full-page screenshot",
+            beforeAttempt: async ({ attempt }) => {
+              if (attempt > 1) {
+                await materializeFullPageContent(client);
+              }
+              await prepareForScreenshotCapture(client, {
+                rounds: viewport.mobile ? 5 : 2,
+                shokzKnownPopups: cleanShokzKnownPopups,
+                guardSearchOverlay: guardShokzSearchOverlay,
+                stage: viewport.mobile
+                  ? "before mobile full-page clip screenshot capture"
+                  : "before full-page clip screenshot capture"
+              });
+              if (guardShokzSearchOverlay) {
+                await ensureShokzSearchOverlayClosed(client, "before full-page clip screenshot capture");
+              }
+              await scrollTo(client, 0);
+              await settlePositionedViewport(client, {
+                delayMs: attempt > 1 ? 280 : 180,
+                frames: 2
+              });
             }
-            await prepareForScreenshotCapture(client, {
-              rounds: viewport.mobile ? 5 : 2,
-              shokzKnownPopups: cleanShokzKnownPopups,
-              guardSearchOverlay: guardShokzSearchOverlay,
-              stage: viewport.mobile
-                ? "before mobile full-page clip screenshot capture"
-                : "before full-page clip screenshot capture"
-            });
-            if (guardShokzSearchOverlay) {
-              await ensureShokzSearchOverlayClosed(client, "before full-page clip screenshot capture");
-            }
-            await scrollTo(client, 0);
-            await settlePositionedViewport(client, {
-              delayMs: attempt > 1 ? 280 : 180,
-              frames: 2
-            });
-          }
-        });
+          });
         captureBuffer = clipCapture.buffer;
         captureValidation = clipCapture.captureValidation;
-        captureHeight = clipHeight;
+        captureHeight = clipCapture.height || clipHeight;
+        pageHeight = Math.max(pageHeight, captureHeight);
+        if (clipCapture.pageState) {
+          scrollInfo = {
+            ...(scrollInfo || {}),
+            ...clipCapture.pageState,
+            reachableHeight: Math.max(
+              Number(scrollInfo?.reachableHeight || 0),
+              Number(clipCapture.pageState.height || 0)
+            )
+          };
+        }
       } finally {
         await restorePageMotion(client);
       }
@@ -559,6 +612,10 @@ function shouldUseDirectFullPageClipCapture(options = {}) {
   const captureMode = String(options.captureMode || "").trim();
   return captureMode === "shokz-collection-page" ||
     captureMode === "shokz-comparison-page";
+}
+
+function shouldUseDedicatedViewMoreExpansion(options = {}) {
+  return String(options.captureMode || "").trim() === "shokz-comparison-page";
 }
 
 function isViewMoreLabel(value) {
@@ -11908,6 +11965,7 @@ export const __testOnly = {
   restorePageMotion,
   isAcceptableTrailingSegmentBlankAudit,
   isViewMoreLabel,
+  shouldUseDedicatedViewMoreExpansion,
   shouldUseDirectFullPageClipCapture
 };
 
@@ -12177,13 +12235,28 @@ function copySegment(image, target, targetWidth, targetHeight, targetY, maxRows 
 async function prepareFullPage(client, options) {
   const stepDelay = options.scrollStepMs ?? 350;
   const maxHeight = options.maxFullPageHeight || 16000;
+  const useDedicatedViewMoreExpansion = shouldUseDedicatedViewMoreExpansion(options);
+  if (useDedicatedViewMoreExpansion) {
+    await expandDedicatedViewMoreControls(client, {
+      captureUrl: options.captureUrl,
+      captureMode: options.captureMode,
+      dismissPopups: options.dismissPopups,
+      clickDelayMs: stepDelay
+    });
+    await scrollTo(client, 0);
+    await sleep(Math.max(stepDelay, 900));
+  }
   await materializeFullPageContent(client);
-  await expandVisibleViewMoreControls(client, {
-    captureUrl: options.captureUrl,
-    captureMode: options.captureMode,
-    dismissPopups: options.dismissPopups,
-    clickDelayMs: stepDelay
-  });
+  if (!useDedicatedViewMoreExpansion) {
+    await expandVisibleViewMoreControls(client, {
+      captureUrl: options.captureUrl,
+      captureMode: options.captureMode,
+      dismissPopups: options.dismissPopups,
+      clickDelayMs: stepDelay
+    });
+  } else {
+    await sleep(Math.max(220, Math.floor(stepDelay * 0.7)));
+  }
 
   let state = await getPageState(client);
   let y = 0;
@@ -12197,12 +12270,14 @@ async function prepareFullPage(client, options) {
   while (stableRounds < 3 && scrolls < 160 && Date.now() - startedAt < 90000) {
     await scrollTo(client, y);
     await sleep(stepDelay);
-    await expandVisibleViewMoreControls(client, {
-      captureUrl: options.captureUrl,
-      captureMode: options.captureMode,
-      dismissPopups: options.dismissPopups,
-      clickDelayMs: stepDelay
-    });
+    if (!useDedicatedViewMoreExpansion) {
+      await expandVisibleViewMoreControls(client, {
+        captureUrl: options.captureUrl,
+        captureMode: options.captureMode,
+        dismissPopups: options.dismissPopups,
+        clickDelayMs: stepDelay
+      });
+    }
     state = await getPageState(client);
     scrolls += 1;
 
@@ -12233,12 +12308,14 @@ async function prepareFullPage(client, options) {
   await scrollTo(client, 0);
   await sleep(Math.max(stepDelay, 1200));
   await materializeFullPageContent(client);
-  await expandVisibleViewMoreControls(client, {
-    captureUrl: options.captureUrl,
-    captureMode: options.captureMode,
-    dismissPopups: options.dismissPopups,
-    clickDelayMs: stepDelay
-  });
+  if (!useDedicatedViewMoreExpansion) {
+    await expandVisibleViewMoreControls(client, {
+      captureUrl: options.captureUrl,
+      captureMode: options.captureMode,
+      dismissPopups: options.dismissPopups,
+      clickDelayMs: stepDelay
+    });
+  }
   state = await getPageState(client);
 
   return {
@@ -12251,6 +12328,7 @@ async function prepareFullPage(client, options) {
 async function settleFullPageBottom(client, state, options = {}) {
   const stepDelay = Number(options.stepDelay) || 350;
   const maxHeight = Math.max(1000, Number(options.maxHeight) || 16000);
+  const useDedicatedViewMoreExpansion = shouldUseDedicatedViewMoreExpansion(options);
   let currentState = state && typeof state === "object" ? state : await getPageState(client);
   let bestState = currentState;
   let stableRounds = 0;
@@ -12271,12 +12349,14 @@ async function settleFullPageBottom(client, state, options = {}) {
     await scrollTo(client, targetY);
     await sleep(settleDelay);
     await materializeFullPageContent(client);
-    await expandVisibleViewMoreControls(client, {
-      captureUrl: options.captureUrl,
-      captureMode: options.captureMode,
-      dismissPopups: options.dismissPopups,
-      clickDelayMs: stepDelay
-    });
+    if (!useDedicatedViewMoreExpansion) {
+      await expandVisibleViewMoreControls(client, {
+        captureUrl: options.captureUrl,
+        captureMode: options.captureMode,
+        dismissPopups: options.dismissPopups,
+        clickDelayMs: stepDelay
+      });
+    }
     await sleep(postMaterializeDelay);
     currentState = await getPageState(client);
     bestState = currentState;
@@ -12293,6 +12373,415 @@ async function settleFullPageBottom(client, state, options = {}) {
   return bestState;
 }
 
+async function expandDedicatedViewMoreControls(client, options = {}) {
+  if (!shouldUseDedicatedViewMoreExpansion(options)) {
+    return { clickedCount: 0, clicked: [] };
+  }
+
+  const clicked = [];
+  const clickDelayMs = Math.max(180, Math.min(1200, Number(options.clickDelayMs) || 420));
+  const maxPasses = Math.max(1, Math.min(3, Number(options.maxPasses) || 2));
+
+  for (let pass = 0; pass < maxPasses; pass += 1) {
+    const result = await expandShokzComparisonTechSpecsViewMore(client);
+    if (!result?.clicked) {
+      break;
+    }
+    clicked.push(...(Array.isArray(result.clickedLabels) ? result.clickedLabels : []));
+    await waitForShokzComparisonTechSpecsExpanded(client, {
+      previousHeight: result.beforeHeight,
+      timeoutMs: Math.max(2200, clickDelayMs * 6)
+    });
+    if (options.dismissPopups !== false) {
+      if (shouldCleanShokzKnownPopups(options.captureUrl, options)) {
+        await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2 });
+      } else {
+        await dismissObstructions(client, { rounds: 2 });
+      }
+    }
+    await sleep(Math.max(220, Math.floor(clickDelayMs * 0.8)));
+  }
+
+  return {
+    clickedCount: clicked.length,
+    clicked
+  };
+}
+
+async function expandShokzComparisonTechSpecsViewMore(client) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const interactiveSelector = "button, a, [role='button'], summary, [tabindex], .show_more, [class*='show-more'], [class*='show_more'], .viewmore-gdbox, [class*='viewmore']";
+      const clean = (value) => String(value || "")
+        .replace(/[\\u00a0\\s]+/g, " ")
+        .replace(/[\\u25bc\\u25be\\u25bf\\u2228\\u203a\\u00bb>]+/g, " ")
+        .trim();
+      const isViewMoreLabel = (value) => /^view more\\b/i.test(clean(value));
+      const isViewLessLabel = (value) => /^view less\\b/i.test(clean(value));
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          rect.bottom > 0 &&
+          rect.right > 0 &&
+          rect.left < window.innerWidth &&
+          rect.top < window.innerHeight &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const readLabel = (element) => clean(
+        element?.innerText ||
+        element?.textContent ||
+        element?.getAttribute?.("aria-label") ||
+        element?.getAttribute?.("title")
+      );
+      const heading = Array.from(document.querySelectorAll("h2, h3, [role='heading']"))
+        .find((node) => clean(node.textContent) === "All Tech Specs") || null;
+      if (!heading) {
+        return { ok: false, clicked: false, reason: "Could not locate All Tech Specs." };
+      }
+
+      heading.scrollIntoView({ block: "center", inline: "center" });
+      const headingRect = heading.getBoundingClientRect();
+      const markers = Array.from(document.querySelectorAll(".viewmore-gdbox, [class*='viewmore'], button, a, [role='button'], summary, div, span, p, h1, h2, h3, h4"))
+        .map((element) => ({ element, label: readLabel(element) }))
+        .filter(({ label }) => label);
+      if (markers.some(({ element, label }) => visible(element) && isViewLessLabel(label))) {
+        return { ok: true, clicked: false, expanded: true, clickedLabels: [] };
+      }
+
+      const seenTargets = new Set();
+      const candidates = markers
+        .filter(({ label }) => isViewMoreLabel(label))
+        .map(({ element, label }) => {
+          const clickTarget = element.matches(interactiveSelector)
+            ? element
+            : element.closest(interactiveSelector) || element;
+          return {
+            element,
+            clickTarget,
+            label,
+            rect: element.getBoundingClientRect(),
+            clickRect: clickTarget?.getBoundingClientRect?.() || element.getBoundingClientRect()
+          };
+        })
+        .filter(({ element, clickTarget, rect, clickRect }) => {
+          if (!clickTarget || !visible(element) || !visible(clickTarget)) return false;
+          if (String(clickTarget.getAttribute("aria-expanded") || element.getAttribute("aria-expanded") || "").toLowerCase() === "true") {
+            return false;
+          }
+          if (clickTarget.dataset.pageShotViewMoreClicked === "true" || element.dataset.pageShotViewMoreClicked === "true") {
+            return false;
+          }
+          if (clickRect.top + 180 < headingRect.top) return false;
+          if (rect.width > window.innerWidth * 0.96 || rect.height > 180) return false;
+          if (clickRect.bottom < 12 || clickRect.top > window.innerHeight - 12) return false;
+          if (seenTargets.has(clickTarget)) return false;
+          seenTargets.add(clickTarget);
+          return true;
+        })
+        .sort((a, b) =>
+          Math.abs(a.clickRect.top - headingRect.bottom) - Math.abs(b.clickRect.top - headingRect.bottom) ||
+          a.clickRect.top - b.clickRect.top ||
+          a.clickRect.left - b.clickRect.left
+        );
+
+      if (!candidates.length) {
+        return { ok: true, clicked: false, expanded: false, clickedLabels: [] };
+      }
+
+      const beforeHeight = Math.max(
+        Number(document.documentElement?.scrollHeight || 0),
+        Number(document.body?.scrollHeight || 0)
+      );
+      const clickedLabels = [];
+      for (const { element, clickTarget, label } of candidates) {
+        element.dataset.pageShotViewMoreClicked = "true";
+        clickTarget.dataset.pageShotViewMoreClicked = "true";
+        clickTarget.scrollIntoView({ block: "center", inline: "center" });
+        if (typeof clickTarget.click === "function") {
+          clickTarget.click();
+        } else {
+          clickTarget.dispatchEvent(new MouseEvent("click", {
+            bubbles: true,
+            cancelable: true,
+            view: window
+          }));
+        }
+        clickedLabels.push(label);
+      }
+
+      return {
+        ok: true,
+        clicked: clickedLabels.length > 0,
+        expanded: false,
+        clickedLabels,
+        beforeHeight
+      };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
+  return result?.result?.value || {
+    ok: false,
+    clicked: false,
+    clickedLabels: [],
+    reason: "Could not expand comparison page View More."
+  };
+}
+
+async function waitForShokzComparisonTechSpecsExpanded(client, options = {}) {
+  const timeoutMs = Math.max(400, Math.min(6000, Number(options.timeoutMs) || 2600));
+  const previousHeight = Math.max(0, Number(options.previousHeight || 0));
+  const deadline = Date.now() + timeoutMs;
+  let lastState = null;
+
+  while (Date.now() < deadline) {
+    lastState = await readShokzComparisonTechSpecsExpansionState(client);
+    if (lastState?.ok) {
+      const height = Math.max(0, Number(lastState.height || 0));
+      if (lastState.expanded || (previousHeight > 0 && height > previousHeight + 60)) {
+        return lastState;
+      }
+    }
+    await sleep(180);
+  }
+
+  return lastState || {
+    ok: false,
+    expanded: false,
+    height: previousHeight
+  };
+}
+
+async function readShokzComparisonTechSpecsExpansionState(client) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const clean = (value) => String(value || "")
+        .replace(/[\\u00a0\\s]+/g, " ")
+        .replace(/[\\u25bc\\u25be\\u25bf\\u2228\\u203a\\u00bb>]+/g, " ")
+        .trim();
+      const isViewMoreLabel = (value) => /^view more\\b/i.test(clean(value));
+      const isViewLessLabel = (value) => /^view less\\b/i.test(clean(value));
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          rect.bottom > 0 &&
+          rect.right > 0 &&
+          rect.left < window.innerWidth &&
+          rect.top < window.innerHeight &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const readLabel = (element) => clean(
+        element?.innerText ||
+        element?.textContent ||
+        element?.getAttribute?.("aria-label") ||
+        element?.getAttribute?.("title")
+      );
+      const heading = Array.from(document.querySelectorAll("h2, h3, [role='heading']"))
+        .find((node) => clean(node.textContent) === "All Tech Specs") || null;
+      if (!heading) {
+        return {
+          ok: false,
+          expanded: false,
+          height: Math.max(
+            Number(document.documentElement?.scrollHeight || 0),
+            Number(document.body?.scrollHeight || 0)
+          )
+        };
+      }
+      const headingRect = heading.getBoundingClientRect();
+      const markers = Array.from(document.querySelectorAll(".viewmore-gdbox, [class*='viewmore'], button, a, [role='button'], summary, div, span, p, h1, h2, h3, h4"))
+        .map((element) => ({ element, label: readLabel(element) }))
+        .filter(({ element, label }) =>
+          label &&
+          (isViewMoreLabel(label) || isViewLessLabel(label)) &&
+          element.getBoundingClientRect().top + 180 >= headingRect.top
+        );
+      const visibleViewMoreCount = markers.filter(({ element, label }) => visible(element) && isViewMoreLabel(label)).length;
+      const visibleViewLessCount = markers.filter(({ element, label }) => visible(element) && isViewLessLabel(label)).length;
+      const totalViewMoreCount = markers.filter(({ label }) => isViewMoreLabel(label)).length;
+      const height = Math.max(
+        Number(document.documentElement?.scrollHeight || 0),
+        Number(document.body?.scrollHeight || 0)
+      );
+      return {
+        ok: true,
+        expanded: visibleViewLessCount > 0 || (totalViewMoreCount > 0 && visibleViewMoreCount === 0),
+        height,
+        visibleViewMoreCount,
+        visibleViewLessCount,
+        totalViewMoreCount
+      };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
+  return result?.result?.value || {
+    ok: false,
+    expanded: false,
+    height: 0
+  };
+}
+
+async function ensureShokzComparisonPageExpandedForFullPageCapture(client, options = {}) {
+  if (!shouldUseDedicatedViewMoreExpansion(options)) {
+    return null;
+  }
+
+  await expandDedicatedViewMoreControls(client, options);
+  await scrollTo(client, 0);
+  await settlePositionedViewport(client, {
+    delayMs: 420,
+    frames: 2
+  });
+  await sleep(900);
+  return getPageState(client);
+}
+
+async function prepareExpandedShokzComparisonFullPage(client, options = {}) {
+  const stepDelay = options.scrollStepMs ?? 350;
+  const maxHeight = options.maxFullPageHeight || 16000;
+  await expandDedicatedViewMoreControls(client, options);
+  await scrollTo(client, 0);
+  await sleep(Math.max(stepDelay, 1200));
+
+  let state = await getPageState(client);
+  let y = 0;
+  let lastHeight = Math.max(0, Number(state.height || 0));
+  let stableRounds = 0;
+  let scrolls = 0;
+  const step = Math.max(360, Math.min(1400, Math.floor((state.viewportHeight || 1000) * 0.65)));
+  const maxY = Math.min(maxHeight, 60000);
+  const startedAt = Date.now();
+
+  while (stableRounds < 2 && scrolls < 120 && Date.now() - startedAt < 90000) {
+    await scrollTo(client, y);
+    await sleep(stepDelay);
+    state = await getPageState(client);
+    scrolls += 1;
+
+    const currentHeight = Math.max(0, Number(state.height || 0));
+    if (currentHeight <= lastHeight && y + viewportHeightForState(state) >= currentHeight - 8) {
+      stableRounds += 1;
+    } else {
+      stableRounds = 0;
+    }
+
+    lastHeight = Math.max(lastHeight, currentHeight);
+    y += step;
+    if (y > Math.min(currentHeight, maxY)) {
+      y = currentHeight;
+    }
+  }
+
+  await scrollTo(client, 0);
+  await sleep(Math.max(stepDelay, 1200));
+  state = await getPageState(client);
+
+  return {
+    ...state,
+    scrolls,
+    reachableHeight: Math.max(lastHeight, Number(state.height || 0))
+  };
+}
+
+async function captureExpandedShokzComparisonFullPageScreenshot(client, outputPath, options = {}) {
+  await triggerShokzComparisonTechSpecsViewMoreExact(client);
+  await sleep(2600);
+  await scrollTo(client, 0);
+  await settlePositionedViewport(client, {
+    delayMs: 1400,
+    frames: 2
+  });
+
+  const pageState = await getPageState(client);
+  const clipWidth = Math.max(1, Math.ceil(Number(options.width || 0) || 393));
+  const clipHeight = Math.min(
+    Math.max(Number(options.viewportHeight || 0) || 852, Math.ceil(Number(pageState.height || 0) || Number(options.height || 0) || 852)),
+    Math.max(1000, Number(options.maxHeight || 0) || 16000)
+  );
+
+  const screenshotCapture = await captureScreenshotWithValidation(client, () => ({
+    format: "png",
+    fromSurface: true,
+    captureBeyondViewport: true,
+    clip: {
+      x: 0,
+      y: 0,
+      width: clipWidth,
+      height: clipHeight,
+      scale: 1
+    }
+  }), {
+    label: "Shokz comparison full-page screenshot",
+    beforeAttempt: async ({ attempt }) => {
+      if (attempt > 1) {
+        await triggerShokzComparisonTechSpecsViewMoreExact(client);
+        await sleep(2600);
+      }
+      await prepareForScreenshotCapture(client, {
+        rounds: 2,
+        shokzKnownPopups: options.shokzKnownPopups,
+        dismissObstructions: false,
+        guardSearchOverlay: options.guardSearchOverlay,
+        stage: "before comparison full-page clip screenshot capture"
+      });
+      if (options.guardSearchOverlay) {
+        await ensureShokzSearchOverlayClosed(client, "before comparison full-page clip screenshot capture");
+      }
+      await scrollTo(client, 0);
+      await settlePositionedViewport(client, {
+        delayMs: attempt > 1 ? 1400 : 1200,
+        frames: 2
+      });
+    }
+  });
+  await fs.writeFile(outputPath, screenshotCapture.buffer);
+
+  return {
+    buffer: screenshotCapture.buffer,
+    captureValidation: screenshotCapture.captureValidation,
+    height: clipHeight,
+    pageState: {
+      ...pageState,
+      reachableHeight: clipHeight
+    }
+  };
+}
+
+async function triggerShokzComparisonTechSpecsViewMoreExact(client) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const clean = (value) => String(value || "")
+        .replace(/[\\u00a0\\s]+/g, " ")
+        .replace(/[\\u25bc\\u25be\\u25bf\\u2228\\u203a\\u00bb>]+/g, " ")
+        .trim();
+      const heading = Array.from(document.querySelectorAll("h2, h3, [role='heading']"))
+        .find((node) => clean(node.textContent) === "All Tech Specs") || null;
+      if (!heading) {
+        return { ok: false, reason: "Could not locate All Tech Specs." };
+      }
+      heading.scrollIntoView({ block: "center", inline: "center" });
+      const button = Array.from(document.querySelectorAll(".viewmore-gdbox, [class*='viewmore']"))
+        .find((node) => clean(node.innerText || node.textContent || "") === "View More") || null;
+      if (!button) {
+        return { ok: false, reason: "Could not locate comparison page View More button." };
+      }
+      button.click();
+      return { ok: true };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
+  return result?.result?.value || { ok: false, reason: "Could not trigger comparison page View More." };
+}
+
 async function expandVisibleViewMoreControls(client, options = {}) {
   const maxPasses = Math.max(1, Math.min(4, Number(options.maxPasses) || 2));
   const clicked = [];
@@ -12301,7 +12790,7 @@ async function expandVisibleViewMoreControls(client, options = {}) {
   for (let pass = 0; pass < maxPasses; pass += 1) {
     const result = await client.send("Runtime.evaluate", {
       expression: `(() => {
-        const interactiveSelector = "button, a, [role='button'], summary, [tabindex], .show_more, [class*='show-more'], [class*='show_more']";
+        const interactiveSelector = "button, a, [role='button'], summary, [tabindex], .show_more, [class*='show-more'], [class*='show_more'], .viewmore-gdbox, [class*='viewmore']";
         const clean = (value) => String(value || "")
           .replace(/[\\u00a0\\s]+/g, " ")
           .replace(/[\\u25bc\\u25be\\u25bf\\u2228\\u203a\\u00bb>]+/g, " ")

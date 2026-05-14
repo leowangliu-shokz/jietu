@@ -12,6 +12,7 @@ const {
   restorePageMotion,
   isAcceptableTrailingSegmentBlankAudit,
   isViewMoreLabel,
+  shouldUseDedicatedViewMoreExpansion,
   shouldUseDirectFullPageClipCapture
 } = __testOnly;
 
@@ -242,6 +243,13 @@ test("collection and comparison page capture modes prefer direct full-page clip 
   assert.equal(shouldUseDirectFullPageClipCapture({ captureMode: "shokz-comparison-page" }), true);
   assert.equal(shouldUseDirectFullPageClipCapture({ captureMode: "shokz-products-nav" }), false);
   assert.equal(shouldUseDirectFullPageClipCapture({}), false);
+});
+
+test("only comparison page capture mode uses dedicated view more expansion", () => {
+  assert.equal(shouldUseDedicatedViewMoreExpansion({ captureMode: "shokz-comparison-page" }), true);
+  assert.equal(shouldUseDedicatedViewMoreExpansion({ captureMode: "shokz-collection-page" }), false);
+  assert.equal(shouldUseDedicatedViewMoreExpansion({ captureMode: "shokz-products-nav" }), false);
+  assert.equal(shouldUseDedicatedViewMoreExpansion({}), false);
 });
 
 test("matches view more labels with icon suffixes", () => {
