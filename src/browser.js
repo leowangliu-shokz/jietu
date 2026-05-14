@@ -194,6 +194,14 @@ async function driveCapture(client, url, outputPath, options) {
     }
     await sleep(700);
     await primeLazyImages(client);
+    await expandShokzCollectionViewMoreControls(client, {
+      captureUrl: url,
+      captureMode: options.captureMode,
+      dismissPopups: options.dismissPopups,
+      clickDelayMs: options.scrollStepMs ?? 350
+    });
+    await scrollTo(client, 0);
+    await sleep(500);
     if (options.dismissPopups !== false) {
       await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2 });
       await dismissObstructions(client, { rounds: 2 });
@@ -3240,6 +3248,10 @@ async function captureShokzHomeRelatedSection(client, outputPath, captureContext
 }
 
 async function captureShokzCollectionRelatedSection(client, outputPath, captureContext, definition) {
+  if (definition?.key === "collection-tabs") {
+    return captureShokzCollectionProductVariantSection(client, outputPath, captureContext, definition);
+  }
+
   const viewport = viewportForCaptureContext(captureContext);
   const states = Array.isArray(definition?.states) ? definition.states : [];
   if (!states.length) {
@@ -3470,6 +3482,767 @@ async function captureShokzCollectionRelatedSection(client, outputPath, captureC
     expectedCount: states.length,
     capturedCount: captures.length
   };
+}
+
+async function captureShokzCollectionProductVariantSection(client, outputPath, captureContext, definition) {
+  const viewport = viewportForCaptureContext(captureContext);
+  const categories = Array.isArray(definition?.states) ? definition.states : [];
+  const captures = [];
+  const warnings = [];
+  const plannedStates = [];
+  let maxWidth = Number(viewport.width || 0) || 393;
+  let maxHeight = Number(viewport.height || 0) || 852;
+
+  for (const category of categories) {
+    await scrollTo(client, 0);
+    const activation = await activateShokzCollectionTab(client, category);
+    if (!activation.ok) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: category.stateLabel,
+        message: activation.reason || `Could not activate ${category.stateLabel} collection tab.`
+      });
+      continue;
+    }
+
+    const ready = await waitForShokzCollectionTabActivated(client, category);
+    if (!ready.ok) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: category.stateLabel,
+        message: ready.reason || `Could not confirm ${category.stateLabel} collection tab activation.`
+      });
+      continue;
+    }
+
+    await sleep(650);
+    await primeLazyImages(client);
+    await expandShokzCollectionViewMoreControls(client, {
+      captureMode: "shokz-collection-related-section",
+      dismissPopups: true
+    });
+    await waitForRelatedSectionImages(client, definition.key);
+    await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2 });
+    await dismissObstructions(client, { rounds: 3 });
+
+    const plan = await readShokzCollectionProductVariantPlan(client, definition, category, captureContext);
+    warnings.push(...(Array.isArray(plan.warnings) ? plan.warnings : []));
+    if (!plan.ok) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: category.stateLabel,
+        message: plan.reason || `Could not read products for ${category.stateLabel}.`
+      });
+      continue;
+    }
+
+    const states = Array.isArray(plan.states) ? plan.states : [];
+    if (!states.length) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: category.stateLabel,
+        message: `No product cards were found for ${category.stateLabel}.`
+      });
+      continue;
+    }
+
+    for (const state of states) {
+      state.stateIndex = plannedStates.length + 1;
+      plannedStates.push(state);
+
+      const variantActivation = await activateShokzCollectionProductVariantState(client, state);
+      if (!variantActivation.ok) {
+        warnings.push({
+          sectionKey: definition.key,
+          sectionLabel: definition.sectionLabel,
+          stateLabel: state.stateLabel,
+          message: variantActivation.reason || `Could not activate ${state.stateLabel}.`
+        });
+        continue;
+      }
+
+      await sleep(260);
+      await primeLazyImages(client);
+      await waitForRelatedSectionImages(client, definition.key);
+      await prepareForScreenshotCapture(client, {
+        rounds: 2,
+        shokzKnownPopups: true,
+        stage: `before Shokz ${definition.sectionLabel} product variant screenshot capture`
+      });
+      await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2 });
+      await dismissObstructions(client, { rounds: 2 });
+
+      let current = await readShokzCollectionProductVariantState(client, definition, state);
+      if (!current.ok) {
+        warnings.push({
+          sectionKey: definition.key,
+          sectionLabel: definition.sectionLabel,
+          stateLabel: state.stateLabel,
+          message: current.reason || `Could not read ${state.stateLabel}.`
+        });
+        continue;
+      }
+
+      let clip = normalizeRelatedClip(current.clip, viewport);
+      if (!clip) {
+        warnings.push({
+          sectionKey: definition.key,
+          sectionLabel: definition.sectionLabel,
+          stateLabel: state.stateLabel,
+          message: `Could not compute a valid product-card crop for ${state.stateLabel}.`
+        });
+        continue;
+      }
+
+      const screenshotCapture = await captureScreenshotWithValidation(client, () => ({
+        format: "png",
+        fromSurface: true,
+        captureBeyondViewport: true,
+        clip
+      }), {
+        label: `${definition.key} ${state.stateLabel}`,
+        acceptBlankAudit: (blankAudit) => isAcceptableCollectionProductVariantBlankAudit(blankAudit, current),
+        beforeAttempt: async ({ attempt }) => {
+          if (attempt > 1) {
+            const retryActivation = await activateShokzCollectionProductVariantState(client, state);
+            if (!retryActivation.ok) {
+              throw new Error(retryActivation.reason || `Could not reactivate ${state.stateLabel}.`);
+            }
+            await sleep(360);
+            await primeLazyImages(client);
+          }
+          await prepareForScreenshotCapture(client, {
+            rounds: 2,
+            shokzKnownPopups: true,
+            stage: `retrying Shokz ${definition.sectionLabel} product variant screenshot capture`
+          });
+          await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2 });
+          await dismissObstructions(client, { rounds: 2 });
+          current = await readShokzCollectionProductVariantState(client, definition, state);
+          if (!current.ok) {
+            throw new Error(current.reason || `Could not reread ${state.stateLabel}.`);
+          }
+          clip = normalizeRelatedClip(current.clip, viewport);
+          if (!clip) {
+            throw new Error(`Could not compute a valid product-card crop for ${state.stateLabel}.`);
+          }
+        }
+      });
+
+      const buffer = screenshotCapture.buffer;
+      const visualSignature = hashBuffer(buffer);
+      const visualHash = visualHashForBuffer(buffer);
+      const visualAudit = visualAuditForBuffer(buffer, visualHash);
+      const logicalSignature = current.logicalSignature || state.logicalSignature;
+      const relatedOutput = relatedOutputPath(outputPath, definition.key, state.fileId || state.stateIndex);
+      await fs.writeFile(relatedOutput, buffer);
+
+      const width = Math.round(clip.width);
+      const height = Math.round(clip.height);
+      maxWidth = Math.max(maxWidth, width);
+      maxHeight = Math.max(maxHeight, height);
+      captures.push({
+        outputPath: relatedOutput,
+        width,
+        height,
+        kind: "product-variant",
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        sectionTitle: definition.title,
+        stateIndex: state.stateIndex,
+        stateCount: null,
+        stateLabel: state.stateLabel,
+        label: state.stateLabel,
+        tabLabel: state.tabLabel || category.tabLabel || null,
+        tabIndex: state.tabIndex || category.tabIndex || null,
+        pageIndex: null,
+        interactionState: "default",
+        categoryKey: state.categoryKey || null,
+        categoryLabel: state.categoryLabel || state.tabLabel || null,
+        productKey: state.productKey || null,
+        productLabel: state.productLabel || null,
+        productIndex: state.productIndex || null,
+        variantKey: state.variantKey || null,
+        variantLabel: state.variantLabel || null,
+        variantOptions: state.variantOptions || [],
+        logicalSignature,
+        visualSignature,
+        visualHash,
+        visualAudit,
+        captureValidation: screenshotCapture.captureValidation,
+        clip: {
+          x: Math.round(clip.x),
+          y: Math.round(clip.y),
+          width,
+          height
+        },
+        isDefaultState: Boolean(state.isDefaultState),
+        coverageKey: relatedCoverageKeyForState(state),
+        sectionState: {
+          text: current.text || "",
+          textBlocks: current.textBlocks || [],
+          images: current.images || [],
+          activeIndex: state.stateIndex,
+          tabLabel: state.tabLabel || null,
+          tabIndex: state.tabIndex || null,
+          interactionState: "default",
+          categoryKey: state.categoryKey || null,
+          categoryLabel: state.categoryLabel || null,
+          productKey: state.productKey || null,
+          productLabel: state.productLabel || null,
+          productIndex: state.productIndex || null,
+          variantKey: state.variantKey || null,
+          variantLabel: state.variantLabel || null,
+          variantOptions: state.variantOptions || [],
+          visibleItemCount: current.visibleItemCount || 1,
+          visibleItems: current.visibleItems || [],
+          itemRects: current.itemRects || [],
+          windowSignature: current.windowSignature || null
+        }
+      });
+    }
+  }
+
+  for (const capture of captures) {
+    capture.stateCount = plannedStates.length || captures.length || null;
+  }
+  warnings.push(...relatedSectionCoverageWarnings(definition, plannedStates, captures));
+
+  return {
+    width: maxWidth,
+    height: maxHeight,
+    captures,
+    warnings,
+    expectedCount: plannedStates.length,
+    capturedCount: captures.length
+  };
+}
+
+async function readShokzCollectionProductVariantPlan(client, definition, category, captureContext = {}) {
+  const viewport = viewportForCaptureContext(captureContext);
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const definition = ${JSON.stringify({
+        key: definition?.key || "",
+        sectionLabel: definition?.sectionLabel || "",
+        title: definition?.title || ""
+      })};
+      const category = ${JSON.stringify({
+        categoryKey: category?.categoryKey || category?.matchHandle || category?.fileId || "",
+        categoryLabel: category?.categoryLabel || category?.tabLabel || category?.stateLabel || "",
+        tabLabel: category?.tabLabel || category?.categoryLabel || category?.stateLabel || "",
+        tabIndex: Number(category?.tabIndex || 0) || null
+      })};
+      const viewport = ${JSON.stringify({
+        width: Number(viewport.width || 0) || 393,
+        height: Number(viewport.height || 0) || 852
+      })};
+      const clean = (value, max = 240) => String(value || "").replace(/[\\u00a0\\s]+/g, " ").trim().slice(0, max);
+      const keyPart = (value, fallback = "item") => {
+        const key = clean(value, 140).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+        return key || fallback;
+      };
+      const rendered = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const rectInfo = (rect) => ({
+        x: Math.round(rect.left),
+        y: Math.round(rect.top),
+        top: rect.top,
+        left: rect.left,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height
+      });
+      const productHref = (link) => {
+        try {
+          return new URL(link.getAttribute("href") || link.href || "", window.location.href).pathname.replace(/\\/+$/g, "");
+        } catch {
+          return clean(link.getAttribute("href") || link.href || "", 160);
+        }
+      };
+      const productCardForLink = (link) =>
+        link.closest("[data-product-card], product-card, article, li, .grid__item, .card-wrapper, [class*='product-card'], [class*='product_card'], [class*='product-item'], [class*='product_item'], [class*='card']") ||
+        link.closest("section, .shopify-section") ||
+        link;
+      const titleForCard = (card, link, fallback) => {
+        const titleNode = card.querySelector(".card__heading, .product-card__title, .product-title, [class*='product'][class*='title'], [class*='product'][class*='name'], h1, h2, h3, h4");
+        const text = clean(
+          titleNode?.innerText ||
+          titleNode?.textContent ||
+          link.getAttribute("aria-label") ||
+          link.getAttribute("title") ||
+          link.innerText ||
+          link.textContent ||
+          fallback,
+          160
+        );
+        return clean(text.replace(/^(new|best selling)\\b/i, "").replace(/\\$\\s*\\d[\\s\\S]*$/g, ""), 100) || fallback;
+      };
+      const optionText = (element, fallback = "") => clean(
+        element?.getAttribute?.("aria-label") ||
+        element?.getAttribute?.("title") ||
+        element?.getAttribute?.("data-value") ||
+        element?.getAttribute?.("data-option-value") ||
+        element?.value ||
+        element?.innerText ||
+        element?.textContent ||
+        fallback,
+        90
+      );
+      const groupTextForControl = (control) => {
+        const group = control.closest("fieldset, [class*='variant'], [class*='option'], [class*='selector'], [class*='swatch'], [class*='product-form__input']") || control.parentElement;
+        const legend = group?.querySelector?.("legend, .form__label, label, [class*='label'], [class*='title']") || null;
+        return clean([legend?.innerText || legend?.textContent, group?.innerText || group?.textContent].filter(Boolean).join(" "), 240);
+      };
+      const groupNameForControl = (control, label) => {
+        const directLabel = clean(label, 120).toLowerCase();
+        const classText = String(control.className || "").toLowerCase();
+        if (control.tagName?.toLowerCase() === "span" &&
+          !/^(standard|mini|usb\\s*-?c|usb-c\\s*\\+\\s*wireless\\s*charging|wireless\\s*charging)$/i.test(directLabel) &&
+          !/color|colour|swatch/.test(classText)) {
+          return null;
+        }
+        if (/usb\\s*-?c|wireless\\s*charging/.test(directLabel)) return "Charging Type";
+        if (/^(standard|mini)$/i.test(directLabel)) return "Size";
+        const groupText = groupTextForControl(control);
+        const haystack = clean([groupText, label, control.className, control.getAttribute?.("name"), control.getAttribute?.("data-option-name")].filter(Boolean).join(" "), 260).toLowerCase();
+        const rect = control.getBoundingClientRect();
+        if (/charging\\s*type|usb\\s*-?c|wireless\\s*charging/.test(haystack)) return "Charging Type";
+        if (/\\bsize\\b|\\bstandard\\b|\\bmini\\b/.test(haystack)) return "Size";
+        if (/color|colour|swatch/.test(haystack) || (rect.width <= 44 && rect.height <= 44 && !/add\\s*to\\s*cart|view\\s*more/i.test(label))) return "Color";
+        return null;
+      };
+      const clickTargetForControl = (control) => {
+        if (control.matches("input[type='radio'], input[type='checkbox']")) {
+          const id = control.getAttribute("id");
+          return id ? document.querySelector("label[for='" + CSS.escape(id) + "']") || control : control;
+        }
+        return control.closest("button, a, label, [role='button'], [role='radio'], [tabindex], [data-value], [data-option-value], [class*='option'], [class*='variant'], [class*='size'], [class*='charging']") || control;
+      };
+      const disabled = (element) => {
+        const target = clickTargetForControl(element);
+        const text = clean(target?.innerText || target?.textContent || "");
+        return Boolean(
+          element.disabled ||
+          target?.disabled ||
+          element.getAttribute?.("aria-disabled") === "true" ||
+          target?.getAttribute?.("aria-disabled") === "true" ||
+          element.classList?.contains("disabled") ||
+          target?.classList?.contains("disabled") ||
+          /sold\\s*out|unavailable/i.test(text)
+        );
+      };
+      const readOptionGroups = (card, productDomId) => {
+        const groupOrder = ["Color", "Size", "Charging Type"];
+        const groups = new Map();
+        const controls = Array.from(card.querySelectorAll("input[type='radio'], input[type='checkbox'], label[for], button, span, [role='radio'], [role='button'], [data-value], [data-option-value], .swatch, [class*='swatch'], [class*='size'], [class*='charging']"))
+          .filter((control) => rendered(control))
+          .filter((control) => {
+            const label = optionText(control);
+            const rect = control.getBoundingClientRect();
+            if (rect.width > Math.max(180, viewport.width * 0.74) || rect.height > 96) return false;
+            if (/add\\s*to\\s*cart|view\\s*more|learn\\s*more|feedback|privacy|terms/i.test(label)) return false;
+            return Boolean(label || /swatch|color/i.test(String(control.className || "")));
+          });
+        for (const control of controls) {
+          const label = optionText(control);
+          const groupName = groupNameForControl(control, label);
+          if (!groupName || disabled(control)) continue;
+          const target = clickTargetForControl(control);
+          if (!target || !rendered(target)) continue;
+          const optionIndex = (groups.get(groupName)?.options.length || 0) + 1;
+          const valueLabel = label || (groupName + " " + optionIndex);
+          const valueKey = keyPart(valueLabel, keyPart(groupName) + "-" + optionIndex);
+          const controlId = productDomId + "-option-" + keyPart(groupName) + "-" + optionIndex + "-" + valueKey;
+          target.dataset.pageShotCollectionOptionId = controlId;
+          control.dataset.pageShotCollectionOptionId = controlId;
+          if (!groups.has(groupName)) {
+            groups.set(groupName, {
+              name: groupName,
+              key: keyPart(groupName),
+              options: []
+            });
+          }
+          const group = groups.get(groupName);
+          if (group.options.some((option) => option.valueKey === valueKey || option.controlId === controlId)) continue;
+          group.options.push({
+            groupName,
+            groupKey: group.key,
+            value: valueLabel,
+            valueKey,
+            controlId,
+            optionIndex: group.options.length + 1
+          });
+        }
+        return groupOrder
+          .map((name) => groups.get(name))
+          .filter((group) => group && group.options.length);
+      };
+      const cartesian = (groups) => {
+        if (!groups.length) return [[]];
+        return groups.reduce((sets, group) =>
+          sets.flatMap((set) => group.options.map((option) => [...set, { ...option, groupName: group.name, groupKey: group.key }])),
+          [[]]
+        );
+      };
+      const cardEntries = [];
+      const seenCards = new Set();
+      for (const link of Array.from(document.querySelectorAll("a[href*='/products/']"))) {
+        if (!rendered(link)) continue;
+        const card = productCardForLink(link);
+        if (!card || seenCards.has(card) || !rendered(card)) continue;
+        const rect = card.getBoundingClientRect();
+        if (rect.width < 120 || rect.height < 160) continue;
+        const href = productHref(link);
+        const fallbackLabel = clean(href.split("/").filter(Boolean).pop()?.replace(/[-_]+/g, " "), 80) || "Product";
+        const productLabel = titleForCard(card, link, fallbackLabel);
+        if (!productLabel || /add\\s*to\\s*cart|view\\s*more/i.test(productLabel)) continue;
+        seenCards.add(card);
+        cardEntries.push({ card, link, href, productLabel, rect });
+      }
+      cardEntries.sort((a, b) => (window.scrollY + a.rect.top) - (window.scrollY + b.rect.top) || a.rect.left - b.rect.left);
+
+      const states = [];
+      const warnings = [];
+      for (const [productOffset, entry] of cardEntries.entries()) {
+        const productIndex = productOffset + 1;
+        const productKey = keyPart(entry.href || entry.productLabel, "product-" + productIndex);
+        const productDomId = "collection-" + keyPart(category.categoryKey || category.categoryLabel || "all") + "-product-" + productIndex + "-" + productKey;
+        entry.card.dataset.pageShotCollectionProductId = productDomId;
+        const optionGroups = readOptionGroups(entry.card, productDomId);
+        const combos = cartesian(optionGroups);
+        for (const [comboIndex, combo] of combos.entries()) {
+          const variantOptions = combo.map((option) => ({
+            name: option.groupName,
+            key: option.groupKey,
+            value: option.value,
+            valueKey: option.valueKey,
+            controlId: option.controlId,
+            optionIndex: option.optionIndex
+          }));
+          const variantKey = variantOptions.length
+            ? variantOptions.map((option) => option.key + "-" + option.valueKey).join("__")
+            : "default";
+          const variantLabel = variantOptions.length
+            ? variantOptions.map((option) => option.name + ": " + option.value).join(" / ")
+            : "Default";
+          const stateLabel = (category.categoryLabel || category.tabLabel || "All") + " / " + entry.productLabel + " / " + variantLabel;
+          states.push({
+            kind: "product-variant",
+            sectionKey: definition.key,
+            sectionLabel: definition.sectionLabel,
+            categoryKey: category.categoryKey || keyPart(category.categoryLabel || category.tabLabel || "all"),
+            categoryLabel: category.categoryLabel || category.tabLabel || "All",
+            tabLabel: category.tabLabel || category.categoryLabel || "All",
+            tabIndex: category.tabIndex,
+            productKey,
+            productLabel: entry.productLabel,
+            productIndex,
+            productDomId,
+            variantKey,
+            variantLabel,
+            variantOptions,
+            stateLabel,
+            label: stateLabel,
+            logicalSignature: [definition.key, category.categoryKey || category.categoryLabel || "all", productKey, variantKey].join("|"),
+            fileId: [category.categoryKey || "all", productKey, variantKey].join("-"),
+            isDefaultState: comboIndex === 0
+          });
+        }
+      }
+
+      return {
+        ok: true,
+        states,
+        warnings,
+        productCount: cardEntries.length
+      };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
+  return result?.result?.value || { ok: false, reason: `Could not read ${definition?.sectionLabel || "collection"} product variant plan.` };
+}
+
+async function activateShokzCollectionProductVariantState(client, state) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(async () => {
+      const state = ${JSON.stringify({
+        productDomId: state?.productDomId || "",
+        productKey: state?.productKey || "",
+        productLabel: state?.productLabel || "",
+        variantOptions: Array.isArray(state?.variantOptions) ? state.variantOptions : []
+      })};
+      const clean = (value) => String(value || "").replace(/[\\u00a0\\s]+/g, " ").trim();
+      const keyPart = (value) => clean(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+      const rendered = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const productCardForLink = (link) =>
+        link.closest("[data-product-card], product-card, article, li, .grid__item, .card-wrapper, [class*='product-card'], [class*='product_card'], [class*='product-item'], [class*='product_item'], [class*='card']") ||
+        link.closest("section, .shopify-section") ||
+        link;
+      const findCard = () => {
+        const byId = state.productDomId ? document.querySelector("[data-page-shot-collection-product-id='" + CSS.escape(state.productDomId) + "']") : null;
+        if (byId) return byId;
+        for (const link of Array.from(document.querySelectorAll("a[href*='/products/']"))) {
+          const href = (() => {
+            try {
+              return new URL(link.getAttribute("href") || link.href || "", window.location.href).pathname.replace(/\\/+$/g, "");
+            } catch {
+              return link.getAttribute("href") || link.href || "";
+            }
+          })();
+          const card = productCardForLink(link);
+          const text = clean(card?.innerText || card?.textContent || link.innerText || link.textContent);
+          if ((state.productKey && keyPart(href || text).includes(state.productKey)) || (state.productLabel && text.includes(state.productLabel))) {
+            return card;
+          }
+        }
+        return null;
+      };
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const clickElement = (element) => {
+        if (!element) return false;
+        const target = element.closest("button, a, label, [role='button'], [role='radio'], [tabindex], [data-value], [data-option-value], [class*='option'], [class*='variant'], [class*='size'], [class*='charging']") || element;
+        if (!rendered(target) || target.disabled || target.getAttribute("aria-disabled") === "true") return false;
+        target.scrollIntoView({ block: "center", inline: "center" });
+        if (typeof target.click === "function") {
+          target.click();
+        } else {
+          target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+        }
+        return true;
+      };
+      const fallbackOptionControl = (card, option) => {
+        const targetLabel = clean(option.value || "").toLowerCase();
+        if (!targetLabel) return null;
+        return Array.from(card.querySelectorAll("input[type='radio'], input[type='checkbox'], label[for], button, span, [role='radio'], [role='button'], [data-value], [data-option-value], .swatch, [class*='swatch'], [class*='size'], [class*='charging']"))
+          .find((element) => {
+            if (!rendered(element)) return false;
+            const label = clean(
+              element.getAttribute?.("aria-label") ||
+              element.getAttribute?.("title") ||
+              element.getAttribute?.("data-value") ||
+              element.getAttribute?.("data-option-value") ||
+              element.value ||
+              element.innerText ||
+              element.textContent
+            ).toLowerCase();
+            return label && (label === targetLabel || label.includes(targetLabel) || targetLabel.includes(label));
+          }) || null;
+      };
+
+      const card = findCard();
+      if (!card) {
+        return { ok: false, reason: "Could not find product card " + (state.productLabel || state.productKey || "") + "." };
+      }
+      card.scrollIntoView({ block: "center", inline: "center" });
+      await sleep(180);
+      const clicked = [];
+      for (const option of state.variantOptions || []) {
+        const control = option.controlId
+          ? card.querySelector("[data-page-shot-collection-option-id='" + CSS.escape(option.controlId) + "']")
+          : null;
+        const effectiveControl = control || fallbackOptionControl(card, option);
+        if (!effectiveControl) {
+          return { ok: false, reason: "Could not find option " + (option.name || "") + ": " + (option.value || "") + " for " + (state.productLabel || "product") + "." };
+        }
+        if (clickElement(effectiveControl)) {
+          clicked.push([option.name, option.value].filter(Boolean).join(": "));
+          await sleep(180);
+        }
+      }
+      card.scrollIntoView({ block: "center", inline: "center" });
+      await sleep(180);
+      return { ok: true, clicked };
+    })()`,
+    awaitPromise: true,
+    returnByValue: true
+  }).catch(() => null);
+  return result?.result?.value || { ok: false, reason: `Could not activate ${state?.stateLabel || "collection product variant"}.` };
+}
+
+async function readShokzCollectionProductVariantState(client, definition, state) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const definition = ${JSON.stringify({
+        key: definition?.key || "",
+        sectionLabel: definition?.sectionLabel || "",
+        title: definition?.title || ""
+      })};
+      const state = ${JSON.stringify({
+        productDomId: state?.productDomId || "",
+        productKey: state?.productKey || "",
+        productLabel: state?.productLabel || "",
+        productIndex: state?.productIndex || null,
+        categoryKey: state?.categoryKey || "",
+        categoryLabel: state?.categoryLabel || "",
+        variantKey: state?.variantKey || "",
+        variantLabel: state?.variantLabel || "",
+        variantOptions: Array.isArray(state?.variantOptions) ? state.variantOptions : [],
+        logicalSignature: state?.logicalSignature || "",
+        stateLabel: state?.stateLabel || ""
+      })};
+      const clean = (value, max = 300) => String(value || "").replace(/[\\u00a0\\s]+/g, " ").trim().slice(0, max);
+      const keyPart = (value) => clean(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+      const rendered = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const rectInfo = (rect) => ({
+        x: Math.round(rect.left),
+        y: Math.round(rect.top),
+        top: rect.top,
+        left: rect.left,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height
+      });
+      const productCardForLink = (link) =>
+        link.closest("[data-product-card], product-card, article, li, .grid__item, .card-wrapper, [class*='product-card'], [class*='product_card'], [class*='product-item'], [class*='product_item'], [class*='card']") ||
+        link.closest("section, .shopify-section") ||
+        link;
+      const findCard = () => {
+        const byId = state.productDomId ? document.querySelector("[data-page-shot-collection-product-id='" + CSS.escape(state.productDomId) + "']") : null;
+        if (byId) return byId;
+        for (const link of Array.from(document.querySelectorAll("a[href*='/products/']"))) {
+          const href = (() => {
+            try {
+              return new URL(link.getAttribute("href") || link.href || "", window.location.href).pathname.replace(/\\/+$/g, "");
+            } catch {
+              return link.getAttribute("href") || link.href || "";
+            }
+          })();
+          const card = productCardForLink(link);
+          const text = clean(card?.innerText || card?.textContent || link.innerText || link.textContent, 500);
+          if ((state.productKey && keyPart(href || text).includes(state.productKey)) || (state.productLabel && text.includes(state.productLabel))) {
+            return card;
+          }
+        }
+        return null;
+      };
+      const card = findCard();
+      if (!card || !rendered(card)) {
+        return { ok: false, reason: "Could not read product card " + (state.productLabel || state.productKey || "") + "." };
+      }
+      window.__pageShotRelatedSections = window.__pageShotRelatedSections || {};
+      window.__pageShotRelatedSections[definition.key] = { root: card };
+      const cardRect = card.getBoundingClientRect();
+      const clipX = Math.max(0, Math.floor(cardRect.left - 6));
+      const clipY = Math.max(0, Math.floor(window.scrollY + cardRect.top - 6));
+      const clipRight = Math.min(window.innerWidth || document.documentElement.clientWidth || 393, Math.ceil(cardRect.right + 6));
+      const clipWidth = Math.max(1, clipRight - clipX);
+      const clipHeight = Math.max(220, Math.ceil(cardRect.height + 12));
+      const textBlocks = Array.from(card.querySelectorAll("h1, h2, h3, h4, p, a, button, span, strong, li, label, legend"))
+        .filter((element) => rendered(element))
+        .map((element) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            text: clean(element.innerText || element.textContent, 180),
+            x: Math.round(rect.left),
+            y: Math.round(rect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height)
+          };
+        })
+        .filter((block) => block.text)
+        .filter((block, index, list) =>
+          list.findIndex((candidate) =>
+            candidate.text === block.text &&
+            Math.abs(candidate.x - block.x) <= 2 &&
+            Math.abs(candidate.y - block.y) <= 2
+          ) === index
+        )
+        .slice(0, 80);
+      const images = Array.from(card.querySelectorAll("img"))
+        .filter((image) => rendered(image))
+        .map((image) => ({
+          src: image.currentSrc || image.src || image.getAttribute("data-src") || "",
+          alt: clean(image.alt, 160),
+          rect: rectInfo(image.getBoundingClientRect())
+        }))
+        .filter((image) => image.src)
+        .slice(0, 12);
+      const visibleItem = {
+        key: state.productKey,
+        label: state.productLabel,
+        productIndex: state.productIndex,
+        categoryKey: state.categoryKey,
+        categoryLabel: state.categoryLabel,
+        variantKey: state.variantKey,
+        variantLabel: state.variantLabel,
+        variantOptions: state.variantOptions,
+        text: clean(card.innerText || card.textContent, 500),
+        rect: rectInfo(cardRect)
+      };
+      const text = textBlocks.map((block) => block.text).join(" ").slice(0, 3200);
+      return {
+        ok: true,
+        clip: {
+          x: clipX,
+          y: clipY,
+          width: clipWidth,
+          height: clipHeight
+        },
+        text,
+        textBlocks,
+        images,
+        logicalSignature: state.logicalSignature || [definition.key, state.categoryKey, state.productKey, state.variantKey].filter(Boolean).join("|"),
+        visibleItemCount: 1,
+        visibleItems: [visibleItem],
+        itemRects: [{
+          key: state.productKey,
+          label: state.productLabel,
+          rect: rectInfo(cardRect)
+        }],
+        windowSignature: JSON.stringify({
+          product: state.productKey,
+          variant: state.variantKey,
+          texts: textBlocks.slice(0, 24).map((block) => block.text),
+          images: images.map((image) => image.src)
+        }).slice(0, 1800)
+      };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
+  return result?.result?.value || { ok: false, reason: `Could not read ${state?.stateLabel || "collection product variant"} state.` };
+}
+
+function isAcceptableCollectionProductVariantBlankAudit(blankAudit, state) {
+  if (!blankAudit || blankAudit.status === "ok" || blankAudit.fullImageNearWhite) {
+    return false;
+  }
+  const textBlocks = Array.isArray(state?.textBlocks) ? state.textBlocks : [];
+  const images = Array.isArray(state?.images) ? state.images : [];
+  const visibleItems = Array.isArray(state?.visibleItems) ? state.visibleItems : [];
+  return textBlocks.length >= 3 || images.length >= 1 || visibleItems.length >= 1;
 }
 
 async function captureShokzComparisonRelatedSection(client, outputPath, captureContext, definition) {
@@ -4623,6 +5396,15 @@ function relatedSectionCoverageWarnings(definition, plannedStates, captures) {
 }
 
 function relatedCoverageKeyForState(state) {
+  if (state?.sectionKey === "collection-tabs" && (state.productKey || state.variantKey || state.categoryKey)) {
+    return [
+      state.sectionKey,
+      state.categoryKey || state.tabIndex || state.tabLabel || "",
+      state.productKey || state.productIndex || "",
+      state.variantKey || state.variantLabel || "default"
+    ].join("|");
+  }
+
   return [
     state?.sectionKey || "",
     state?.tabIndex || state?.tabLabel || "",
@@ -9433,6 +10215,7 @@ function compareRelatedCaptures(a, b) {
   const orderB = sectionB === -1 ? 1000 : sectionB;
   return orderA - orderB ||
     Number(a.tabIndex || 0) - Number(b.tabIndex || 0) ||
+    Number(a.productIndex || 0) - Number(b.productIndex || 0) ||
     Number(a.hoverIndex || 0) - Number(b.hoverIndex || 0) ||
     Number(a.pageIndex || 0) - Number(b.pageIndex || 0) ||
     Number(a.stateIndex || a.bannerIndex || 0) - Number(b.stateIndex || b.bannerIndex || 0) ||
@@ -12371,6 +13154,160 @@ async function settleFullPageBottom(client, state, options = {}) {
   }
 
   return bestState;
+}
+
+async function expandShokzCollectionViewMoreControls(client, options = {}) {
+  const clicked = [];
+  const clickDelayMs = Math.max(180, Math.min(1200, Number(options.clickDelayMs) || 420));
+  const maxRounds = Math.max(4, Math.min(80, Number(options.maxRounds) || 48));
+  let pageState = await getPageState(client);
+  let y = 0;
+  let lastHeight = Math.max(0, Number(pageState.height || 0));
+  let stableBottomRounds = 0;
+  const startedAt = Date.now();
+
+  for (let round = 0; round < maxRounds && Date.now() - startedAt < 90000; round += 1) {
+    await scrollTo(client, y);
+    await sleep(clickDelayMs);
+    const result = await client.send("Runtime.evaluate", {
+      expression: `(() => {
+        const clean = (value) => String(value || "")
+          .replace(/[\\u00a0\\s]+/g, " ")
+          .replace(/[\\u25bc\\u25be\\u25bf\\u2228\\u203a\\u00bb>]+/g, " ")
+          .trim();
+        const isViewMoreLabel = (value) => /^view more\\b/i.test(clean(value));
+        const visible = (element) => {
+          if (!element || !(element instanceof Element)) return false;
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 0 &&
+            rect.height > 0 &&
+            rect.bottom > 0 &&
+            rect.right > 0 &&
+            rect.left < window.innerWidth &&
+            rect.top < window.innerHeight &&
+            style.visibility !== "hidden" &&
+            style.display !== "none" &&
+            Number(style.opacity || 1) > 0.01;
+        };
+        const readLabel = (element) => clean(
+          element?.innerText ||
+          element?.textContent ||
+          element?.getAttribute?.("aria-label") ||
+          element?.getAttribute?.("title")
+        );
+        const navigatesAway = (target) => {
+          const link = target?.closest?.("a[href]");
+          if (!link) return false;
+          const rawHref = String(link.getAttribute("href") || "").trim();
+          if (!rawHref || rawHref === "#" || rawHref.startsWith("#") || /^javascript:/i.test(rawHref)) {
+            return false;
+          }
+          try {
+            const current = new URL(window.location.href);
+            const destination = new URL(rawHref, current);
+            return destination.origin !== current.origin ||
+              destination.pathname !== current.pathname ||
+              destination.search !== current.search;
+          } catch {
+            return true;
+          }
+        };
+        const interactiveSelector = "button, a, [role='button'], summary, [tabindex], .show_more, [class*='show-more'], [class*='show_more'], [class*='viewmore']";
+        const seen = new Set();
+        const candidates = Array.from(document.querySelectorAll("button, a, [role='button'], summary, div, span, p"))
+          .map((element) => {
+            const label = readLabel(element);
+            const clickTarget = element.matches(interactiveSelector)
+              ? element
+              : element.closest(interactiveSelector) || element;
+            const rect = element.getBoundingClientRect();
+            const clickRect = clickTarget?.getBoundingClientRect?.() || rect;
+            return { element, clickTarget, label, rect, clickRect };
+          })
+          .filter(({ element, clickTarget, label, rect, clickRect }) => {
+            if (!label || !isViewMoreLabel(label)) return false;
+            if (!visible(element) || !visible(clickTarget)) return false;
+            if (rect.width > window.innerWidth * 0.92 || rect.height > 140) return false;
+            if (clickRect.bottom < 12 || clickRect.top > window.innerHeight - 12) return false;
+            if (String(clickTarget.getAttribute("aria-expanded") || element.getAttribute("aria-expanded") || "").toLowerCase() === "true") {
+              return false;
+            }
+            if (clickTarget.dataset.pageShotCollectionViewMoreClicked === "true" || element.dataset.pageShotCollectionViewMoreClicked === "true") {
+              return false;
+            }
+            if (navigatesAway(clickTarget)) return false;
+            if (seen.has(clickTarget)) return false;
+            seen.add(clickTarget);
+            return true;
+          })
+          .sort((a, b) => a.clickRect.top - b.clickRect.top || a.clickRect.left - b.clickRect.left);
+        const clicked = [];
+        for (const { element, clickTarget, label } of candidates) {
+          element.dataset.pageShotCollectionViewMoreClicked = "true";
+          clickTarget.dataset.pageShotCollectionViewMoreClicked = "true";
+          clickTarget.scrollIntoView({ block: "center", inline: "center" });
+          if (typeof clickTarget.click === "function") {
+            clickTarget.click();
+          } else {
+            clickTarget.dispatchEvent(new MouseEvent("click", {
+              bubbles: true,
+              cancelable: true,
+              view: window
+            }));
+          }
+          clicked.push(label);
+        }
+        return {
+          clicked,
+          height: Math.max(
+            Number(document.documentElement?.scrollHeight || 0),
+            Number(document.body?.scrollHeight || 0)
+          ),
+          viewportHeight: window.innerHeight,
+          y: window.scrollY
+        };
+      })()`,
+      returnByValue: true
+    }).catch(() => null);
+    const value = result?.result?.value || {};
+    const passClicked = Array.isArray(value.clicked) ? value.clicked.filter(Boolean) : [];
+    if (passClicked.length) {
+      clicked.push(...passClicked);
+      await sleep(Math.max(clickDelayMs, 620));
+      await materializeFullPageContent(client);
+      if (options.dismissPopups !== false) {
+        await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2 });
+      }
+      pageState = await getPageState(client);
+      lastHeight = Math.max(lastHeight, Number(pageState.height || 0));
+      stableBottomRounds = 0;
+      y = Math.max(0, Number(value.y || y) - 80);
+      continue;
+    }
+
+    pageState = await getPageState(client);
+    const currentHeight = Math.max(0, Number(pageState.height || value.height || 0));
+    const viewportHeight = Math.max(1, viewportHeightForState(pageState));
+    if (currentHeight <= lastHeight && y + viewportHeight >= currentHeight - 8) {
+      stableBottomRounds += 1;
+      if (stableBottomRounds >= 2) {
+        break;
+      }
+    } else {
+      stableBottomRounds = 0;
+    }
+    lastHeight = Math.max(lastHeight, currentHeight);
+    const step = Math.max(260, Math.min(900, Math.floor(viewportHeight * 0.72)));
+    y = Math.min(Math.max(0, currentHeight), y + step);
+  }
+
+  await scrollTo(client, 0);
+  await sleep(Math.max(clickDelayMs, 700));
+  return {
+    clickedCount: clicked.length,
+    clicked
+  };
 }
 
 async function expandDedicatedViewMoreControls(client, options = {}) {

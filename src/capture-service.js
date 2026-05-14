@@ -451,6 +451,14 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
       hoverIndex: item.hoverIndex || null,
       trackLabel: item.trackLabel || item.tabLabel || null,
       trackIndex: item.trackIndex || item.tabIndex || null,
+      categoryKey: item.categoryKey || null,
+      categoryLabel: item.categoryLabel || null,
+      productKey: item.productKey || null,
+      productLabel: item.productLabel || null,
+      productIndex: item.productIndex || null,
+      variantKey: item.variantKey || null,
+      variantLabel: item.variantLabel || null,
+      variantOptions: Array.isArray(item.variantOptions) ? item.variantOptions : null,
       productCount: item.productCount || null,
       visibleProductCount: item.visibleProductCount || null,
       visibleProducts: item.visibleProducts || null,
@@ -689,6 +697,14 @@ async function relatedShotsFromCaptureResult(relatedCapture, normalizedUrl, vali
       hoverIndex: item.hoverIndex || null,
       trackLabel: item.trackLabel || item.tabLabel || null,
       trackIndex: item.trackIndex || item.tabIndex || null,
+      categoryKey: item.categoryKey || null,
+      categoryLabel: item.categoryLabel || null,
+      productKey: item.productKey || null,
+      productLabel: item.productLabel || null,
+      productIndex: item.productIndex || null,
+      variantKey: item.variantKey || null,
+      variantLabel: item.variantLabel || null,
+      variantOptions: Array.isArray(item.variantOptions) ? item.variantOptions : null,
       productCount: item.productCount || null,
       visibleProductCount: item.visibleProductCount || null,
       visibleProducts: item.visibleProducts || null,
@@ -795,6 +811,7 @@ function compareRelatedShots(a, b) {
   const orderB = sectionB === -1 ? 1000 : sectionB;
   return orderA - orderB ||
     Number(a.tabIndex || 0) - Number(b.tabIndex || 0) ||
+    Number(a.productIndex || 0) - Number(b.productIndex || 0) ||
     interactionSort(a) - interactionSort(b) ||
     Number(a.pageIndex || 0) - Number(b.pageIndex || 0) ||
     Number(a.hoverIndex || 0) - Number(b.hoverIndex || 0) ||

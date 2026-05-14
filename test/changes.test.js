@@ -89,6 +89,50 @@ test("prefers tab and page identity when state index shifts", async () => {
   assert.equal(changes[0].textChange.afterFragment, "OpenRun Pro 2 New");
 });
 
+test("matches collection product variants by category product and variant identity", async () => {
+  const before = collectionVariantShot("collection-before.png", {
+    stateIndex: 1,
+    sectionState: { text: "OpenRun Pro 2 $179.95" }
+  });
+  const after = collectionVariantShot("collection-after.png", {
+    stateIndex: 8,
+    sectionState: { text: "OpenRun Pro 2 $169.95" }
+  });
+
+  const changes = await compareSnapshots([
+    snapshot("snap-1", "2026-05-03T08:00:00.000Z", [before]),
+    snapshot("snap-2", "2026-05-03T09:00:00.000Z", [after])
+  ], { writeDiffImages: false });
+
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].location.sectionKey, "collection-tabs");
+  assert.equal(changes[0].location.categoryKey, "all");
+  assert.equal(changes[0].location.productKey, "openrun-pro-2");
+  assert.equal(changes[0].location.variantKey, "color-black__size-standard__charging-type-usb-c");
+  assert.equal(changes[0].textChange.beforeFragment, "$179.95");
+  assert.equal(changes[0].textChange.afterFragment, "$169.95");
+});
+
+test("does not compare different collection product variant combinations", async () => {
+  const before = collectionVariantShot("collection-before.png", {
+    variantKey: "color-black__size-standard__charging-type-usb-c",
+    variantLabel: "Color: Black / Size: Standard / Charging Type: USB-C",
+    sectionState: { text: "OpenRun Pro 2 USB-C $179.95" }
+  });
+  const after = collectionVariantShot("collection-after.png", {
+    variantKey: "color-gray__size-standard__charging-type-usb-c",
+    variantLabel: "Color: Gray / Size: Standard / Charging Type: USB-C",
+    sectionState: { text: "OpenRun Pro 2 Gray $169.95" }
+  });
+
+  const changes = await compareSnapshots([
+    snapshot("snap-1", "2026-05-03T08:00:00.000Z", [before]),
+    snapshot("snap-2", "2026-05-03T09:00:00.000Z", [after])
+  ], { writeDiffImages: false });
+
+  assert.equal(changes.length, 0);
+});
+
 test("skips low-confidence captures as future compare baselines", async () => {
   const before = snapshot("snap-1", "2026-05-02T10:00:00.000Z", [{
     file: "missing-before.png",
@@ -707,6 +751,58 @@ function productHoverShot(file, overrides = {}) {
     width: overrides.width || 120,
     height: overrides.height || 80,
     sectionState,
+    ...overrides,
+    sectionState
+  };
+}
+
+function collectionVariantShot(file, overrides = {}) {
+  const categoryKey = overrides.categoryKey || "all";
+  const categoryLabel = overrides.categoryLabel || "All";
+  const productKey = overrides.productKey || "openrun-pro-2";
+  const productLabel = overrides.productLabel || "OpenRun Pro 2";
+  const variantKey = overrides.variantKey || "color-black__size-standard__charging-type-usb-c";
+  const variantLabel = overrides.variantLabel || "Color: Black / Size: Standard / Charging Type: USB-C";
+  const variantOptions = overrides.variantOptions || [
+    { name: "Color", key: "color", value: "Black", valueKey: "black" },
+    { name: "Size", key: "size", value: "Standard", valueKey: "standard" },
+    { name: "Charging Type", key: "charging-type", value: "USB-C", valueKey: "usb-c" }
+  ];
+  const sectionState = {
+    text: `${productLabel} ${variantLabel}`,
+    textBlocks: [{ text: `${productLabel} ${variantLabel}`, x: 10, y: 8, width: 220, height: 24 }],
+    categoryKey,
+    categoryLabel,
+    productKey,
+    productLabel,
+    productIndex: 1,
+    variantKey,
+    variantLabel,
+    variantOptions,
+    ...(overrides.sectionState || {})
+  };
+  return {
+    kind: "product-variant",
+    sectionKey: "collection-tabs",
+    sectionLabel: "Collection Tabs",
+    sectionTitle: "Collection Tabs",
+    tabLabel: categoryLabel,
+    tabIndex: 1,
+    stateIndex: 1,
+    stateLabel: `${categoryLabel} / ${productLabel} / ${variantLabel}`,
+    label: `${categoryLabel} / ${productLabel} / ${variantLabel}`,
+    categoryKey,
+    categoryLabel,
+    productKey,
+    productLabel,
+    productIndex: 1,
+    variantKey,
+    variantLabel,
+    variantOptions,
+    file,
+    imageUrl: `/archive/${file}`,
+    width: overrides.width || 120,
+    height: overrides.height || 80,
     ...overrides,
     sectionState
   };

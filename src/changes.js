@@ -272,6 +272,14 @@ async function compareItems(fromItem, toItem, options) {
       hoverIndex: toItem.hoverIndex,
       trackIndex: toItem.trackIndex,
       trackLabel: toItem.trackLabel,
+      categoryKey: toItem.categoryKey,
+      categoryLabel: toItem.categoryLabel,
+      productKey: toItem.productKey,
+      productLabel: toItem.productLabel,
+      productIndex: toItem.productIndex,
+      variantKey: toItem.variantKey,
+      variantLabel: toItem.variantLabel,
+      variantOptions: toItem.variantOptions,
       visibleItems: toItem.visibleItems
     },
     occurredBetween: {
@@ -458,6 +466,18 @@ function createComparableItem(snapshot, shot, relatedIndex = null) {
   const hoverItemRect = source.hoverItemRect || source.sectionState?.hoverItemRect || null;
   const basePageIndex = numberOrNull(source.basePageIndex || source.sectionState?.basePageIndex);
   const hoverIndex = numberOrNull(source.hoverIndex || source.sectionState?.hoverIndex);
+  const categoryKey = source.categoryKey || source.sectionState?.categoryKey || null;
+  const categoryLabel = source.categoryLabel || source.sectionState?.categoryLabel || null;
+  const productKey = source.productKey || source.sectionState?.productKey || null;
+  const productLabel = source.productLabel || source.sectionState?.productLabel || null;
+  const productIndex = numberOrNull(source.productIndex || source.sectionState?.productIndex);
+  const variantKey = source.variantKey || source.sectionState?.variantKey || null;
+  const variantLabel = source.variantLabel || source.sectionState?.variantLabel || null;
+  const variantOptions = Array.isArray(source.variantOptions)
+    ? source.variantOptions
+    : Array.isArray(source.sectionState?.variantOptions)
+      ? source.sectionState.variantOptions
+      : null;
   const positionKey = positionKeyForSource({
     itemKind,
     sectionKey,
@@ -469,6 +489,12 @@ function createComparableItem(snapshot, shot, relatedIndex = null) {
     hoverItemKey,
     basePageIndex,
     hoverIndex,
+    categoryKey,
+    categoryLabel,
+    productKey,
+    productIndex,
+    variantKey,
+    variantLabel,
     relatedIndex
   });
   const item = {
@@ -512,6 +538,14 @@ function createComparableItem(snapshot, shot, relatedIndex = null) {
     hoverIndex,
     trackIndex: numberOrNull(source.trackIndex || source.tabIndex),
     trackLabel: source.trackLabel || source.tabLabel || null,
+    categoryKey,
+    categoryLabel,
+    productKey,
+    productLabel,
+    productIndex,
+    variantKey,
+    variantLabel,
+    variantOptions,
     itemCount: numberOrNull(source.itemCount),
     visibleItemCount: numberOrNull(source.visibleItemCount),
     visibleItems: Array.isArray(source.visibleItems) ? source.visibleItems : null,
@@ -540,6 +574,12 @@ function positionKeyForSource({
   hoverItemKey,
   basePageIndex,
   hoverIndex,
+  categoryKey,
+  categoryLabel,
+  productKey,
+  productIndex,
+  variantKey,
+  variantLabel,
   relatedIndex
 }) {
   if (itemKind === "page") {
@@ -555,6 +595,17 @@ function positionKeyForSource({
       tabIndex ?? "",
       "hover",
       hoverItemKey || hoverIndex || basePageIndex || relatedIndex || ""
+    ].join(":");
+  }
+  if (sectionKey === "collection-tabs" && (productKey || variantKey || categoryKey)) {
+    return [
+      sectionKey,
+      "category",
+      categoryKey || categoryLabel || tabIndex || "",
+      "product",
+      productKey || productIndex || "",
+      "variant",
+      variantKey || variantLabel || "default"
     ].join(":");
   }
   if (pageIndex || tabIndex !== null) {

@@ -1964,6 +1964,8 @@ function relatedShotIdentityKey(shot) {
     shot.tabIndex || shot.tabLabel || "",
     shot.interactionState || "default",
     shot.hoverItemKey || shot.hoverIndex || "",
+    shot.productKey || shot.productIndex || "",
+    shot.variantKey || shot.variantLabel || "",
     shot.pageIndex || "",
     shot.stateIndex || "",
     shot.logicalSignature || shot.stateLabel || shot.label || shot.file || shot.imageUrl || ""
@@ -1974,6 +1976,7 @@ function sortedRelatedShots(relatedShots) {
   return [...relatedShots].sort((a, b) =>
     relatedSectionSort(a.sectionKey) - relatedSectionSort(b.sectionKey) ||
     String(a.tabLabel || "").localeCompare(String(b.tabLabel || ""), "zh-CN") ||
+    Number(a.productIndex || 0) - Number(b.productIndex || 0) ||
     relatedInteractionSort(a) - relatedInteractionSort(b) ||
     Number(a.pageIndex || 0) - Number(b.pageIndex || 0) ||
     Number(a.hoverIndex || 0) - Number(b.hoverIndex || 0) ||
@@ -2154,7 +2157,46 @@ function renderTabbedRelatedShots(sectionKey, shots) {
   if (sectionKey === "navigation") {
     return renderNavigationTabShots(shots);
   }
+  if (sectionKey === "collection-tabs") {
+    return renderCollectionTabShots(shots);
+  }
   return renderRelatedThumbGrid(shots);
+}
+
+function renderCollectionTabShots(shots) {
+  const productGroups = groupCollectionShotsByProduct(shots);
+  if (!productGroups.length) {
+    return renderRelatedThumbGrid(shots);
+  }
+  return productGroups.map((group) => `
+    <div class="related-tab-subgroup related-product-group">
+      <p class="related-subtitle">${escapeHtml(group.title)}</p>
+      ${renderRelatedThumbGrid(group.shots)}
+    </div>
+  `).join("");
+}
+
+function groupCollectionShotsByProduct(shots) {
+  const groups = new Map();
+  for (const shot of shots) {
+    const productKey = shot.productKey || shot.productLabel || shot.stateLabel || shot.label || shot.file || "";
+    if (!productKey) {
+      return [];
+    }
+    if (!groups.has(productKey)) {
+      groups.set(productKey, {
+        key: productKey,
+        title: shot.productLabel || relatedShotDisplayLabel(shot),
+        productIndex: Number(shot.productIndex || 0),
+        shots: []
+      });
+    }
+    groups.get(productKey).shots.push(shot);
+  }
+  return [...groups.values()].sort((a, b) =>
+    Number(a.productIndex || 0) - Number(b.productIndex || 0) ||
+    String(a.title).localeCompare(String(b.title), "zh-CN")
+  );
 }
 
 function renderNavigationTabShots(shots) {
@@ -2196,6 +2238,9 @@ function renderProductShowcaseTabShots(shots) {
 }
 
 function groupHasTabbedPages(group) {
+  if (group.sectionKey === "collection-tabs") {
+    return group.shots.some((shot) => shot.tabLabel && shot.productKey && shot.variantKey);
+  }
   return group.shots.some((shot) => shot.tabLabel && (relatedShotPageIndex(shot) || shot.interactionState === "hover"));
 }
 
@@ -2251,6 +2296,9 @@ function relatedThumbLabel(shot) {
   }
   if (shot.interactionState === "hover") {
     return `Hover ${shot.hoverItemLabel || relatedShotDisplayLabel(shot)}`;
+  }
+  if (shot.sectionKey === "collection-tabs" && shot.variantLabel) {
+    return shot.variantLabel;
   }
   const pageIndex = relatedShotPageIndex(shot);
   if (shot.tabLabel && pageIndex) {
@@ -2314,6 +2362,15 @@ function relatedShotTitle(shot) {
       shot.sectionLabel,
       shot.tabLabel,
       `Hover ${shot.hoverItemLabel || relatedShotDisplayLabel(shot)}`,
+      shot.visualAudit?.status && shot.visualAudit.status !== "ok" ? shot.visualAudit.message : ""
+    ].filter(Boolean).join(" / ");
+  }
+  if (shot.sectionKey === "collection-tabs") {
+    return [
+      shot.sectionLabel,
+      shot.categoryLabel || shot.tabLabel,
+      shot.productLabel,
+      shot.variantLabel || relatedShotDisplayLabel(shot),
       shot.visualAudit?.status && shot.visualAudit.status !== "ok" ? shot.visualAudit.message : ""
     ].filter(Boolean).join(" / ");
   }
@@ -2399,6 +2456,18 @@ function normalizeRelatedShot(shot) {
     hoverIndex: shot.hoverIndex || shot.sectionState?.hoverIndex || null,
     trackLabel: shot.trackLabel || shot.tabLabel || null,
     trackIndex: shot.trackIndex || shot.tabIndex || null,
+    categoryKey: shot.categoryKey || shot.sectionState?.categoryKey || null,
+    categoryLabel: shot.categoryLabel || shot.sectionState?.categoryLabel || null,
+    productKey: shot.productKey || shot.sectionState?.productKey || null,
+    productLabel: shot.productLabel || shot.sectionState?.productLabel || null,
+    productIndex: shot.productIndex || shot.sectionState?.productIndex || null,
+    variantKey: shot.variantKey || shot.sectionState?.variantKey || null,
+    variantLabel: shot.variantLabel || shot.sectionState?.variantLabel || null,
+    variantOptions: Array.isArray(shot.variantOptions)
+      ? shot.variantOptions
+      : Array.isArray(shot.sectionState?.variantOptions)
+        ? shot.sectionState.variantOptions
+        : null,
     itemCount: shot.itemCount || null,
     visibleItemCount: shot.visibleItemCount || null,
     visibleItems: shot.visibleItems || null,

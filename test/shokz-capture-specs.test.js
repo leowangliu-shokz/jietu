@@ -117,51 +117,82 @@ test("defines collection page related sections with stable ordering metadata", (
       tabLabel: state.tabLabel,
       tabIndex: state.tabIndex,
       stateIndex: state.stateIndex,
-      fileId: state.fileId
+      fileId: state.fileId,
+      categoryKey: state.categoryKey,
+      categoryLabel: state.categoryLabel
     })),
     [
+      {
+        clickLabel: "All",
+        stateLabel: "All",
+        tabLabel: "All",
+        tabIndex: 1,
+        stateIndex: 1,
+        fileId: "collection-all",
+        categoryKey: "all",
+        categoryLabel: "All"
+      },
       {
         clickLabel: "Sports",
         stateLabel: "Sports",
         tabLabel: "Sports",
-        tabIndex: 1,
-        stateIndex: 1,
-        fileId: "collection-sports"
+        tabIndex: 2,
+        stateIndex: 2,
+        fileId: "collection-sports",
+        categoryKey: "sports",
+        categoryLabel: "Sports"
       },
       {
         clickLabel: "Workout & Lifestyle",
-        stateLabel: "Workout & Lifestyle",
-        tabLabel: "Workout & Lifestyle",
-        tabIndex: 2,
-        stateIndex: 2,
-        fileId: "collection-workout-lifestyle"
+        stateLabel: "Workout&Lifestyle",
+        tabLabel: "Workout&Lifestyle",
+        tabIndex: 3,
+        stateIndex: 3,
+        fileId: "collection-workout-lifestyle",
+        categoryKey: "workout-lifestyle",
+        categoryLabel: "Workout&Lifestyle"
       },
       {
         clickLabel: "Communication",
         stateLabel: "Communication",
         tabLabel: "Communication",
-        tabIndex: 3,
-        stateIndex: 3,
-        fileId: "collection-communication"
+        tabIndex: 4,
+        stateIndex: 4,
+        fileId: "collection-communication",
+        categoryKey: "communication",
+        categoryLabel: "Communication"
       },
       {
         clickLabel: "Refurbished",
         stateLabel: "Refurbished",
         tabLabel: "Refurbished",
-        tabIndex: 4,
-        stateIndex: 4,
-        fileId: "collection-refurbished"
+        tabIndex: 5,
+        stateIndex: 5,
+        fileId: "collection-refurbished",
+        categoryKey: "refurbished",
+        categoryLabel: "Refurbished"
       },
       {
         clickLabel: "Accessories",
         stateLabel: "Accessories",
         tabLabel: "Accessories",
-        tabIndex: 5,
-        stateIndex: 5,
-        fileId: "collection-accessories"
+        tabIndex: 6,
+        stateIndex: 6,
+        fileId: "collection-accessories",
+        categoryKey: "accessories",
+        categoryLabel: "Accessories"
       }
     ]
   );
+
+  assert.deepEqual(tabs.states.map((state) => state.categoryLabel), [
+    "All",
+    "Sports",
+    "Workout&Lifestyle",
+    "Communication",
+    "Refurbished",
+    "Accessories"
+  ]);
 
   assert.ok(shokzRelatedSectionOrder.indexOf("collection-tabs") > shokzRelatedSectionOrder.indexOf("navigation"));
   assert.equal(shokzCollectionRelatedSectionDefinitions.some((definition) => definition.key === "compare-model"), false);

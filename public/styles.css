@@ -832,6 +832,10 @@ select:focus {
   gap: 5px;
 }
 
+.related-product-group {
+  gap: 6px;
+}
+
 .related-tab-title {
   margin: 0;
   color: #dbe7df;

@@ -157,34 +157,51 @@ export const shokzCollectionRelatedSectionDefinitions = [
     title: "Collection Tabs",
     states: [
       {
+        clickLabel: "All",
+        matchPatterns: ["all"],
+        stateLabel: "All",
+        tabLabel: "All",
+        tabIndex: 1,
+        stateIndex: 1,
+        fileId: "collection-all",
+        categoryKey: "all",
+        categoryLabel: "All"
+      },
+      {
         clickLabel: "Sports",
         matchHandle: "sports",
         matchPatterns: ["sport"],
         stateLabel: "Sports",
         tabLabel: "Sports",
-        tabIndex: 1,
-        stateIndex: 1,
-        fileId: "collection-sports"
+        tabIndex: 2,
+        stateIndex: 2,
+        fileId: "collection-sports",
+        categoryKey: "sports",
+        categoryLabel: "Sports"
       },
       {
         clickLabel: "Workout & Lifestyle",
         matchHandle: "workout-lifestyle",
-        matchPatterns: ["workout", "lifestyle"],
-        stateLabel: "Workout & Lifestyle",
-        tabLabel: "Workout & Lifestyle",
-        tabIndex: 2,
-        stateIndex: 2,
-        fileId: "collection-workout-lifestyle"
+        matchPatterns: ["workout", "lifestyle", "workout&lifestyle"],
+        stateLabel: "Workout&Lifestyle",
+        tabLabel: "Workout&Lifestyle",
+        tabIndex: 3,
+        stateIndex: 3,
+        fileId: "collection-workout-lifestyle",
+        categoryKey: "workout-lifestyle",
+        categoryLabel: "Workout&Lifestyle"
       },
       {
         clickLabel: "Communication",
         matchHandle: "communication",
-        matchPatterns: ["communication"],
+        matchPatterns: ["communication", "commucication"],
         stateLabel: "Communication",
         tabLabel: "Communication",
-        tabIndex: 3,
-        stateIndex: 3,
-        fileId: "collection-communication"
+        tabIndex: 4,
+        stateIndex: 4,
+        fileId: "collection-communication",
+        categoryKey: "communication",
+        categoryLabel: "Communication"
       },
       {
         clickLabel: "Refurbished",
@@ -192,9 +209,11 @@ export const shokzCollectionRelatedSectionDefinitions = [
         matchPatterns: ["refurbi"],
         stateLabel: "Refurbished",
         tabLabel: "Refurbished",
-        tabIndex: 4,
-        stateIndex: 4,
-        fileId: "collection-refurbished"
+        tabIndex: 5,
+        stateIndex: 5,
+        fileId: "collection-refurbished",
+        categoryKey: "refurbished",
+        categoryLabel: "Refurbished"
       },
       {
         clickLabel: "Accessories",
@@ -202,9 +221,11 @@ export const shokzCollectionRelatedSectionDefinitions = [
         matchPatterns: ["acce"],
         stateLabel: "Accessories",
         tabLabel: "Accessories",
-        tabIndex: 5,
-        stateIndex: 5,
-        fileId: "collection-accessories"
+        tabIndex: 6,
+        stateIndex: 6,
+        fileId: "collection-accessories",
+        categoryKey: "accessories",
+        categoryLabel: "Accessories"
       }
     ]
   }
