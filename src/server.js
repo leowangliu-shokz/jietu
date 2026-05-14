@@ -4,6 +4,7 @@ import path from "node:path";
 import { captureAllDevices, captureConfiguredUrls, captureOne, browserStatus } from "./capture-service.js";
 import { loadChanges } from "./changes.js";
 import { archiveDir, publicDir } from "./paths.js";
+import { safeJoin } from "./path-safety.js";
 import { annotateChangesForResponse, buildStatePayload } from "./server-state.js";
 import { deleteSnapshotAction, viewerModeErrorMessage } from "./snapshot-admin.js";
 import { ensureStorage, loadConfig, loadSnapshots, saveConfig } from "./store.js";
@@ -265,13 +266,6 @@ async function previewSnapshotForRequest(url) {
   }
 
   return null;
-}
-
-function safeJoin(root, requestedPath) {
-  const cleanPath = requestedPath.replace(/^[/\\]+/, "");
-  const resolved = path.resolve(root, cleanPath);
-  const rootResolved = path.resolve(root);
-  return resolved.startsWith(rootResolved) ? resolved : null;
 }
 
 async function sendFile(response, filePath, options = {}) {
