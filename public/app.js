@@ -50,6 +50,7 @@ const elements = {
   imagePreviewZoomValue: document.querySelector("#imagePreviewZoomValue"),
   imagePreviewZoomIn: document.querySelector("#imagePreviewZoomIn"),
   imagePreviewZoomFit: document.querySelector("#imagePreviewZoomFit"),
+  imagePreviewIssueMode: document.querySelector("#imagePreviewIssueMode"),
   imagePreviewNavControls: document.querySelector("#imagePreviewNavControls"),
   imagePreviewPrev: document.querySelector("#imagePreviewPrev"),
   imagePreviewNext: document.querySelector("#imagePreviewNext"),
@@ -176,6 +177,7 @@ elements.imagePreviewViewport.addEventListener("pointercancel", endImagePreviewD
 elements.imagePreviewZoomOut.addEventListener("click", () => changeImagePreviewZoom(-1));
 elements.imagePreviewZoomIn.addEventListener("click", () => changeImagePreviewZoom(1));
 elements.imagePreviewZoomFit.addEventListener("click", fitImagePreviewToViewport);
+elements.imagePreviewIssueMode.addEventListener("click", toggleImagePreviewIssueMode);
 elements.imagePreviewPrev.addEventListener("click", () => stepImagePreviewNavigation(-1));
 elements.imagePreviewNext.addEventListener("click", () => stepImagePreviewNavigation(1));
 elements.imagePreviewClose.addEventListener("click", closeImagePreview);
@@ -670,6 +672,7 @@ function createImagePreviewZoomState() {
     dragMoved: false,
     selectedIssueTile: null,
     pendingIssueTileKey: "",
+    issueMode: false,
     snapshot: null,
     comparison: null
   };
@@ -708,6 +711,7 @@ function showImagePreviewItem(item) {
   imagePreviewZoomState.snapshot = item?.snapshot || null;
   imagePreviewZoomState.selectedIssueTile = null;
   imagePreviewZoomState.pendingIssueTileKey = "";
+  imagePreviewZoomState.issueMode = false;
   elements.imagePreviewImage.src = item?.src || "";
   elements.imagePreviewImage.alt = item?.caption || "鍥剧墖棰勮";
   elements.imagePreviewCaption.textContent = item?.caption || "";
@@ -822,10 +826,12 @@ function resetImagePreviewZoom() {
   elements.imagePreviewLongView.dataset.mode = "single";
   elements.imagePreviewLongView.removeAttribute("style");
   elements.imagePreviewMainFrame.removeAttribute("style");
+  elements.imagePreviewMainFrame.classList.remove("is-issue-mode");
   elements.imagePreviewDepthMarkers.innerHTML = "";
   elements.imagePreviewDepthMarkers.removeAttribute("style");
   elements.imagePreviewIssueLayer.innerHTML = "";
   elements.imagePreviewIssueLayer.removeAttribute("style");
+  syncImagePreviewIssueModeControl();
   elements.imagePreviewScreenRail.innerHTML = "";
   elements.imagePreviewViewport.scrollLeft = 0;
   elements.imagePreviewViewport.scrollTop = 0;
@@ -851,6 +857,7 @@ function renderImagePreviewMode() {
   elements.imagePreviewLongView.dataset.mode = comparison ? "comparison" : "single";
   elements.imagePreviewDepthMarkers.innerHTML = "";
   elements.imagePreviewScreenRail.innerHTML = "";
+  syncImagePreviewIssueModeControl();
 
   if (comparison) {
     renderImagePreviewDepthMarkers(comparison, imagePreviewMarkerModeForSnapshot(imagePreviewZoomState.snapshot));
@@ -926,6 +933,28 @@ function renderImagePreviewScreenRail(comparison) {
   elements.imagePreviewScreenRail.append(fragment);
 }
 
+function toggleImagePreviewIssueMode() {
+  if (!imagePreviewCanMarkTiles()) {
+    return;
+  }
+  imagePreviewZoomState.issueMode = !imagePreviewZoomState.issueMode;
+  imagePreviewZoomState.selectedIssueTile = null;
+  syncImagePreviewIssueModeControl();
+  renderImagePreviewIssueSelection();
+}
+
+function syncImagePreviewIssueModeControl() {
+  const canMark = imagePreviewCanMarkTiles();
+  elements.imagePreviewIssueMode.hidden = !canMark;
+  elements.imagePreviewIssueMode.disabled = !canMark;
+  elements.imagePreviewIssueMode.classList.toggle("is-active", canMark && imagePreviewZoomState.issueMode);
+  elements.imagePreviewIssueMode.setAttribute("aria-pressed", canMark && imagePreviewZoomState.issueMode ? "true" : "false");
+  elements.imagePreviewIssueMode.title = canMark
+    ? "开启后点击右侧小图标记错误"
+    : "当前图片没有可标记的小图";
+  elements.imagePreviewMainFrame.classList.toggle("is-issue-mode", canMark && imagePreviewZoomState.issueMode);
+}
+
 function handleImagePreviewFrameClick(event) {
   const action = event.target.closest(".image-preview-issue-action");
   if (action) {
@@ -935,7 +964,7 @@ function handleImagePreviewFrameClick(event) {
     return;
   }
 
-  if (event.target !== elements.imagePreviewImage || !imagePreviewCanMarkTiles()) {
+  if (event.target !== elements.imagePreviewImage || !imagePreviewCanMarkTiles() || !imagePreviewZoomState.issueMode) {
     return;
   }
 
@@ -987,12 +1016,32 @@ function imagePreviewTileAtPoint(x, y) {
 
 function renderImagePreviewIssueSelection() {
   elements.imagePreviewIssueLayer.innerHTML = "";
-  const tile = imagePreviewZoomState.selectedIssueTile;
-  if (!tile?.rect || !imagePreviewCanMarkTiles()) {
+  if (!imagePreviewCanMarkTiles() || !imagePreviewZoomState.issueMode) {
     return;
   }
 
   const scale = imagePreviewZoomState.scale || 1;
+  const tile = imagePreviewZoomState.selectedIssueTile;
+  for (const candidate of imagePreviewZoomState.snapshot?.composite?.variants || []) {
+    if (!candidate?.rect) {
+      continue;
+    }
+    const target = document.createElement("div");
+    target.className = [
+      "image-preview-issue-target",
+      tile?.key === candidate.key ? "is-selected" : ""
+    ].filter(Boolean).join(" ");
+    target.style.left = `${Number(candidate.rect.x || 0) * scale}px`;
+    target.style.top = `${Number(candidate.rect.y || 0) * scale}px`;
+    target.style.width = `${Number(candidate.rect.width || 0) * scale}px`;
+    target.style.height = `${Number(candidate.rect.height || 0) * scale}px`;
+    elements.imagePreviewIssueLayer.append(target);
+  }
+
+  if (!tile?.rect) {
+    return;
+  }
+
   const rect = tile.rect;
   const box = document.createElement("div");
   box.className = "image-preview-issue-box";
@@ -1004,7 +1053,7 @@ function renderImagePreviewIssueSelection() {
   const action = document.createElement("button");
   action.className = "image-preview-issue-action";
   action.type = "button";
-  action.textContent = imagePreviewZoomState.pendingIssueTileKey === tile.key ? "标记中..." : "标记错误";
+  action.textContent = imagePreviewZoomState.pendingIssueTileKey === tile.key ? "标记中..." : "标记此图错误";
   action.disabled = imagePreviewZoomState.pendingIssueTileKey === tile.key;
   action.style.left = `${Math.max(0, Number(rect.x || 0) * scale)}px`;
   action.style.top = `${Math.max(0, (Number(rect.y || 0) + Number(rect.height || 0)) * scale + 8)}px`;
@@ -1480,7 +1529,8 @@ function endImagePreviewDrag(event) {
   const shouldSelectTile = event &&
     !imagePreviewZoomState.dragMoved &&
     imagePreviewZoomState.dragStartTarget === elements.imagePreviewImage &&
-    imagePreviewCanMarkTiles();
+    imagePreviewCanMarkTiles() &&
+    imagePreviewZoomState.issueMode;
 
   if (imagePreviewZoomState.dragPointerId !== null && elements.imagePreviewViewport.hasPointerCapture?.(imagePreviewZoomState.dragPointerId)) {
     elements.imagePreviewViewport.releasePointerCapture(imagePreviewZoomState.dragPointerId);
