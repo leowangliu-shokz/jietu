@@ -852,6 +852,10 @@ function renderImagePreviewMode() {
 }
 
 function renderImagePreviewDepthMarkers(comparison, mode = "percent-depth") {
+  if (mode === "none") {
+    return;
+  }
+
   if (mode === "screen-dividers" || mode === "percent-depth-with-screen-dividers") {
     const naturalHeight = Math.max(1, Number(imagePreviewZoomState.naturalHeight || 0));
     for (const segment of comparison?.segments || []) {
@@ -912,6 +916,9 @@ function renderImagePreviewScreenRail(comparison) {
 }
 
 function imagePreviewMarkerModeForSnapshot(snapshot) {
+  if (snapshot?.kind === "collection-tab-composite") {
+    return "none";
+  }
   return snapshot?.sectionKey === "navigation"
     ? "screen-dividers"
     : "percent-depth-with-screen-dividers";

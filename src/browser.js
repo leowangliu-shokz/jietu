@@ -3235,6 +3235,27 @@ async function captureShokzHomeRelatedSection(client, outputPath, captureContext
     await clearRelatedHover(client);
   }
 
+  if (definition.key === "topbar") {
+    const compositeResult = await composeShokzHomeTopbarCompositeCaptures({
+      captures,
+      definition,
+      outputPath,
+      viewport
+    });
+    warnings.push(...compositeResult.warnings);
+    if (compositeResult.captures.length) {
+      await removeIntermediateRelatedOutputs(captures, compositeResult.captures);
+      return {
+        width: compositeResult.width,
+        height: compositeResult.height,
+        captures: compositeResult.captures,
+        warnings,
+        expectedCount: compositeResult.expectedCount,
+        capturedCount: compositeResult.captures.length
+      };
+    }
+  }
+
   if (definition.key === "product-showcase") {
     const compositeResult = await composeShokzHomeProductShowcaseCompositeCaptures({
       captures,
@@ -3266,6 +3287,202 @@ async function captureShokzHomeRelatedSection(client, outputPath, captureContext
     warnings,
     expectedCount: plan.states.length,
     capturedCount: captures.length
+  };
+}
+
+async function composeShokzHomeTopbarCompositeCaptures({
+  captures,
+  definition,
+  outputPath,
+  viewport
+}) {
+  const warnings = [];
+  const orderedCaptures = [...(captures || [])].sort((a, b) =>
+    Number(a.pageIndex || a.stateIndex || 0) - Number(b.pageIndex || b.stateIndex || 0) ||
+    String(a.stateLabel || "").localeCompare(String(b.stateLabel || ""), "zh-CN")
+  );
+  const topbarWithBuffers = [];
+  let mainBuffer = null;
+
+  try {
+    mainBuffer = await fs.readFile(outputPath);
+  } catch (error) {
+    warnings.push({
+      sectionKey: definition.key,
+      sectionLabel: definition.sectionLabel,
+      message: `Could not read main homepage screenshot for Topbar composition: ${error.message}`
+    });
+    return {
+      width: Number(viewport.width || 0) || 393,
+      height: Number(viewport.height || 0) || 852,
+      captures: [],
+      warnings,
+      expectedCount: 1,
+      capturedCount: 0
+    };
+  }
+
+  for (const capture of orderedCaptures) {
+    try {
+      topbarWithBuffers.push({ ...capture, buffer: await fs.readFile(capture.outputPath) });
+    } catch (error) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: capture.stateLabel,
+        message: `Could not read Topbar screenshot for composition: ${error.message}`
+      });
+    }
+  }
+
+  if (!topbarWithBuffers.length) {
+    warnings.push({
+      sectionKey: definition.key,
+      sectionLabel: definition.sectionLabel,
+      message: "Could not compose Topbar screenshots because no Topbar states were captured."
+    });
+    return {
+      width: Number(viewport.width || 0) || 393,
+      height: Number(viewport.height || 0) || 852,
+      captures: [],
+      warnings,
+      expectedCount: 1,
+      capturedCount: 0
+    };
+  }
+
+  let composite;
+  try {
+    composite = composeShokzHomeTopbarComposite({
+      mainCapture: { buffer: mainBuffer },
+      topbarCaptures: topbarWithBuffers,
+      viewport
+    });
+  } catch (error) {
+    warnings.push({
+      sectionKey: definition.key,
+      sectionLabel: definition.sectionLabel,
+      message: `Could not compose Topbar screenshots: ${error.message}`
+    });
+    return {
+      width: Number(viewport.width || 0) || 393,
+      height: Number(viewport.height || 0) || 852,
+      captures: [],
+      warnings,
+      expectedCount: 1,
+      capturedCount: 0
+    };
+  }
+
+  const relatedOutput = relatedOutputPath(outputPath, definition.key, "carousel-map");
+  await fs.writeFile(relatedOutput, composite.buffer);
+
+  const visualSignature = hashBuffer(composite.buffer);
+  const visualHash = visualHashForBuffer(composite.buffer);
+  const visualAudit = visualAuditForBuffer(composite.buffer, visualHash);
+  const visibleItems = composite.topbarCaptures.map((item) => ({
+    key: item.capture.coverageKey || item.capture.logicalSignature || item.capture.stateLabel || `topbar-${item.index + 1}`,
+    label: item.capture.stateLabel || item.capture.label || `Topbar ${item.index + 1}`,
+    text: item.capture.sectionState?.text || "",
+    pageIndex: item.capture.pageIndex || item.index + 1,
+    rect: item.compositeRect,
+    sourceClip: item.capture.clip || null
+  }));
+  const itemRects = visibleItems.map((item) => ({
+    key: item.key,
+    label: item.label,
+    rect: item.rect
+  }));
+  const stateLabel = "Topbar Composite";
+  const categoryLabel = definition.sectionLabel || "Topbar";
+  const width = composite.width;
+  const height = composite.height;
+  const windowSignature = JSON.stringify({
+    sectionKey: definition.key,
+    states: topbarWithBuffers.map((item) => item.logicalSignature || item.windowSignature || item.stateLabel)
+  }).slice(0, 1800);
+
+  const compositeCapture = {
+    outputPath: relatedOutput,
+    width,
+    height,
+    kind: "collection-tab-composite",
+    sectionKey: definition.key,
+    sectionLabel: definition.sectionLabel,
+    sectionTitle: definition.title,
+    stateIndex: 1,
+    stateCount: 1,
+    stateLabel,
+    label: stateLabel,
+    tabLabel: null,
+    tabIndex: null,
+    pageIndex: null,
+    interactionState: "default",
+    categoryKey: "topbar",
+    categoryLabel,
+    productKey: null,
+    productLabel: null,
+    productIndex: null,
+    variantKey: null,
+    variantLabel: `${topbarWithBuffers.length} carousel states`,
+    variantOptions: null,
+    logicalSignature: [definition.key, "carousel-map"].join("|"),
+    visualSignature,
+    visualHash,
+    visualAudit,
+    captureValidation: {
+      ok: true,
+      label: `${definition.key} carousel map`,
+      attempts: topbarWithBuffers.map((item) => item.captureValidation).filter(Boolean)
+    },
+    clip: {
+      x: 0,
+      y: 0,
+      width,
+      height
+    },
+    scrollInfo: {
+      height,
+      viewportWidth: Number(viewport.width || 0) || composite.layout?.mainWidth || width,
+      viewportHeight: Number(viewport.height || 0) || 852,
+      pageCount: topbarWithBuffers.length
+    },
+    composite: composite.layout,
+    isDefaultState: true,
+    coverageKey: relatedCoverageKeyForState({
+      sectionKey: definition.key,
+      fileId: "carousel-map",
+      stateIndex: 1,
+      stateLabel
+    }),
+    itemCount: visibleItems.length,
+    visibleItemCount: visibleItems.length,
+    visibleItems,
+    itemRects,
+    windowSignature,
+    sectionState: {
+      text: combinedRelatedCaptureText(topbarWithBuffers),
+      textBlocks: combinedRelatedCaptureTextBlocks(topbarWithBuffers),
+      images: combinedRelatedCaptureImages(topbarWithBuffers),
+      activeIndex: 1,
+      interactionState: "default",
+      categoryKey: "topbar",
+      categoryLabel,
+      visibleItemCount: visibleItems.length,
+      visibleItems,
+      itemRects,
+      windowSignature,
+      composite: composite.layout
+    }
+  };
+
+  return {
+    width,
+    height,
+    captures: [compositeCapture],
+    warnings,
+    expectedCount: 1,
+    capturedCount: 1
   };
 }
 
@@ -3506,6 +3723,92 @@ async function composeShokzHomeProductShowcaseCompositeCaptures({
     warnings,
     expectedCount: tabEntries.length,
     capturedCount: composites.length
+  };
+}
+
+function composeShokzHomeTopbarComposite({ mainCapture, topbarCaptures = [], viewport = {} }) {
+  const mainImage = decodePng(mainCapture.buffer);
+  const gutter = 24;
+  const itemGap = 18;
+  const outerPad = 24;
+  const items = topbarCaptures
+    .map((capture, index) => {
+      const image = decodePng(capture.buffer);
+      return {
+        capture,
+        image,
+        index,
+        width: image.width,
+        height: image.height
+      };
+    })
+    .filter((item) => item.width > 0 && item.height > 0);
+
+  if (!items.length) {
+    throw new Error("No Topbar captures to compose.");
+  }
+
+  const rightWidth = items.reduce((sum, item) => sum + item.width, 0) + Math.max(0, items.length - 1) * itemGap;
+  const width = Math.max(1, mainImage.width + gutter + rightWidth + outerPad);
+  const height = Math.max(mainImage.height, Math.max(...items.map((item) => item.height), 1) + outerPad);
+  const rgba = new Uint8Array(width * height * 4);
+  fillRgba(rgba, [246, 248, 248, 255]);
+  copyRgbaImage({
+    source: mainImage.rgba,
+    sourceWidth: mainImage.width,
+    sourceHeight: mainImage.height,
+    target: rgba,
+    targetWidth: width,
+    targetHeight: height,
+    x: 0,
+    y: 0
+  });
+
+  const variants = [];
+  let x = mainImage.width + gutter;
+  for (const item of items) {
+    copyRgbaImage({
+      source: item.image.rgba,
+      sourceWidth: item.image.width,
+      sourceHeight: item.image.height,
+      target: rgba,
+      targetWidth: width,
+      targetHeight: height,
+      x,
+      y: 0
+    });
+    item.compositeRect = {
+      x,
+      y: 0,
+      width: item.image.width,
+      height: item.image.height
+    };
+    variants.push({
+      key: item.capture.coverageKey || item.capture.logicalSignature || item.capture.stateLabel || `topbar-${item.index + 1}`,
+      label: item.capture.stateLabel || item.capture.label || `Topbar ${item.index + 1}`,
+      rect: item.compositeRect,
+      sourceClip: item.capture.clip || null
+    });
+    x += item.image.width + itemGap;
+  }
+
+  return {
+    buffer: encodePng(width, height, rgba),
+    width,
+    height,
+    layout: {
+      kind: "collection-tab-composite",
+      sourceKind: "home-topbar",
+      mainWidth: mainImage.width,
+      mainHeight: mainImage.height,
+      viewportWidth: Number(viewport.width || 0) || mainImage.width,
+      viewportHeight: Number(viewport.height || 0) || 852,
+      gutter,
+      itemGap,
+      variantCount: items.length,
+      variants
+    },
+    topbarCaptures: items
   };
 }
 
@@ -13683,6 +13986,7 @@ export const __testOnly = {
   isAcceptableTrailingSegmentBlankAudit,
   isViewMoreLabel,
   composeShokzCollectionTabComposite,
+  composeShokzHomeTopbarComposite,
   composeShokzHomeProductShowcaseComposite,
   shouldUseDedicatedViewMoreExpansion,
   shouldUseDirectFullPageClipCapture

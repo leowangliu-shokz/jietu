@@ -13,6 +13,7 @@ const {
   isAcceptableTrailingSegmentBlankAudit,
   isViewMoreLabel,
   composeShokzCollectionTabComposite,
+  composeShokzHomeTopbarComposite,
   composeShokzHomeProductShowcaseComposite,
   shouldUseDedicatedViewMoreExpansion,
   shouldUseDirectFullPageClipCapture
@@ -319,6 +320,38 @@ test("home product showcase composite stacks default pages and crops hover cards
   assert.equal(pixelAt(decoded, 211, 115)[2], 200);
 });
 
+test("home topbar composite keeps the main screenshot and lays carousel states to the right", () => {
+  const main = encodePng(100, 180, solidImage(100, 180, [30, 40, 50, 255]));
+  const firstTopbar = encodePng(80, 16, solidImage(80, 16, [200, 20, 20, 255]));
+  const secondTopbar = encodePng(80, 16, solidImage(80, 16, [20, 200, 20, 255]));
+
+  const result = composeShokzHomeTopbarComposite({
+    mainCapture: {
+      buffer: main
+    },
+    viewport: {
+      width: 100,
+      height: 180
+    },
+    topbarCaptures: [
+      topbarCapture(firstTopbar, 1),
+      topbarCapture(secondTopbar, 2)
+    ]
+  });
+
+  const decoded = decodePng(result.buffer);
+
+  assert.equal(result.layout.sourceKind, "home-topbar");
+  assert.equal(result.layout.mainWidth, 100);
+  assert.equal(result.layout.variantCount, 2);
+  assert.equal(result.layout.variants.length, 2);
+  assert.ok(decoded.width > 100);
+  assert.equal(decoded.height, 180);
+  assert.equal(pixelAt(decoded, 10, 10)[0], 30);
+  assert.equal(pixelAt(decoded, 124, 8)[0], 200);
+  assert.equal(pixelAt(decoded, 222, 8)[1], 200);
+});
+
 test("collection and comparison page capture modes prefer direct full-page clip capture", () => {
   assert.equal(shouldUseDirectFullPageClipCapture({ captureMode: "shokz-collection-page" }), true);
   assert.equal(shouldUseDirectFullPageClipCapture({ captureMode: "shokz-comparison-page" }), true);
@@ -368,6 +401,21 @@ function homeShowcaseCapture(buffer, pageIndex) {
     stateLabel: `Best Selling ${pageIndex}`,
     sectionState: {
       text: `Best Selling ${pageIndex}`,
+      textBlocks: [],
+      images: []
+    }
+  };
+}
+
+function topbarCapture(buffer, pageIndex) {
+  return {
+    buffer,
+    pageIndex,
+    stateIndex: pageIndex,
+    stateLabel: `Topbar ${pageIndex}`,
+    coverageKey: `topbar-${pageIndex}`,
+    sectionState: {
+      text: `Topbar ${pageIndex}`,
       textBlocks: [],
       images: []
     }
