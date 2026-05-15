@@ -13,6 +13,7 @@ const {
   isAcceptableTrailingSegmentBlankAudit,
   isViewMoreLabel,
   composeShokzCollectionTabComposite,
+  composeShokzHomeModuleComposite,
   composeShokzHomeTopbarComposite,
   composeShokzHomeProductShowcaseComposite,
   shouldUseDedicatedViewMoreExpansion,
@@ -350,6 +351,38 @@ test("home topbar composite keeps the main screenshot and lays carousel states t
   assert.equal(pixelAt(decoded, 10, 10)[0], 30);
   assert.equal(pixelAt(decoded, 124, 8)[0], 200);
   assert.equal(pixelAt(decoded, 222, 8)[1], 200);
+});
+
+test("home module composite reuses the Topbar layout for other carousel sections", () => {
+  const main = encodePng(120, 160, solidImage(120, 160, [40, 50, 60, 255]));
+  const firstState = encodePng(90, 50, solidImage(90, 50, [220, 30, 30, 255]));
+  const secondState = encodePng(90, 50, solidImage(90, 50, [30, 220, 30, 255]));
+
+  const result = composeShokzHomeModuleComposite({
+    mainCapture: {
+      buffer: main
+    },
+    viewport: {
+      width: 120,
+      height: 160
+    },
+    sourceKind: "home-banner",
+    stateCaptures: [
+      topbarCapture(firstState, 1),
+      topbarCapture(secondState, 2)
+    ]
+  });
+
+  const decoded = decodePng(result.buffer);
+
+  assert.equal(result.layout.sourceKind, "home-banner");
+  assert.equal(result.layout.mainWidth, 120);
+  assert.equal(result.layout.variantCount, 2);
+  assert.equal(result.stateCaptures.length, 2);
+  assert.equal(decoded.height, 160);
+  assert.equal(pixelAt(decoded, 10, 10)[0], 40);
+  assert.equal(pixelAt(decoded, 144, 10)[0], 220);
+  assert.equal(pixelAt(decoded, 252, 10)[1], 220);
 });
 
 test("collection and comparison page capture modes prefer direct full-page clip capture", () => {

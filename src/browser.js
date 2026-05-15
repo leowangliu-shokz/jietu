@@ -2965,6 +2965,36 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
   validateBannerCaptureCompleteness(captures, plan.count, duplicates);
   captures.sort((a, b) => Number(a.bannerIndex || 0) - Number(b.bannerIndex || 0));
 
+  const compositeResult = await composeShokzHomeModuleCompositeCaptures({
+    captures,
+    definition: {
+      key: "banner",
+      sectionLabel: "Banner",
+      title: captures[0]?.sectionTitle || "Banner"
+    },
+    outputPath,
+    viewport
+  });
+  if (compositeResult.captures.length) {
+    await removeIntermediateRelatedOutputs(captures, compositeResult.captures);
+    return {
+      width: compositeResult.width,
+      height: compositeResult.height,
+      captures: compositeResult.captures,
+      bannerInfo: {
+        expectedCount: compositeResult.expectedCount,
+        capturedCount: compositeResult.captures.length,
+        savedCount: compositeResult.captures.length,
+        stateCount: plan.count,
+        duplicateCount: duplicates.length,
+        duplicates,
+        status: compositeResult.warnings.length ? "warning" : "ok",
+        warnings: compositeResult.warnings,
+        slides: plan.slides
+      }
+    };
+  }
+
   return {
     width: maxWidth,
     height: maxHeight,
@@ -3235,8 +3265,8 @@ async function captureShokzHomeRelatedSection(client, outputPath, captureContext
     await clearRelatedHover(client);
   }
 
-  if (definition.key === "topbar") {
-    const compositeResult = await composeShokzHomeTopbarCompositeCaptures({
+  if (definition.key) {
+    const compositeResult = await composeShokzHomeModuleCompositeCaptures({
       captures,
       definition,
       outputPath,
@@ -3290,7 +3320,7 @@ async function captureShokzHomeRelatedSection(client, outputPath, captureContext
   };
 }
 
-async function composeShokzHomeTopbarCompositeCaptures({
+async function composeShokzHomeModuleCompositeCaptures({
   captures,
   definition,
   outputPath,
@@ -3301,7 +3331,7 @@ async function composeShokzHomeTopbarCompositeCaptures({
     Number(a.pageIndex || a.stateIndex || 0) - Number(b.pageIndex || b.stateIndex || 0) ||
     String(a.stateLabel || "").localeCompare(String(b.stateLabel || ""), "zh-CN")
   );
-  const topbarWithBuffers = [];
+  const stateCapturesWithBuffers = [];
   let mainBuffer = null;
 
   try {
@@ -3310,7 +3340,7 @@ async function composeShokzHomeTopbarCompositeCaptures({
     warnings.push({
       sectionKey: definition.key,
       sectionLabel: definition.sectionLabel,
-      message: `Could not read main homepage screenshot for Topbar composition: ${error.message}`
+      message: `Could not read main homepage screenshot for ${definition.sectionLabel || definition.key} composition: ${error.message}`
     });
     return {
       width: Number(viewport.width || 0) || 393,
@@ -3324,22 +3354,22 @@ async function composeShokzHomeTopbarCompositeCaptures({
 
   for (const capture of orderedCaptures) {
     try {
-      topbarWithBuffers.push({ ...capture, buffer: await fs.readFile(capture.outputPath) });
+      stateCapturesWithBuffers.push({ ...capture, buffer: await fs.readFile(capture.outputPath) });
     } catch (error) {
       warnings.push({
         sectionKey: definition.key,
         sectionLabel: definition.sectionLabel,
         stateLabel: capture.stateLabel,
-        message: `Could not read Topbar screenshot for composition: ${error.message}`
+        message: `Could not read ${definition.sectionLabel || definition.key} screenshot for composition: ${error.message}`
       });
     }
   }
 
-  if (!topbarWithBuffers.length) {
+  if (!stateCapturesWithBuffers.length) {
     warnings.push({
       sectionKey: definition.key,
       sectionLabel: definition.sectionLabel,
-      message: "Could not compose Topbar screenshots because no Topbar states were captured."
+      message: `Could not compose ${definition.sectionLabel || definition.key} screenshots because no states were captured.`
     });
     return {
       width: Number(viewport.width || 0) || 393,
@@ -3353,16 +3383,17 @@ async function composeShokzHomeTopbarCompositeCaptures({
 
   let composite;
   try {
-    composite = composeShokzHomeTopbarComposite({
+    composite = composeShokzHomeModuleComposite({
       mainCapture: { buffer: mainBuffer },
-      topbarCaptures: topbarWithBuffers,
-      viewport
+      stateCaptures: stateCapturesWithBuffers,
+      viewport,
+      sourceKind: `home-${definition.key || "module"}`
     });
   } catch (error) {
     warnings.push({
       sectionKey: definition.key,
       sectionLabel: definition.sectionLabel,
-      message: `Could not compose Topbar screenshots: ${error.message}`
+      message: `Could not compose ${definition.sectionLabel || definition.key} screenshots: ${error.message}`
     });
     return {
       width: Number(viewport.width || 0) || 393,
@@ -3380,26 +3411,36 @@ async function composeShokzHomeTopbarCompositeCaptures({
   const visualSignature = hashBuffer(composite.buffer);
   const visualHash = visualHashForBuffer(composite.buffer);
   const visualAudit = visualAuditForBuffer(composite.buffer, visualHash);
-  const visibleItems = composite.topbarCaptures.map((item) => ({
-    key: item.capture.coverageKey || item.capture.logicalSignature || item.capture.stateLabel || `topbar-${item.index + 1}`,
-    label: item.capture.stateLabel || item.capture.label || `Topbar ${item.index + 1}`,
-    text: item.capture.sectionState?.text || "",
+  const categoryKey = safeFilePart(definition.key || definition.sectionLabel || "module");
+  const categoryLabel = definition.sectionLabel || definition.key || "Module";
+  const visibleProducts = definition.key === "product-showcase"
+    ? homeProductShowcaseVisibleProducts(stateCapturesWithBuffers)
+    : [];
+  const visibleItems = composite.stateCaptures.map((item) => ({
+    key: item.capture.coverageKey || item.capture.logicalSignature || item.capture.bannerSignature || item.capture.stateLabel || `${categoryKey}-${item.index + 1}`,
+    label: item.capture.stateLabel || item.capture.label || `${categoryLabel} ${item.index + 1}`,
+    text: item.capture.sectionState?.text || item.capture.bannerState?.text || "",
+    tabLabel: item.capture.tabLabel || null,
+    tabIndex: item.capture.tabIndex || null,
     pageIndex: item.capture.pageIndex || item.index + 1,
+    bannerIndex: item.capture.bannerIndex || null,
+    interactionState: item.capture.interactionState || "default",
     rect: item.compositeRect,
-    sourceClip: item.capture.clip || null
+    sourceClip: item.capture.clip || item.capture.bannerClip || null
   }));
   const itemRects = visibleItems.map((item) => ({
     key: item.key,
     label: item.label,
     rect: item.rect
   }));
-  const stateLabel = "Topbar Composite";
-  const categoryLabel = definition.sectionLabel || "Topbar";
+  const stateLabel = `${categoryLabel} Composite`;
   const width = composite.width;
   const height = composite.height;
   const windowSignature = JSON.stringify({
     sectionKey: definition.key,
-    states: topbarWithBuffers.map((item) => item.logicalSignature || item.windowSignature || item.stateLabel)
+    states: stateCapturesWithBuffers.map((item) =>
+      item.logicalSignature || item.bannerSignature || item.windowSignature || item.stateLabel
+    )
   }).slice(0, 1800);
 
   const compositeCapture = {
@@ -3418,13 +3459,13 @@ async function composeShokzHomeTopbarCompositeCaptures({
     tabIndex: null,
     pageIndex: null,
     interactionState: "default",
-    categoryKey: "topbar",
+    categoryKey,
     categoryLabel,
     productKey: null,
     productLabel: null,
     productIndex: null,
     variantKey: null,
-    variantLabel: `${topbarWithBuffers.length} carousel states`,
+    variantLabel: `${stateCapturesWithBuffers.length} carousel states`,
     variantOptions: null,
     logicalSignature: [definition.key, "carousel-map"].join("|"),
     visualSignature,
@@ -3433,7 +3474,7 @@ async function composeShokzHomeTopbarCompositeCaptures({
     captureValidation: {
       ok: true,
       label: `${definition.key} carousel map`,
-      attempts: topbarWithBuffers.map((item) => item.captureValidation).filter(Boolean)
+      attempts: stateCapturesWithBuffers.map((item) => item.captureValidation).filter(Boolean)
     },
     clip: {
       x: 0,
@@ -3445,29 +3486,35 @@ async function composeShokzHomeTopbarCompositeCaptures({
       height,
       viewportWidth: Number(viewport.width || 0) || composite.layout?.mainWidth || width,
       viewportHeight: Number(viewport.height || 0) || 852,
-      pageCount: topbarWithBuffers.length
+      pageCount: stateCapturesWithBuffers.length
     },
     composite: composite.layout,
-    isDefaultState: true,
+    isDefaultState: false,
     coverageKey: relatedCoverageKeyForState({
       sectionKey: definition.key,
       fileId: "carousel-map",
       stateIndex: 1,
       stateLabel
     }),
+    productCount: visibleProducts.length || null,
+    visibleProductCount: visibleProducts.length || null,
+    visibleProducts: visibleProducts.length ? visibleProducts : null,
     itemCount: visibleItems.length,
     visibleItemCount: visibleItems.length,
     visibleItems,
     itemRects,
     windowSignature,
     sectionState: {
-      text: combinedRelatedCaptureText(topbarWithBuffers),
-      textBlocks: combinedRelatedCaptureTextBlocks(topbarWithBuffers),
-      images: combinedRelatedCaptureImages(topbarWithBuffers),
+      text: combinedRelatedCaptureText(stateCapturesWithBuffers),
+      textBlocks: combinedRelatedCaptureTextBlocks(stateCapturesWithBuffers),
+      images: combinedRelatedCaptureImages(stateCapturesWithBuffers),
       activeIndex: 1,
       interactionState: "default",
-      categoryKey: "topbar",
+      categoryKey,
       categoryLabel,
+      productCount: visibleProducts.length || null,
+      visibleProductCount: visibleProducts.length || null,
+      visibleProducts: visibleProducts.length ? visibleProducts : null,
       visibleItemCount: visibleItems.length,
       visibleItems,
       itemRects,
@@ -3727,11 +3774,20 @@ async function composeShokzHomeProductShowcaseCompositeCaptures({
 }
 
 function composeShokzHomeTopbarComposite({ mainCapture, topbarCaptures = [], viewport = {} }) {
+  return composeShokzHomeModuleComposite({
+    mainCapture,
+    stateCaptures: topbarCaptures,
+    viewport,
+    sourceKind: "home-topbar"
+  });
+}
+
+function composeShokzHomeModuleComposite({ mainCapture, stateCaptures = [], viewport = {}, sourceKind = "home-module" }) {
   const mainImage = decodePng(mainCapture.buffer);
   const gutter = 24;
   const itemGap = 18;
   const outerPad = 24;
-  const items = topbarCaptures
+  const items = stateCaptures
     .map((capture, index) => {
       const image = decodePng(capture.buffer);
       return {
@@ -3745,7 +3801,7 @@ function composeShokzHomeTopbarComposite({ mainCapture, topbarCaptures = [], vie
     .filter((item) => item.width > 0 && item.height > 0);
 
   if (!items.length) {
-    throw new Error("No Topbar captures to compose.");
+    throw new Error("No module captures to compose.");
   }
 
   const rightWidth = items.reduce((sum, item) => sum + item.width, 0) + Math.max(0, items.length - 1) * itemGap;
@@ -3784,10 +3840,10 @@ function composeShokzHomeTopbarComposite({ mainCapture, topbarCaptures = [], vie
       height: item.image.height
     };
     variants.push({
-      key: item.capture.coverageKey || item.capture.logicalSignature || item.capture.stateLabel || `topbar-${item.index + 1}`,
-      label: item.capture.stateLabel || item.capture.label || `Topbar ${item.index + 1}`,
+      key: item.capture.coverageKey || item.capture.logicalSignature || item.capture.bannerSignature || item.capture.stateLabel || `state-${item.index + 1}`,
+      label: item.capture.stateLabel || item.capture.label || `State ${item.index + 1}`,
       rect: item.compositeRect,
-      sourceClip: item.capture.clip || null
+      sourceClip: item.capture.clip || item.capture.bannerClip || null
     });
     x += item.image.width + itemGap;
   }
@@ -3798,7 +3854,7 @@ function composeShokzHomeTopbarComposite({ mainCapture, topbarCaptures = [], vie
     height,
     layout: {
       kind: "collection-tab-composite",
-      sourceKind: "home-topbar",
+      sourceKind,
       mainWidth: mainImage.width,
       mainHeight: mainImage.height,
       viewportWidth: Number(viewport.width || 0) || mainImage.width,
@@ -3808,7 +3864,7 @@ function composeShokzHomeTopbarComposite({ mainCapture, topbarCaptures = [], vie
       variantCount: items.length,
       variants
     },
-    topbarCaptures: items
+    stateCaptures: items
   };
 }
 
@@ -4063,7 +4119,7 @@ function combinedRelatedCaptureText(captures) {
   const texts = [];
   const seen = new Set();
   for (const capture of captures || []) {
-    const text = String(capture.sectionState?.text || "").replace(/\s+/g, " ").trim();
+    const text = String(capture.sectionState?.text || capture.bannerState?.text || "").replace(/\s+/g, " ").trim();
     if (!text || seen.has(text)) {
       continue;
     }
@@ -4077,7 +4133,7 @@ function combinedRelatedCaptureTextBlocks(captures) {
   const blocks = [];
   const seen = new Set();
   for (const capture of captures || []) {
-    for (const block of capture.sectionState?.textBlocks || []) {
+    for (const block of capture.sectionState?.textBlocks || capture.bannerState?.textBlocks || []) {
       const key = [block.text, block.x, block.y].join("|");
       if (!block.text || seen.has(key)) {
         continue;
@@ -4096,7 +4152,7 @@ function combinedRelatedCaptureImages(captures) {
   const images = [];
   const seen = new Set();
   for (const capture of captures || []) {
-    for (const image of capture.sectionState?.images || capture.images || []) {
+    for (const image of capture.sectionState?.images || capture.bannerState?.images || capture.images || []) {
       const key = typeof image === "string" ? image : image?.src || JSON.stringify(image);
       if (!key || seen.has(key)) {
         continue;
@@ -13986,6 +14042,7 @@ export const __testOnly = {
   isAcceptableTrailingSegmentBlankAudit,
   isViewMoreLabel,
   composeShokzCollectionTabComposite,
+  composeShokzHomeModuleComposite,
   composeShokzHomeTopbarComposite,
   composeShokzHomeProductShowcaseComposite,
   shouldUseDedicatedViewMoreExpansion,
