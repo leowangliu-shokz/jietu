@@ -1,8 +1,8 @@
 import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
-import { captureAllDevices, captureConfiguredUrls, captureOne, browserStatus } from "./capture-service.js";
-import { loadCaptureIssues, markCaptureTileIssue } from "./capture-issues.js";
+import { captureAllDevices, captureConfiguredUrls, captureOne, browserStatus, replaceHomeOverviewTile } from "./capture-service.js";
+import { loadCaptureIssues, markCaptureTileIssue, resolveCaptureTileIssue } from "./capture-issues.js";
 import { loadChanges } from "./changes.js";
 import { archiveDir, publicDir } from "./paths.js";
 import { safeJoin } from "./path-safety.js";
@@ -49,6 +49,12 @@ const server = http.createServer(async (request, response) => {
         issue,
         state: await buildState()
       });
+    }
+
+    if (request.method === "POST" && pathname === "/api/capture-issues/replace") {
+      const body = await readJsonBody(request);
+      const result = await replaceCaptureIssueTile(body);
+      return sendJson(response, result.payload, result.status);
     }
 
     if (request.method === "POST" && pathname === "/api/capture") {
@@ -150,6 +156,61 @@ async function runCapture(options = {}) {
     captureState.lastFinishedAt = new Date().toISOString();
     scheduleNext();
   }
+}
+
+async function replaceCaptureIssueTile(body) {
+  if (captureState.running) {
+    scheduleNext();
+    return {
+      status: 409,
+      payload: { ok: false, error: "A capture is already running." }
+    };
+  }
+
+  captureState = {
+    ...captureState,
+    running: true,
+    startedAt: new Date().toISOString(),
+    lastResults: [],
+    allDevices: false,
+    mode: "tile-replacement"
+  };
+
+  let status = 200;
+  let payload = null;
+  try {
+    const issue = await markCaptureTileIssue(body);
+    const replacement = await replaceHomeOverviewTile(body, config);
+    const resolvedIssue = await resolveCaptureTileIssue(body);
+    captureState.lastResults = [{
+      ok: true,
+      type: "tile-replacement",
+      snapshotId: body?.snapshotId || null,
+      tileKey: body?.tileKey || null,
+      sourceFile: replacement.sourceFile || null
+    }];
+    payload = {
+      ok: true,
+      issue: resolvedIssue || issue,
+      replacement
+    };
+  } catch (error) {
+    status = error.statusCode || 500;
+    captureState.lastResults = [{ ok: false, error: error.message }];
+    payload = { ok: false, error: error.message };
+  } finally {
+    captureState.running = false;
+    captureState.lastFinishedAt = new Date().toISOString();
+    scheduleNext();
+  }
+
+  return {
+    status,
+    payload: {
+      ...payload,
+      state: await buildState()
+    }
+  };
 }
 
 function scheduleNext() {

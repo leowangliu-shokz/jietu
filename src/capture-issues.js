@@ -63,6 +63,29 @@ export async function markCaptureTileIssue(input, options = {}) {
   return nextIssue;
 }
 
+export async function resolveCaptureTileIssue(input, options = {}) {
+  const filePath = options.filePath || captureIssuesPath;
+  const snapshotId = cleanText(input?.snapshotId);
+  const tileKey = cleanText(input?.tileKey);
+  const now = new Date().toISOString();
+  const issues = await loadCaptureIssues(filePath);
+  let resolvedIssue = null;
+  const nextIssues = issues.map((issue) => {
+    if (issue.snapshotId !== snapshotId || issue.tileKey !== tileKey || issue.status === "resolved") {
+      return issue;
+    }
+    resolvedIssue = {
+      ...issue,
+      status: "resolved",
+      resolvedAt: now,
+      updatedAt: now
+    };
+    return resolvedIssue;
+  });
+  await saveCaptureIssues(nextIssues, filePath);
+  return resolvedIssue;
+}
+
 function issueId(snapshotId, tileKey, createdAt) {
   return [
     "capture-issue",

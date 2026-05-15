@@ -118,7 +118,13 @@ function isMobileCaptureContext(captureContext = {}) {
 async function driveCapture(client, url, outputPath, options) {
   const viewport = options.viewport || { width: 1440, height: 1000 };
   const platform = capturePlatform(options, viewport);
-  const captureContext = { viewport, platform };
+  const captureContext = {
+    viewport,
+    platform,
+    relatedStateFilter: options.relatedStateFilter || null,
+    relatedStateOutputPath: options.relatedStateOutputPath || null,
+    skipRelatedComposite: Boolean(options.skipRelatedComposite)
+  };
   const mobile = platform === "mobile";
   const urlCheck = {
     requestedUrl: url,
@@ -305,7 +311,7 @@ async function driveCapture(client, url, outputPath, options) {
     } else if (options.captureMode === "shokz-home-related") {
       relatedCapture = await captureShokzHomeRelated(client, outputPath, captureContext);
     } else {
-      relatedCapture = await captureShokzHomeBanners(client, outputPath, viewport);
+      relatedCapture = await captureShokzHomeBanners(client, outputPath, viewport, captureContext);
     }
     const finalUrl = await verifyCurrentUrl(client, url, "after related capture", urlCheck);
     urlCheck.ok = true;
@@ -697,7 +703,7 @@ async function captureShokzHomeRelated(client, outputPath, captureContext) {
   let maxHeight = 0;
 
   try {
-    const bannerCapture = await captureShokzHomeBanners(client, outputPath, viewport);
+    const bannerCapture = await captureShokzHomeBanners(client, outputPath, viewport, captureContext);
     captures.push(...bannerCapture.captures);
     maxWidth = Math.max(maxWidth, bannerCapture.width || 0);
     maxHeight = Math.max(maxHeight, bannerCapture.height || 0);
@@ -2832,7 +2838,7 @@ function comparableNavigationLabel(label) {
     .replace(/[^a-z0-9]+/g, "");
 }
 
-async function captureShokzHomeBanners(client, outputPath, viewport) {
+async function captureShokzHomeBanners(client, outputPath, viewport, captureContext = {}) {
   await scrollTo(client, 0);
   await sleep(700);
   await primeLazyImages(client);
@@ -2850,7 +2856,15 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
   let maxWidth = 0;
   let maxHeight = 0;
 
-  for (let index = 0; index < plan.count; index += 1) {
+  const targetFilter = captureContext.relatedStateFilter || null;
+  const selectedIndexes = Array.from({ length: plan.count }, (_, index) => index)
+    .filter((index) => bannerStateMatchesFilter(outputPath, index, plan, targetFilter));
+  const indexes = targetFilter ? selectedIndexes : Array.from({ length: plan.count }, (_, index) => index);
+  if (targetFilter && !indexes.length) {
+    throw new Error("Could not match the requested Shokz banner tile.");
+  }
+
+  for (const index of indexes) {
     const slide = plan.slides[index] || { ordinal: index, realIndex: index, logicalId: `banner-${index}` };
     await activateShokzHomeBanner(client, slide, index);
     await sleep(900);
@@ -2917,7 +2931,9 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
     seenLogical.add(bannerSignature);
     seenVisual.add(visualSignature);
 
-    const bannerOutput = bannerOutputPath(outputPath, bannerIndex);
+    const bannerOutput = captureContext.relatedStateOutputPath && indexes.length === 1
+      ? captureContext.relatedStateOutputPath
+      : bannerOutputPath(outputPath, bannerIndex);
     await fs.writeFile(bannerOutput, buffer);
     maxWidth = Math.max(maxWidth, Math.round(clip.width));
     maxHeight = Math.max(maxHeight, Math.round(clip.height));
@@ -2962,8 +2978,26 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
     throw new Error("Shokz home banner capture found slides but every screenshot looked duplicated.");
   }
 
-  validateBannerCaptureCompleteness(captures, plan.count, duplicates);
+  if (!targetFilter) {
+    validateBannerCaptureCompleteness(captures, plan.count, duplicates);
+  }
   captures.sort((a, b) => Number(a.bannerIndex || 0) - Number(b.bannerIndex || 0));
+
+  if (captureContext.skipRelatedComposite) {
+    return {
+      width: maxWidth,
+      height: maxHeight,
+      captures,
+      bannerInfo: {
+        expectedCount: indexes.length,
+        capturedCount: captures.length,
+        duplicateCount: duplicates.length,
+        duplicates,
+        status: duplicates.length ? "warning" : "ok",
+        slides: plan.slides
+      }
+    };
+  }
 
   const compositeResult = await composeShokzHomeModuleCompositeCaptures({
     captures,
@@ -3034,6 +3068,13 @@ async function captureShokzHomeRelatedSection(client, outputPath, captureContext
 
   const captures = [];
   const warnings = Array.isArray(plan.warnings) ? [...plan.warnings] : [];
+  const targetFilter = captureContext.relatedStateFilter || null;
+  if (targetFilter) {
+    plan.states = plan.states.filter((state) => homeRelatedStateMatchesFilter(outputPath, definition, state, targetFilter));
+    if (!plan.states.length) {
+      throw new Error(`Could not match the requested ${definition.sectionLabel} tile.`);
+    }
+  }
   const seenLogicalByScope = new Map();
   const seenVisualByScope = new Map();
   const seenHashesByScope = new Map();
@@ -3186,7 +3227,9 @@ async function captureShokzHomeRelatedSection(client, outputPath, captureContext
     seenVisual.add(visualSignature);
     seenHashes.push({ hash: visualHash, label: state.stateLabel });
 
-    const relatedOutput = relatedOutputPath(outputPath, definition.key, state.fileId || state.stateIndex);
+    const relatedOutput = captureContext.relatedStateOutputPath && plan.states.length === 1
+      ? captureContext.relatedStateOutputPath
+      : relatedOutputPath(outputPath, definition.key, state.fileId || state.stateIndex);
     await fs.writeFile(relatedOutput, buffer);
     maxWidth = Math.max(maxWidth, Math.round(clip.width));
     maxHeight = Math.max(maxHeight, Math.round(clip.height));
@@ -3262,6 +3305,17 @@ async function captureShokzHomeRelatedSection(client, outputPath, captureContext
       }
     });
     await clearRelatedHover(client);
+  }
+
+  if (captureContext.skipRelatedComposite) {
+    return {
+      width: maxWidth,
+      height: maxHeight,
+      captures,
+      warnings,
+      expectedCount: plan.states.length,
+      capturedCount: captures.length
+    };
   }
 
   if (definition.key) {
@@ -3529,6 +3583,20 @@ async function composeShokzHomeModuleCompositeCaptures({
     expectedCount: 1,
     capturedCount: 1
   };
+}
+
+export async function composeShokzHomeModuleCompositeCaptureFromFiles({
+  mainOutputPath,
+  stateCaptures = [],
+  definition,
+  viewport = {}
+}) {
+  return composeShokzHomeModuleCompositeCaptures({
+    captures: stateCaptures,
+    definition,
+    outputPath: mainOutputPath,
+    viewport
+  });
 }
 
 async function composeShokzHomeProductShowcaseCompositeCaptures({
@@ -11756,6 +11824,48 @@ function relatedOutputPath(outputPath, sectionKey, stateId) {
   const safeSection = safeFilePart(sectionKey);
   const safeState = safeFilePart(stateId);
   return outputPath.replace(/\.png$/i, `-${safeSection}-${safeState}.png`);
+}
+
+function bannerStateMatchesFilter(outputPath, index, plan, filter) {
+  if (!filter) {
+    return true;
+  }
+  const slide = plan.slides?.[index] || {};
+  const bannerIndex = Number(slide.realIndex || "") >= 0
+    ? Number(slide.realIndex) + 1
+    : index + 1;
+  const expectedOutput = bannerOutputPath(outputPath, bannerIndex);
+  return outputMatchesFilter(expectedOutput, filter.sourceFile) ||
+    String(filter.tileKey || "").includes(`banner-${bannerIndex}`) ||
+    String(filter.tileLabel || "").includes(String(bannerIndex));
+}
+
+function homeRelatedStateMatchesFilter(outputPath, definition, state, filter) {
+  if (!filter) {
+    return true;
+  }
+  const expectedOutput = relatedOutputPath(outputPath, definition.key, state.fileId || state.stateIndex);
+  const coverageKey = relatedCoverageKeyForState(state);
+  const tileKey = String(filter.tileKey || "");
+  return outputMatchesFilter(expectedOutput, filter.sourceFile) ||
+    tileKey === coverageKey ||
+    tileKey === `${definition.key}:${coverageKey}` ||
+    tileKey.includes(coverageKey) ||
+    [state.fileId, state.logicalSignature, state.stateLabel, state.label]
+      .filter(Boolean)
+      .some((value) => tileKey.includes(String(value)));
+}
+
+function outputMatchesFilter(outputPath, sourceFile) {
+  const source = String(sourceFile || "").trim();
+  if (!source) {
+    return false;
+  }
+  const normalizedOutput = path.normalize(outputPath).replaceAll("\\", "/");
+  const normalizedSource = path.normalize(source).replaceAll("\\", "/");
+  return normalizedOutput === normalizedSource ||
+    normalizedOutput.endsWith(`/${normalizedSource}`) ||
+    normalizedOutput.endsWith(normalizedSource);
 }
 
 function relatedCaptureScopeKey(definition, state) {

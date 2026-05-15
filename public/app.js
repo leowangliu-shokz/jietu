@@ -672,6 +672,7 @@ function createImagePreviewZoomState() {
     dragMoved: false,
     selectedIssueTile: null,
     pendingIssueTileKey: "",
+    pendingIssueAction: "",
     issueMode: false,
     snapshot: null,
     comparison: null
@@ -960,7 +961,11 @@ function handleImagePreviewFrameClick(event) {
   if (action) {
     event.preventDefault();
     event.stopPropagation();
-    void submitImagePreviewTileIssue();
+    if (action.dataset.issueAction === "replace") {
+      void replaceImagePreviewTileIssue();
+    } else {
+      void submitImagePreviewTileIssue();
+    }
     return;
   }
 
@@ -1050,16 +1055,30 @@ function renderImagePreviewIssueSelection() {
   box.style.width = `${Number(rect.width || 0) * scale}px`;
   box.style.height = `${Number(rect.height || 0) * scale}px`;
 
-  const action = document.createElement("button");
-  action.className = "image-preview-issue-action";
-  action.type = "button";
-  action.textContent = imagePreviewZoomState.pendingIssueTileKey === tile.key ? "标记中..." : "标记此图错误";
-  action.disabled = imagePreviewZoomState.pendingIssueTileKey === tile.key;
-  action.style.left = `${Math.max(0, Number(rect.x || 0) * scale)}px`;
-  action.style.top = `${Math.max(0, (Number(rect.y || 0) + Number(rect.height || 0)) * scale + 8)}px`;
-  action.title = tile.label || "标记错误截图";
+  const pending = imagePreviewZoomState.pendingIssueTileKey === tile.key;
+  const actions = document.createElement("div");
+  actions.className = "image-preview-issue-actions";
+  actions.style.left = `${Math.max(0, Number(rect.x || 0) * scale)}px`;
+  actions.style.top = `${Math.max(0, (Number(rect.y || 0) + Number(rect.height || 0)) * scale + 8)}px`;
 
-  elements.imagePreviewIssueLayer.append(box, action);
+  const markAction = document.createElement("button");
+  markAction.className = "image-preview-issue-action is-secondary";
+  markAction.type = "button";
+  markAction.dataset.issueAction = "mark";
+  markAction.textContent = pending && imagePreviewZoomState.pendingIssueAction === "mark" ? "标记中..." : "仅标记错误";
+  markAction.disabled = pending;
+  markAction.title = tile.label || "标记错误截图";
+
+  const replaceAction = document.createElement("button");
+  replaceAction.className = "image-preview-issue-action";
+  replaceAction.type = "button";
+  replaceAction.dataset.issueAction = "replace";
+  replaceAction.textContent = pending && imagePreviewZoomState.pendingIssueAction === "replace" ? "重截中..." : "重截并替换此图";
+  replaceAction.disabled = pending;
+  replaceAction.title = tile.label || "重截并替换错误截图";
+
+  actions.append(markAction, replaceAction);
+  elements.imagePreviewIssueLayer.append(box, actions);
 }
 
 async function submitImagePreviewTileIssue() {
@@ -1070,6 +1089,7 @@ async function submitImagePreviewTileIssue() {
   }
 
   imagePreviewZoomState.pendingIssueTileKey = tile.key;
+  imagePreviewZoomState.pendingIssueAction = "mark";
   renderImagePreviewIssueSelection();
   try {
     const response = await fetch("/api/capture-issues", {
@@ -1077,17 +1097,7 @@ async function submitImagePreviewTileIssue() {
       headers: {
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({
-        snapshotId: snapshot.id,
-        overviewFile: snapshot.file || "",
-        tileKey: tile.key,
-        tileLabel: tile.label || "",
-        sectionKey: tile.sectionKey || "",
-        sectionLabel: tile.sectionLabel || "",
-        sourceFile: tile.sourceFile || "",
-        sourceImageUrl: tile.sourceImageUrl || "",
-        rect: tile.rect || null
-      })
+      body: JSON.stringify(imagePreviewTileIssuePayload(snapshot, tile))
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok || !payload?.ok) {
@@ -1101,8 +1111,120 @@ async function submitImagePreviewTileIssue() {
     setArchiveStatus(error?.message || "标记错误截图失败，请稍后重试。", "error");
   } finally {
     imagePreviewZoomState.pendingIssueTileKey = "";
+    imagePreviewZoomState.pendingIssueAction = "";
     renderImagePreviewIssueSelection();
   }
+}
+
+async function replaceImagePreviewTileIssue() {
+  const snapshot = imagePreviewZoomState.snapshot;
+  const tile = imagePreviewZoomState.selectedIssueTile;
+  if (!snapshot?.id || !tile?.key || imagePreviewZoomState.pendingIssueTileKey) {
+    return;
+  }
+
+  imagePreviewZoomState.pendingIssueTileKey = tile.key;
+  imagePreviewZoomState.pendingIssueAction = "replace";
+  renderImagePreviewIssueSelection();
+  setArchiveStatus(`正在重截并替换：${tile.sectionLabel || tile.sectionKey || "模块"} / ${tile.label || tile.key}`, "info");
+  try {
+    const response = await fetch("/api/capture-issues/replace", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(imagePreviewTileIssuePayload(snapshot, tile))
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `重截替换失败（HTTP ${response.status}）`);
+    }
+    if (payload.state) {
+      state = payload.state;
+      render({ preserveScroll: true });
+    }
+    const updatedSnapshot = payload.replacement?.snapshot ||
+      state?.snapshots?.find((item) => item.id === snapshot.id) ||
+      null;
+    if (updatedSnapshot?.homeOverview) {
+      refreshOpenHomeOverviewPreview(updatedSnapshot);
+    }
+    setArchiveStatus(`已重截并替换：${tile.sectionLabel || tile.sectionKey || "模块"} / ${tile.label || tile.key}`, "success");
+  } catch (error) {
+    setArchiveStatus(error?.message || "重截并替换失败，请稍后重试。", "error");
+  } finally {
+    imagePreviewZoomState.pendingIssueTileKey = "";
+    imagePreviewZoomState.pendingIssueAction = "";
+    renderImagePreviewIssueSelection();
+  }
+}
+
+function imagePreviewTileIssuePayload(snapshot, tile) {
+  return {
+    snapshotId: snapshot.id,
+    overviewFile: snapshot.file || "",
+    tileKey: tile.key,
+    tileLabel: tile.label || "",
+    sectionKey: tile.sectionKey || "",
+    sectionLabel: tile.sectionLabel || "",
+    sourceFile: tile.sourceFile || "",
+    sourceImageUrl: tile.sourceImageUrl || "",
+    rect: tile.rect || null
+  };
+}
+
+function refreshOpenHomeOverviewPreview(snapshot) {
+  const previewSnapshot = snapshotForHomeOverviewPreview(snapshot);
+  const previewUrl = previewSnapshot?.imageUrl || "";
+  if (!previewSnapshot || !previewUrl) {
+    return;
+  }
+
+  const cacheBustedUrl = cacheBustedImageUrl(previewUrl);
+  imagePreviewZoomState.snapshot = previewSnapshot;
+  imagePreviewZoomState.selectedIssueTile = null;
+  imagePreviewZoomState.pendingIssueTileKey = "";
+  imagePreviewZoomState.pendingIssueAction = "";
+  imagePreviewZoomState.issueMode = true;
+  elements.imagePreviewCaption.textContent = elements.imagePreviewCaption.textContent || previewSnapshot.displayUrl || "";
+  elements.imagePreviewImage.src = cacheBustedUrl;
+  elements.imagePreviewImage.alt = elements.imagePreviewCaption.textContent || "图片预览";
+  if (hasImagePreviewNavigation()) {
+    const current = currentImagePreviewNavigationItem();
+    imagePreviewNavigationState.items[imagePreviewNavigationState.index] = {
+      ...(current || {}),
+      src: cacheBustedUrl,
+      snapshot: previewSnapshot
+    };
+  }
+}
+
+function snapshotForHomeOverviewPreview(snapshot) {
+  const preview = snapshot?.homeOverview;
+  if (!snapshot || !preview) {
+    return null;
+  }
+  return {
+    ...snapshot,
+    file: preview.file || snapshot.file || "",
+    imageUrl: preview.imageUrl || snapshot.imageUrl || "",
+    width: preview.width || snapshot.width || 0,
+    height: preview.height || snapshot.height || 0,
+    kind: preview.kind || snapshot.kind || "",
+    composite: preview.composite || snapshot.composite || null,
+    scrollInfo: {
+      ...(snapshot.scrollInfo || {}),
+      ...(preview.scrollInfo || {})
+    }
+  };
+}
+
+function cacheBustedImageUrl(url) {
+  if (!url) {
+    return "";
+  }
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}t=${Date.now()}`;
 }
 
 function imagePreviewMarkerModeForSnapshot(snapshot) {
@@ -1482,7 +1604,7 @@ function startImagePreviewDrag(event) {
   if (event.button !== 0 || !imagePreviewZoomState.naturalWidth) {
     return;
   }
-  if (event.target.closest?.(".image-preview-issue-action")) {
+  if (event.target.closest?.(".image-preview-issue-actions")) {
     return;
   }
 

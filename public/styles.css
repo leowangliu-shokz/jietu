@@ -1192,6 +1192,14 @@ select:focus {
   pointer-events: none;
 }
 
+.image-preview-issue-actions {
+  position: absolute;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  pointer-events: auto;
+}
+
 .image-preview-issue-action {
   position: absolute;
   min-height: 30px;
@@ -1204,6 +1212,15 @@ select:focus {
   padding: 0 10px;
   pointer-events: auto;
   white-space: nowrap;
+}
+
+.image-preview-issue-actions .image-preview-issue-action {
+  position: static;
+}
+
+.image-preview-issue-action.is-secondary {
+  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(20, 24, 28, 0.92);
 }
 
 .image-preview-issue-action:disabled {

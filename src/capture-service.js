@@ -1,6 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { capturePage, composeShokzHomeOverviewCompositeCapture, findBrowser } from "./browser.js";
+import {
+  capturePage,
+  composeShokzHomeModuleCompositeCaptureFromFiles,
+  composeShokzHomeOverviewCompositeCapture,
+  findBrowser
+} from "./browser.js";
 import { assessRelatedShotConfidence, assessSnapshotConfidence } from "./capture-confidence.js";
 import { createCaptureDiagnosticRun, finalizeCaptureDiagnostic, recordCaptureDiagnostic } from "./capture-diagnostics.js";
 import { rebuildChanges } from "./changes.js";
@@ -17,11 +22,13 @@ import {
   createSnapshotFilePath,
   findConfigDeviceProfile,
   loadConfig,
+  loadSnapshots,
   normalizeCaptureTarget,
   normalizeConfig,
   normalizeDeviceProfile,
   publicSnapshotUrl,
-  resolveConfiguredCapturePlans
+  resolveConfiguredCapturePlans,
+  saveSnapshots
 } from "./store.js";
 
 export async function captureConfiguredUrls(config = null, options = {}) {
@@ -38,6 +45,139 @@ export async function captureOne(inputTarget, config = null, options = {}) {
   const activeConfig = normalizeConfig(config || await loadConfig());
   const execution = resolveAdHocCaptureExecution(inputTarget, activeConfig, options);
   return runCaptureExecution(execution, activeConfig);
+}
+
+export async function replaceHomeOverviewTile(input, config = null) {
+  const snapshotId = stringOrNull(input?.snapshotId);
+  const tileKey = stringOrNull(input?.tileKey);
+  if (!snapshotId || !tileKey) {
+    const error = new Error("snapshotId and tileKey are required");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const activeConfig = normalizeConfig(config || await loadConfig());
+  const snapshots = await loadSnapshots();
+  const snapshotIndex = snapshots.findIndex((entry) => entry?.id === snapshotId);
+  if (snapshotIndex === -1) {
+    const error = new Error("Snapshot not found");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const snapshot = snapshots[snapshotIndex];
+  const tile = findHomeOverviewTile(snapshot, tileKey);
+  if (!tile) {
+    const error = new Error("Overview tile not found");
+    error.statusCode = 404;
+    throw error;
+  }
+  if (!tile.sourceFile || !tile.sectionKey) {
+    const error = new Error("Selected tile cannot be replaced individually");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const moduleShot = findModuleShotForOverviewTile(snapshot, tile);
+  if (!moduleShot?.composite?.variants?.length) {
+    const error = new Error("Module composite for selected tile was not found");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const mainOutputPath = archiveAbsolutePath(snapshot.file);
+  const sourceOutputPath = archiveAbsolutePath(tile.sourceFile);
+  const captureConfig = buildTileReplacementCaptureConfig(snapshot, activeConfig);
+  const captureMode = tile.sectionKey === "banner"
+    ? "shokz-home-banners"
+    : "shokz-home-related-section";
+  const relatedCapture = await capturePage(snapshot.url || snapshot.requestedUrl || snapshot.finalUrl, mainOutputPath, {
+    ...captureConfig,
+    captureMode,
+    sectionKey: tile.sectionKey === "banner" ? null : tile.sectionKey,
+    fullPage: false,
+    lazyLoadScroll: false,
+    relatedStateFilter: {
+      tileKey,
+      tileLabel: tile.label,
+      sectionKey: tile.sectionKey,
+      sourceFile: tile.sourceFile
+    },
+    relatedStateOutputPath: sourceOutputPath,
+    skipRelatedComposite: true
+  });
+
+  const replacementCapture = Array.isArray(relatedCapture?.captures)
+    ? relatedCapture.captures[0]
+    : null;
+  if (!replacementCapture?.outputPath) {
+    const error = new Error("Replacement capture did not produce an image");
+    error.statusCode = 500;
+    throw error;
+  }
+
+  const stateCaptures = stateCapturesForModuleReplacement({
+    moduleShot,
+    tile,
+    replacementCapture,
+    sourceOutputPath
+  });
+  const moduleComposite = await composeShokzHomeModuleCompositeCaptureFromFiles({
+    mainOutputPath,
+    stateCaptures,
+    definition: {
+      key: moduleShot.sectionKey,
+      sectionLabel: moduleShot.sectionLabel || tile.sectionLabel || moduleShot.sectionKey,
+      title: moduleShot.sectionTitle || moduleShot.sectionLabel || tile.sectionLabel || moduleShot.sectionKey
+    },
+    viewport: captureConfig.viewport || {}
+  });
+  const [updatedModuleShot] = await relatedShotsFromCaptureResult(
+    {
+      ...relatedCapture,
+      captures: moduleComposite?.captures || [],
+      requestedUrl: snapshot.requestedUrl || snapshot.url,
+      finalUrl: snapshot.finalUrl || snapshot.url,
+      urlCheck: moduleShot.urlCheck || snapshot.urlCheck || relatedCapture.urlCheck || null
+    },
+    snapshot.url,
+    snapshot.relatedValidation || null
+  );
+  if (!updatedModuleShot) {
+    const error = new Error("Replacement module composite could not be rebuilt");
+    error.statusCode = 500;
+    throw error;
+  }
+
+  const nextRelatedShots = (snapshot.relatedShots || [])
+    .map((shot) => shot === moduleShot ? mergeRelatedShotForReplacement(moduleShot, updatedModuleShot) : shot)
+    .sort(compareRelatedShots);
+  const overview = await composeHomeOverviewForRelatedShots(mainOutputPath, nextRelatedShots, captureConfig);
+  if (!overview.homeOverview) {
+    const error = new Error("Home overview composite could not be rebuilt");
+    error.statusCode = 500;
+    throw error;
+  }
+
+  const updatedSnapshot = {
+    ...snapshot,
+    relatedShots: nextRelatedShots,
+    homeOverview: overview.homeOverview,
+    relatedValidation: relatedValidationWithWarnings(snapshot.relatedValidation, overview.warnings)
+  };
+  snapshots[snapshotIndex] = updatedSnapshot;
+  await saveSnapshots(snapshots);
+  const changeRefresh = await refreshChangeRecords();
+
+  return {
+    ok: true,
+    snapshot: updatedSnapshot,
+    tile,
+    sourceFile: tile.sourceFile,
+    relatedShot: updatedModuleShot,
+    homeOverview: overview.homeOverview,
+    changeRefresh
+  };
 }
 
 async function runResolvedCapturePlans(plans, config) {
@@ -349,6 +489,145 @@ function captureConfigForExecution(config, execution) {
 function stringOrNull(value) {
   const text = String(value || "").trim();
   return text || null;
+}
+
+function findHomeOverviewTile(snapshot, tileKey) {
+  const variants = snapshot?.homeOverview?.composite?.variants;
+  if (!Array.isArray(variants)) {
+    return null;
+  }
+  return variants.find((variant) => variant?.key === tileKey) || null;
+}
+
+function findModuleShotForOverviewTile(snapshot, tile) {
+  const relatedShots = Array.isArray(snapshot?.relatedShots) ? snapshot.relatedShots : [];
+  return relatedShots.find((shot) =>
+    shot?.kind === "collection-tab-composite" &&
+    shot?.sectionKey === tile.sectionKey
+  ) || null;
+}
+
+function buildTileReplacementCaptureConfig(snapshot, config) {
+  const preset = findDevicePreset(snapshot.devicePresetId || "");
+  const platform = snapshot.platform || (preset?.mobile ? "mobile" : "pc");
+  const viewportWidth = Number(snapshot.scrollInfo?.viewportWidth || snapshot.width || preset?.width || 393);
+  const viewportHeight = Number(snapshot.scrollInfo?.viewportHeight || preset?.height || 852);
+  return {
+    ...config,
+    platform,
+    devicePresetId: snapshot.devicePresetId || preset?.id || config?.devicePresetId || null,
+    viewport: {
+      width: Number.isFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 393,
+      height: Number.isFinite(viewportHeight) && viewportHeight > 0 ? viewportHeight : 852,
+      mobile: platform === "mobile" || Boolean(preset?.mobile),
+      touch: Boolean(preset?.touch || platform === "mobile"),
+      deviceScaleFactor: preset?.deviceScaleFactor || 1
+    }
+  };
+}
+
+function stateCapturesForModuleReplacement({ moduleShot, tile, replacementCapture, sourceOutputPath }) {
+  const replacementSourceFile = archiveRelativePath(sourceOutputPath);
+  return (moduleShot.composite?.variants || []).map((variant, index) => {
+    const outputPath = archiveAbsolutePath(variant.sourceFile);
+    const isReplacement = variant.sourceFile === replacementSourceFile || variant.sourceFile === tile.sourceFile;
+    if (isReplacement) {
+      return stateCaptureFromVariant({
+        moduleShot,
+        variant,
+        index,
+        outputPath: sourceOutputPath,
+        replacementCapture
+      });
+    }
+    return stateCaptureFromVariant({
+      moduleShot,
+      variant,
+      index,
+      outputPath,
+      replacementCapture: null
+    });
+  });
+}
+
+function stateCaptureFromVariant({ moduleShot, variant, index, outputPath, replacementCapture }) {
+  const stateIndex = Number(variant.pageIndex || variant.stateIndex || variant.bannerIndex || index + 1);
+  const base = {
+    outputPath,
+    width: Number(variant.sourceClip?.width || variant.rect?.width || 0) || null,
+    height: Number(variant.sourceClip?.height || variant.rect?.height || 0) || null,
+    kind: "carousel",
+    sectionKey: moduleShot.sectionKey,
+    sectionLabel: moduleShot.sectionLabel,
+    sectionTitle: moduleShot.sectionTitle,
+    stateIndex,
+    stateCount: moduleShot.composite?.variantCount || moduleShot.itemCount || null,
+    stateLabel: variant.label || `State ${index + 1}`,
+    label: variant.label || `State ${index + 1}`,
+    tabLabel: variant.tabLabel || null,
+    tabIndex: variant.tabIndex || null,
+    pageIndex: variant.pageIndex || stateIndex,
+    bannerIndex: variant.bannerIndex || null,
+    interactionState: variant.interactionState || "default",
+    coverageKey: variant.key || null,
+    logicalSignature: variant.key || variant.label || null,
+    bannerSignature: null,
+    clip: variant.sourceClip || null,
+    bannerClip: variant.sourceClip || null,
+    visibleItems: null,
+    itemRects: null,
+    sectionState: {
+      text: variant.text || "",
+      activeIndex: stateIndex,
+      interactionState: variant.interactionState || "default"
+    }
+  };
+  if (!replacementCapture) {
+    return base;
+  }
+  return {
+    ...base,
+    ...replacementCapture,
+    outputPath,
+    stateIndex: replacementCapture.stateIndex || base.stateIndex,
+    stateCount: replacementCapture.stateCount || base.stateCount,
+    stateLabel: replacementCapture.stateLabel || base.stateLabel,
+    label: replacementCapture.label || replacementCapture.stateLabel || base.label,
+    pageIndex: replacementCapture.pageIndex || base.pageIndex,
+    bannerIndex: replacementCapture.bannerIndex || base.bannerIndex,
+    interactionState: replacementCapture.interactionState || base.interactionState,
+    coverageKey: base.coverageKey || replacementCapture.coverageKey || null,
+    logicalSignature: base.logicalSignature || replacementCapture.logicalSignature || null,
+    clip: replacementCapture.clip || replacementCapture.bannerClip || base.clip,
+    bannerClip: replacementCapture.bannerClip || replacementCapture.clip || base.bannerClip,
+    sectionState: replacementCapture.sectionState || base.sectionState
+  };
+}
+
+function mergeRelatedShotForReplacement(previousShot, updatedShot) {
+  return {
+    ...previousShot,
+    ...updatedShot,
+    captureConfidence: updatedShot.captureConfidence || previousShot.captureConfidence || null
+  };
+}
+
+function relatedValidationWithWarnings(validation, warnings = []) {
+  if (!Array.isArray(warnings) || !warnings.length) {
+    return validation || null;
+  }
+  const next = validation && typeof validation === "object"
+    ? { ...validation }
+    : { status: "warning", warnings: [], sections: [] };
+  next.status = "warning";
+  next.warnings = [
+    ...(Array.isArray(next.warnings) ? next.warnings : []),
+    ...warnings
+  ];
+  if (!Array.isArray(next.sections)) {
+    next.sections = [];
+  }
+  return next;
 }
 
 function relatedCaptureModeForTarget(target, captureConfig) {
@@ -879,6 +1158,21 @@ function summarizeCaptureValidationEntries(items = []) {
 
 function archiveRelativePath(absolutePath) {
   return path.relative(archiveDir, absolutePath).replaceAll(path.sep, "/");
+}
+
+function archiveAbsolutePath(relativePath) {
+  const input = stringOrNull(relativePath);
+  if (!input) {
+    throw new Error("Archive file path is required");
+  }
+  const base = path.resolve(archiveDir);
+  const absolutePath = path.resolve(base, input);
+  const normalizedBase = base.toLowerCase();
+  const normalizedPath = absolutePath.toLowerCase();
+  if (normalizedPath !== normalizedBase && !normalizedPath.startsWith(`${normalizedBase}${path.sep}`)) {
+    throw new Error(`Archive file path is outside archive directory: ${input}`);
+  }
+  return absolutePath;
 }
 
 export function relatedShotLabelForCaptureItem(item) {
