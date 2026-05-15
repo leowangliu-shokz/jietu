@@ -43,6 +43,7 @@ const elements = {
   imagePreviewMainFrame: document.querySelector("#imagePreviewMainFrame"),
   imagePreviewImage: document.querySelector("#imagePreviewImage"),
   imagePreviewDepthMarkers: document.querySelector("#imagePreviewDepthMarkers"),
+  imagePreviewIssueLayer: document.querySelector("#imagePreviewIssueLayer"),
   imagePreviewScreenRail: document.querySelector("#imagePreviewScreenRail"),
   imagePreviewCaption: document.querySelector("#imagePreviewCaption"),
   imagePreviewZoomOut: document.querySelector("#imagePreviewZoomOut"),
@@ -165,6 +166,7 @@ elements.changesNextPage.addEventListener("click", () => changeChangesPage(1));
 elements.gallery.addEventListener("click", handleGalleryClick);
 elements.changesList.addEventListener("click", handleImagePreviewClick);
 elements.imagePreview.addEventListener("click", handleImagePreviewBackdropClick);
+elements.imagePreviewMainFrame.addEventListener("click", handleImagePreviewFrameClick);
 elements.imagePreviewImage.addEventListener("load", handleImagePreviewImageLoad);
 elements.imagePreviewViewport.addEventListener("wheel", handleImagePreviewWheel, { passive: false });
 elements.imagePreviewViewport.addEventListener("pointerdown", startImagePreviewDrag);
@@ -664,6 +666,10 @@ function createImagePreviewZoomState() {
     dragStartY: 0,
     dragStartScrollLeft: 0,
     dragStartScrollTop: 0,
+    dragStartTarget: null,
+    dragMoved: false,
+    selectedIssueTile: null,
+    pendingIssueTileKey: "",
     snapshot: null,
     comparison: null
   };
@@ -700,6 +706,8 @@ function openImagePreview({ item, navigation = null, trigger }) {
 function showImagePreviewItem(item) {
   resetImagePreviewZoom();
   imagePreviewZoomState.snapshot = item?.snapshot || null;
+  imagePreviewZoomState.selectedIssueTile = null;
+  imagePreviewZoomState.pendingIssueTileKey = "";
   elements.imagePreviewImage.src = item?.src || "";
   elements.imagePreviewImage.alt = item?.caption || "鍥剧墖棰勮";
   elements.imagePreviewCaption.textContent = item?.caption || "";
@@ -815,6 +823,9 @@ function resetImagePreviewZoom() {
   elements.imagePreviewLongView.removeAttribute("style");
   elements.imagePreviewMainFrame.removeAttribute("style");
   elements.imagePreviewDepthMarkers.innerHTML = "";
+  elements.imagePreviewDepthMarkers.removeAttribute("style");
+  elements.imagePreviewIssueLayer.innerHTML = "";
+  elements.imagePreviewIssueLayer.removeAttribute("style");
   elements.imagePreviewScreenRail.innerHTML = "";
   elements.imagePreviewViewport.scrollLeft = 0;
   elements.imagePreviewViewport.scrollTop = 0;
@@ -915,9 +926,142 @@ function renderImagePreviewScreenRail(comparison) {
   elements.imagePreviewScreenRail.append(fragment);
 }
 
+function handleImagePreviewFrameClick(event) {
+  const action = event.target.closest(".image-preview-issue-action");
+  if (action) {
+    event.preventDefault();
+    event.stopPropagation();
+    void submitImagePreviewTileIssue();
+    return;
+  }
+
+  if (event.target !== elements.imagePreviewImage || !imagePreviewCanMarkTiles()) {
+    return;
+  }
+
+  const point = imagePreviewNaturalPointForEvent(event);
+  const tile = point ? imagePreviewTileAtPoint(point.x, point.y) : null;
+  if (!tile) {
+    imagePreviewZoomState.selectedIssueTile = null;
+    renderImagePreviewIssueSelection();
+    return;
+  }
+
+  imagePreviewZoomState.selectedIssueTile = tile;
+  renderImagePreviewIssueSelection();
+}
+
+function imagePreviewCanMarkTiles() {
+  return imagePreviewZoomState.snapshot?.kind === "home-overview-composite" &&
+    Array.isArray(imagePreviewZoomState.snapshot?.composite?.variants) &&
+    imagePreviewZoomState.snapshot.composite.variants.length > 0;
+}
+
+function imagePreviewNaturalPointForEvent(event) {
+  const imageRect = elements.imagePreviewImage.getBoundingClientRect();
+  if (!imageRect.width || !imageRect.height || !imagePreviewZoomState.naturalWidth || !imagePreviewZoomState.naturalHeight) {
+    return null;
+  }
+  return {
+    x: ((event.clientX - imageRect.left) / imageRect.width) * imagePreviewZoomState.naturalWidth,
+    y: ((event.clientY - imageRect.top) / imageRect.height) * imagePreviewZoomState.naturalHeight
+  };
+}
+
+function imagePreviewTileAtPoint(x, y) {
+  const mainWidth = Number(imagePreviewZoomState.snapshot?.composite?.mainWidth || 0);
+  if (Number.isFinite(mainWidth) && mainWidth > 0 && x <= mainWidth) {
+    return null;
+  }
+  return [...(imagePreviewZoomState.snapshot?.composite?.variants || [])]
+    .reverse()
+    .find((tile) => {
+      const rect = tile?.rect || null;
+      return rect &&
+        x >= Number(rect.x || 0) &&
+        y >= Number(rect.y || 0) &&
+        x <= Number(rect.x || 0) + Number(rect.width || 0) &&
+        y <= Number(rect.y || 0) + Number(rect.height || 0);
+    }) || null;
+}
+
+function renderImagePreviewIssueSelection() {
+  elements.imagePreviewIssueLayer.innerHTML = "";
+  const tile = imagePreviewZoomState.selectedIssueTile;
+  if (!tile?.rect || !imagePreviewCanMarkTiles()) {
+    return;
+  }
+
+  const scale = imagePreviewZoomState.scale || 1;
+  const rect = tile.rect;
+  const box = document.createElement("div");
+  box.className = "image-preview-issue-box";
+  box.style.left = `${Number(rect.x || 0) * scale}px`;
+  box.style.top = `${Number(rect.y || 0) * scale}px`;
+  box.style.width = `${Number(rect.width || 0) * scale}px`;
+  box.style.height = `${Number(rect.height || 0) * scale}px`;
+
+  const action = document.createElement("button");
+  action.className = "image-preview-issue-action";
+  action.type = "button";
+  action.textContent = imagePreviewZoomState.pendingIssueTileKey === tile.key ? "标记中..." : "标记错误";
+  action.disabled = imagePreviewZoomState.pendingIssueTileKey === tile.key;
+  action.style.left = `${Math.max(0, Number(rect.x || 0) * scale)}px`;
+  action.style.top = `${Math.max(0, (Number(rect.y || 0) + Number(rect.height || 0)) * scale + 8)}px`;
+  action.title = tile.label || "标记错误截图";
+
+  elements.imagePreviewIssueLayer.append(box, action);
+}
+
+async function submitImagePreviewTileIssue() {
+  const snapshot = imagePreviewZoomState.snapshot;
+  const tile = imagePreviewZoomState.selectedIssueTile;
+  if (!snapshot?.id || !tile?.key || imagePreviewZoomState.pendingIssueTileKey) {
+    return;
+  }
+
+  imagePreviewZoomState.pendingIssueTileKey = tile.key;
+  renderImagePreviewIssueSelection();
+  try {
+    const response = await fetch("/api/capture-issues", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        snapshotId: snapshot.id,
+        overviewFile: snapshot.file || "",
+        tileKey: tile.key,
+        tileLabel: tile.label || "",
+        sectionKey: tile.sectionKey || "",
+        sectionLabel: tile.sectionLabel || "",
+        sourceFile: tile.sourceFile || "",
+        sourceImageUrl: tile.sourceImageUrl || "",
+        rect: tile.rect || null
+      })
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `标记失败（HTTP ${response.status}）`);
+    }
+    if (payload.state) {
+      state = payload.state;
+    }
+    setArchiveStatus(`已标记错误截图：${tile.sectionLabel || tile.sectionKey || "模块"} / ${tile.label || tile.key}`, "success");
+  } catch (error) {
+    setArchiveStatus(error?.message || "标记错误截图失败，请稍后重试。", "error");
+  } finally {
+    imagePreviewZoomState.pendingIssueTileKey = "";
+    renderImagePreviewIssueSelection();
+  }
+}
+
 function imagePreviewMarkerModeForSnapshot(snapshot) {
   if (snapshot?.kind === "collection-tab-composite") {
     return "none";
+  }
+  if (snapshot?.kind === "home-overview-composite") {
+    return "percent-depth-with-screen-dividers";
   }
   return snapshot?.sectionKey === "navigation"
     ? "screen-dividers"
@@ -925,7 +1069,7 @@ function imagePreviewMarkerModeForSnapshot(snapshot) {
 }
 
 function imagePreviewShowsScreenRail(snapshot) {
-  if (snapshot?.kind === "collection-tab-composite") {
+  if (snapshot?.kind === "collection-tab-composite" || snapshot?.kind === "home-overview-composite") {
     return false;
   }
   return snapshot?.sectionKey !== "navigation";
@@ -942,6 +1086,16 @@ function applyImagePreviewScale(scale) {
   elements.imagePreviewImage.style.height = `${imageHeight}px`;
   elements.imagePreviewMainFrame.style.width = `${imageWidth}px`;
   elements.imagePreviewMainFrame.style.height = `${imageHeight}px`;
+  elements.imagePreviewIssueLayer.style.width = `${imageWidth}px`;
+  elements.imagePreviewIssueLayer.style.height = `${imageHeight}px`;
+  const markerWidth = imagePreviewDepthMarkerWidth(scale);
+  if (markerWidth && markerWidth < imageWidth - 1) {
+    elements.imagePreviewDepthMarkers.style.width = `${markerWidth}px`;
+    elements.imagePreviewDepthMarkers.style.right = "auto";
+  } else {
+    elements.imagePreviewDepthMarkers.removeAttribute("style");
+  }
+  renderImagePreviewIssueSelection();
 
   if (!imagePreviewZoomState.comparison) {
     elements.imagePreviewLongView.removeAttribute("style");
@@ -979,9 +1133,20 @@ function imagePreviewContentNaturalSize() {
   };
 }
 
+function imagePreviewDepthMarkerWidth(scale = 1) {
+  const mainWidth = Number(imagePreviewZoomState.snapshot?.composite?.mainWidth || 0);
+  if (!Number.isFinite(mainWidth) || mainWidth <= 0) {
+    return null;
+  }
+  return mainWidth * scale;
+}
+
 function imagePreviewFitScaleForViewport(viewportWidth, viewportHeight) {
   const contentSize = imagePreviewContentNaturalSize();
-  if (imagePreviewZoomState.snapshot?.kind === "collection-tab-composite") {
+  if (
+    imagePreviewZoomState.snapshot?.kind === "collection-tab-composite" ||
+    imagePreviewZoomState.snapshot?.kind === "home-overview-composite"
+  ) {
     const mainWidth = Number(
       imagePreviewZoomState.snapshot?.composite?.mainWidth ||
       imagePreviewZoomState.snapshot?.scrollInfo?.viewportWidth ||
@@ -1043,7 +1208,7 @@ function snapshotForPreviewLink(link) {
   if (snapshotId) {
     const byId = state.snapshots.find((snapshot) => snapshot.id === snapshotId);
     if (byId) {
-      return byId;
+      return snapshotPreviewOverrideForLink(byId, link);
     }
   }
 
@@ -1051,12 +1216,50 @@ function snapshotForPreviewLink(link) {
   if (snapshotFile) {
     const byFile = state.snapshots.find((snapshot) => snapshot.file === snapshotFile);
     if (byFile) {
-      return byFile;
+      return snapshotPreviewOverrideForLink(byFile, link);
     }
   }
 
   const hrefPath = safePathname(link.href);
-  return state.snapshots.find((snapshot) => safePathname(snapshot.imageUrl) === hrefPath) || null;
+  const byHref = state.snapshots.find((snapshot) => safePathname(snapshot.imageUrl) === hrefPath) || null;
+  return byHref ? snapshotPreviewOverrideForLink(byHref, link) : null;
+}
+
+function snapshotPreviewOverrideForLink(snapshot, link) {
+  const previewKind = link.dataset.previewKind || "";
+  if (!previewKind) {
+    return snapshot;
+  }
+
+  const width = Number(link.dataset.previewWidth || 0) || snapshot.width || 0;
+  const height = Number(link.dataset.previewHeight || 0) || snapshot.height || 0;
+  const mainWidth = Number(link.dataset.previewMainWidth || 0);
+  const viewportHeight = Number(link.dataset.previewViewportHeight || 0) ||
+    Number(snapshot.scrollInfo?.viewportHeight || 0);
+  const viewportWidth = Number(link.dataset.previewViewportWidth || 0) ||
+    Number(snapshot.scrollInfo?.viewportWidth || 0);
+
+  return {
+    ...snapshot,
+    file: link.dataset.previewFile || snapshot.file || "",
+    imageUrl: link.href,
+    width,
+    height,
+    kind: previewKind,
+    composite: Number.isFinite(mainWidth) && mainWidth > 0
+      ? {
+          ...(snapshot.composite || {}),
+          ...(snapshot.homeOverview?.composite || {}),
+          mainWidth
+        }
+      : snapshot.homeOverview?.composite || snapshot.composite || null,
+    scrollInfo: {
+      ...(snapshot.scrollInfo || {}),
+      ...(snapshot.homeOverview?.scrollInfo || {}),
+      viewportWidth: Number.isFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : snapshot.scrollInfo?.viewportWidth || null,
+      viewportHeight: Number.isFinite(viewportHeight) && viewportHeight > 0 ? viewportHeight : snapshot.scrollInfo?.viewportHeight || null
+    }
+  };
 }
 
 function relatedShotSnapshotForPreviewLink(link) {
@@ -1197,7 +1400,10 @@ function clampImagePreviewScale(scale) {
 
 function centerImagePreviewViewport() {
   const viewport = elements.imagePreviewViewport;
-  if (imagePreviewZoomState.snapshot?.kind === "collection-tab-composite") {
+  if (
+    imagePreviewZoomState.snapshot?.kind === "collection-tab-composite" ||
+    imagePreviewZoomState.snapshot?.kind === "home-overview-composite"
+  ) {
     viewport.scrollLeft = 0;
     viewport.scrollTop = 0;
     return;
@@ -1227,6 +1433,9 @@ function startImagePreviewDrag(event) {
   if (event.button !== 0 || !imagePreviewZoomState.naturalWidth) {
     return;
   }
+  if (event.target.closest?.(".image-preview-issue-action")) {
+    return;
+  }
 
   const canDrag = elements.imagePreviewViewport.scrollWidth > elements.imagePreviewViewport.clientWidth + 1 ||
     elements.imagePreviewViewport.scrollHeight > elements.imagePreviewViewport.clientHeight + 1;
@@ -1240,6 +1449,8 @@ function startImagePreviewDrag(event) {
   imagePreviewZoomState.dragStartY = event.clientY;
   imagePreviewZoomState.dragStartScrollLeft = elements.imagePreviewViewport.scrollLeft;
   imagePreviewZoomState.dragStartScrollTop = elements.imagePreviewViewport.scrollTop;
+  imagePreviewZoomState.dragStartTarget = event.target;
+  imagePreviewZoomState.dragMoved = false;
   elements.imagePreviewViewport.classList.add("is-dragging");
   elements.imagePreviewViewport.setPointerCapture(event.pointerId);
   event.preventDefault();
@@ -1250,6 +1461,12 @@ function moveImagePreviewDrag(event) {
     return;
   }
 
+  if (
+    Math.abs(event.clientX - imagePreviewZoomState.dragStartX) > 4 ||
+    Math.abs(event.clientY - imagePreviewZoomState.dragStartY) > 4
+  ) {
+    imagePreviewZoomState.dragMoved = true;
+  }
   elements.imagePreviewViewport.scrollLeft = imagePreviewZoomState.dragStartScrollLeft - (event.clientX - imagePreviewZoomState.dragStartX);
   elements.imagePreviewViewport.scrollTop = imagePreviewZoomState.dragStartScrollTop - (event.clientY - imagePreviewZoomState.dragStartY);
   event.preventDefault();
@@ -1260,12 +1477,26 @@ function endImagePreviewDrag(event) {
     return;
   }
 
+  const shouldSelectTile = event &&
+    !imagePreviewZoomState.dragMoved &&
+    imagePreviewZoomState.dragStartTarget === elements.imagePreviewImage &&
+    imagePreviewCanMarkTiles();
+
   if (imagePreviewZoomState.dragPointerId !== null && elements.imagePreviewViewport.hasPointerCapture?.(imagePreviewZoomState.dragPointerId)) {
     elements.imagePreviewViewport.releasePointerCapture(imagePreviewZoomState.dragPointerId);
   }
   imagePreviewZoomState.dragging = false;
   imagePreviewZoomState.dragPointerId = null;
+  imagePreviewZoomState.dragStartTarget = null;
+  imagePreviewZoomState.dragMoved = false;
   elements.imagePreviewViewport.classList.remove("is-dragging");
+
+  if (shouldSelectTile) {
+    const point = imagePreviewNaturalPointForEvent(event);
+    const tile = point ? imagePreviewTileAtPoint(point.x, point.y) : null;
+    imagePreviewZoomState.selectedIssueTile = tile || null;
+    renderImagePreviewIssueSelection();
+  }
 }
 
 function handleImagePreviewResize() {
@@ -1918,7 +2149,9 @@ function buildGalleryCards(snapshots) {
 
   for (const banner of homeBanners) {
     const group = findMatchingHomeGroup(banner, homeGroups) || createFallbackHomeGroup(banner, cards, homeGroups);
-    addRelatedShot(group, relatedShotFromSnapshot(banner));
+    if (!group.snapshot?.homeOverview) {
+      addRelatedShot(group, relatedShotFromSnapshot(banner));
+    }
   }
 
   for (const group of homeGroups) {
@@ -1938,8 +2171,10 @@ function createHomeGroup(snapshot) {
     mainBannerIndex: null,
     relatedValidation: snapshot.relatedValidation || null
   };
-  for (const relatedShot of relatedShotsFromSnapshot(snapshot)) {
-    addRelatedShot(group, relatedShot);
+  if (!snapshot.homeOverview) {
+    for (const relatedShot of relatedShotsFromSnapshot(snapshot)) {
+      addRelatedShot(group, relatedShot);
+    }
   }
   return group;
 }
@@ -2050,6 +2285,19 @@ function renderShotCard(card) {
   const cardKey = galleryCardKey(card);
   const item = document.createElement("article");
   const hasRelatedWarning = relatedWarnings(card.relatedValidation).length > 0;
+  const preview = snapshot.homeOverview || null;
+  const mainPreviewUrl = preview?.imageUrl || snapshot.imageUrl;
+  const mainPreviewAttrs = preview
+    ? [
+        `data-preview-file="${escapeHtml(preview.file || "")}"`,
+        `data-preview-kind="${escapeHtml(preview.kind || "")}"`,
+        `data-preview-width="${escapeHtml(String(preview.width || ""))}"`,
+        `data-preview-height="${escapeHtml(String(preview.height || ""))}"`,
+        `data-preview-viewport-width="${escapeHtml(String(preview.scrollInfo?.viewportWidth || snapshot.scrollInfo?.viewportWidth || ""))}"`,
+        `data-preview-viewport-height="${escapeHtml(String(preview.scrollInfo?.viewportHeight || snapshot.scrollInfo?.viewportHeight || ""))}"`,
+        `data-preview-main-width="${escapeHtml(String(preview.composite?.mainWidth || snapshot.scrollInfo?.viewportWidth || snapshot.width || ""))}"`
+      ].join(" ")
+    : "";
   item.className = [
     "shot",
     card.relatedShots.length ? "has-related-shots" : "",
@@ -2061,7 +2309,7 @@ function renderShotCard(card) {
   item.dataset.viewportHeight = String(Number(snapshot.scrollInfo?.viewportHeight || 0) || "");
   item.innerHTML = `
     <div class="shot-hero">
-      <a class="shot-main-image" href="${snapshot.imageUrl}" target="_blank" rel="noreferrer" data-snapshot-id="${escapeHtml(snapshot.id || "")}" data-snapshot-file="${escapeHtml(snapshot.file || "")}">
+      <a class="shot-main-image" href="${escapeHtml(mainPreviewUrl)}" target="_blank" rel="noreferrer" data-snapshot-id="${escapeHtml(snapshot.id || "")}" data-snapshot-file="${escapeHtml(snapshot.file || "")}" ${mainPreviewAttrs}>
         <img src="${snapshot.imageUrl}" alt="${escapeHtml(displayUrl)} ${formatDate(snapshot.capturedAt)}" loading="lazy">
       </a>
       ${renderSnapshotDeleteButton(snapshot)}

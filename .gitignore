@@ -3,5 +3,6 @@ logs/
 archive/
 data/snapshots.json
 data/changes.json
+data/capture-issues.json
 npm-debug.log*
 *.tmp

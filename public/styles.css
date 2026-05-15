@@ -1151,6 +1151,39 @@ select:focus {
   pointer-events: none;
 }
 
+.image-preview-issue-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.image-preview-issue-box {
+  position: absolute;
+  border: 2px solid #ff3b30;
+  border-radius: 5px;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.68), 0 10px 24px rgba(0, 0, 0, 0.32);
+  pointer-events: none;
+}
+
+.image-preview-issue-action {
+  position: absolute;
+  min-height: 30px;
+  border-color: rgba(255, 255, 255, 0.28);
+  background: #ff3b30;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1;
+  padding: 0 10px;
+  pointer-events: auto;
+  white-space: nowrap;
+}
+
+.image-preview-issue-action:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
 .image-preview-depth-marker {
   position: absolute;
   left: 0;

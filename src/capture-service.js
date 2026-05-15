@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { capturePage, findBrowser } from "./browser.js";
+import { capturePage, composeShokzHomeOverviewCompositeCapture, findBrowser } from "./browser.js";
 import { assessRelatedShotConfidence, assessSnapshotConfidence } from "./capture-confidence.js";
 import { createCaptureDiagnosticRun, finalizeCaptureDiagnostic, recordCaptureDiagnostic } from "./capture-diagnostics.js";
 import { rebuildChanges } from "./changes.js";
@@ -159,6 +159,7 @@ async function capturePlanExecution(execution, config) {
         bannerClip: item.bannerClip || null,
         bannerState: item.bannerState || null,
         bannerValidation: item.bannerIndex ? capture.bannerInfo || null : null,
+        homeOverview: !item.bannerIndex ? relatedCapture.homeOverview || null : null,
         relatedValidation: !item.bannerIndex ? relatedCapture.validation : null,
         relatedShots: !item.bannerIndex && relatedShots.length ? relatedShots : null
       });
@@ -464,9 +465,9 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
       visibleProducts: item.visibleProducts || null,
       itemCount: item.itemCount || null,
       visibleItemCount: item.visibleItemCount || null,
-      visibleItems: item.visibleItems || null,
+      visibleItems: publicRelatedVisibleItems(item.visibleItems),
       itemRects: item.itemRects || null,
-      composite: item.composite || null,
+      composite: publicRelatedComposite(item.composite),
       windowSignature: item.windowSignature || null,
       logicalSignature: item.logicalSignature || item.bannerSignature || null,
       visualHash: item.visualHash || null,
@@ -532,15 +533,80 @@ async function captureShokzHomeRelatedShotsIsolated(normalizedUrl, baseOutputPat
   }
 
   sections.sort(compareRelatedSectionEntries);
+  const sortedShots = shots.sort(compareRelatedShots);
+  const overview = await composeHomeOverviewForRelatedShots(baseOutputPath, sortedShots, captureConfig);
+  warnings.push(...overview.warnings);
 
   return {
-    shots: shots.sort(compareRelatedShots),
+    shots: sortedShots,
+    homeOverview: overview.homeOverview,
     validation: {
       status: warnings.length ? "warning" : "ok",
       warnings,
       sections
     }
   };
+}
+
+async function composeHomeOverviewForRelatedShots(baseOutputPath, relatedShots, captureConfig) {
+  const compositeShots = relatedShots.filter((shot) => shot.kind === "collection-tab-composite" && shot.composite);
+  if (!compositeShots.length) {
+    return { homeOverview: null, warnings: [] };
+  }
+
+  const outputPath = baseOutputPath.replace(/\.png$/i, "-home-overview-map.png");
+  try {
+    const overview = await composeShokzHomeOverviewCompositeCapture({
+      mainOutputPath: baseOutputPath,
+      outputPath,
+      viewport: captureConfig.viewport || {},
+      relatedShots: compositeShots.map((shot) => ({
+        ...shot,
+        outputPath: path.join(archiveDir, shot.file)
+      }))
+    });
+    const relativePath = archiveRelativePath(overview.outputPath);
+    const stat = await fs.stat(overview.outputPath);
+    return {
+      homeOverview: {
+        label: overview.label,
+        file: relativePath,
+        imageUrl: publicSnapshotUrl(relativePath),
+        bytes: stat.size,
+        width: overview.width,
+        height: overview.height,
+        kind: overview.kind,
+        sectionKey: overview.sectionKey,
+        sectionLabel: overview.sectionLabel,
+        sectionTitle: overview.sectionTitle,
+        stateIndex: overview.stateIndex,
+        stateCount: overview.stateCount,
+        stateLabel: overview.stateLabel,
+        interactionState: overview.interactionState,
+        logicalSignature: overview.logicalSignature,
+        visualSignature: overview.visualSignature,
+        visualHash: overview.visualHash,
+        visualAudit: overview.visualAudit,
+        clip: overview.clip,
+        scrollInfo: overview.scrollInfo,
+        composite: publicRelatedComposite(overview.composite),
+        itemCount: overview.itemCount,
+        visibleItemCount: overview.visibleItemCount,
+        visibleItems: publicRelatedVisibleItems(overview.visibleItems),
+        itemRects: overview.itemRects
+      },
+      warnings: []
+    };
+  } catch (error) {
+    return {
+      homeOverview: null,
+      warnings: [{
+        sectionKey: "home-overview",
+        sectionLabel: "首页总览图",
+        message: `Could not compose home overview screenshot: ${error.message}`
+      }]
+    };
+  }
 }
 
 async function captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun) {
@@ -711,9 +777,9 @@ async function relatedShotsFromCaptureResult(relatedCapture, normalizedUrl, vali
       visibleProducts: item.visibleProducts || null,
       itemCount: item.itemCount || null,
       visibleItemCount: item.visibleItemCount || null,
-      visibleItems: item.visibleItems || null,
+      visibleItems: publicRelatedVisibleItems(item.visibleItems),
       itemRects: item.itemRects || null,
-      composite: item.composite || null,
+      composite: publicRelatedComposite(item.composite),
       windowSignature: item.windowSignature || null,
       logicalSignature: item.logicalSignature || item.bannerSignature || null,
       visualHash: item.visualHash || null,
@@ -738,6 +804,40 @@ async function relatedShotsFromCaptureResult(relatedCapture, normalizedUrl, vali
   }
 
   return relatedShots.sort(compareRelatedShots);
+}
+
+function publicRelatedComposite(composite) {
+  if (!composite || typeof composite !== "object") {
+    return null;
+  }
+  return {
+    ...composite,
+    variants: Array.isArray(composite.variants)
+      ? composite.variants.map(publicRelatedVisibleItem).filter(Boolean)
+      : composite.variants
+  };
+}
+
+function publicRelatedVisibleItems(items) {
+  return Array.isArray(items)
+    ? items.map(publicRelatedVisibleItem).filter(Boolean)
+    : null;
+}
+
+function publicRelatedVisibleItem(item) {
+  if (!item || typeof item !== "object") {
+    return null;
+  }
+  const sourceOutputPath = stringOrNull(item.sourceOutputPath);
+  const sourceFile = stringOrNull(item.sourceFile) ||
+    (sourceOutputPath ? archiveRelativePath(sourceOutputPath) : null);
+  const next = { ...item };
+  delete next.sourceOutputPath;
+  if (sourceFile) {
+    next.sourceFile = sourceFile;
+    next.sourceImageUrl = publicSnapshotUrl(sourceFile);
+  }
+  return next;
 }
 
 function validationForRelatedCaptureResult(relatedCapture, descriptor) {

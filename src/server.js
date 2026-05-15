@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { captureAllDevices, captureConfiguredUrls, captureOne, browserStatus } from "./capture-service.js";
+import { loadCaptureIssues, markCaptureTileIssue } from "./capture-issues.js";
 import { loadChanges } from "./changes.js";
 import { archiveDir, publicDir } from "./paths.js";
 import { safeJoin } from "./path-safety.js";
@@ -38,6 +39,16 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === "GET" && pathname === "/api/changes") {
       return sendJson(response, annotateChangesForResponse(await loadChanges(), config));
+    }
+
+    if (request.method === "POST" && pathname === "/api/capture-issues") {
+      const body = await readJsonBody(request);
+      const issue = await markCaptureTileIssue(body);
+      return sendJson(response, {
+        ok: true,
+        issue,
+        state: await buildState()
+      });
     }
 
     if (request.method === "POST" && pathname === "/api/capture") {
@@ -168,10 +179,11 @@ function scheduleNext() {
 }
 
 async function buildState() {
-  const [changes, snapshots, browser] = await Promise.all([
+  const [changes, snapshots, browser, captureIssues] = await Promise.all([
     loadChanges(),
     loadSnapshots(),
-    browserStatus()
+    browserStatus(),
+    loadCaptureIssues()
   ]);
   return buildStatePayload({
     config,
@@ -180,6 +192,7 @@ async function buildState() {
     browser,
     snapshots,
     changes,
+    captureIssues,
     permissions: {
       canDeleteSnapshots: snapshotDeleteEnabled
     }

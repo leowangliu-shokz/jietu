@@ -14,6 +14,7 @@ const {
   isViewMoreLabel,
   composeShokzCollectionTabComposite,
   composeShokzHomeModuleComposite,
+  composeShokzHomeOverviewComposite,
   composeShokzHomeTopbarComposite,
   composeShokzHomeProductShowcaseComposite,
   shouldUseDedicatedViewMoreExpansion,
@@ -384,6 +385,55 @@ test("home module composite reuses the Topbar layout for other carousel sections
   assert.equal(pixelAt(decoded, 10, 10)[0], 40);
   assert.equal(pixelAt(decoded, 144, 74)[0], 220);
   assert.equal(pixelAt(decoded, 144, 122)[1], 220);
+});
+
+test("home overview composite merges module maps into one right-side timeline", () => {
+  const main = encodePng(120, 220, solidImage(120, 220, [40, 50, 60, 255]));
+  const topbarState = encodePng(80, 20, solidImage(80, 20, [220, 30, 30, 255]));
+  const bannerState = encodePng(90, 50, solidImage(90, 50, [30, 220, 30, 255]));
+  const topbarMap = composeShokzHomeModuleComposite({
+    mainCapture: { buffer: main },
+    viewport: { width: 120, height: 220 },
+    sourceKind: "home-topbar",
+    stateCaptures: [topbarCapture(topbarState, 1, 0)]
+  });
+  const bannerMap = composeShokzHomeModuleComposite({
+    mainCapture: { buffer: main },
+    viewport: { width: 120, height: 220 },
+    sourceKind: "home-banner",
+    stateCaptures: [topbarCapture(bannerState, 1, 72)]
+  });
+
+  const result = composeShokzHomeOverviewComposite({
+    mainCapture: { buffer: main },
+    viewport: { width: 120, height: 220 },
+    moduleCaptures: [
+      {
+        buffer: topbarMap.buffer,
+        composite: topbarMap.layout,
+        sectionKey: "topbar",
+        sectionLabel: "Topbar"
+      },
+      {
+        buffer: bannerMap.buffer,
+        composite: bannerMap.layout,
+        sectionKey: "banner",
+        sectionLabel: "Banner"
+      }
+    ]
+  });
+
+  const decoded = decodePng(result.buffer);
+
+  assert.equal(result.layout.kind, "home-overview-composite");
+  assert.equal(result.layout.mainWidth, 120);
+  assert.equal(result.layout.variantCount, 2);
+  assert.equal(result.layout.sectionCount, 2);
+  assert.equal(result.layout.rowCount, 2);
+  assert.equal(decoded.height, 220);
+  assert.equal(pixelAt(decoded, 10, 10)[0], 40);
+  assert.equal(pixelAt(decoded, 144, 8)[0], 220);
+  assert.equal(pixelAt(decoded, 144, 84)[1], 220);
 });
 
 test("collection and comparison page capture modes prefer direct full-page clip capture", () => {

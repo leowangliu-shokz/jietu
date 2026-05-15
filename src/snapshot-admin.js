@@ -105,9 +105,32 @@ export async function deleteSnapshotArchive(snapshotId, options = {}) {
 async function removeSnapshotFiles(snapshot, archiveRoot) {
   const files = uniqueFileList([
     snapshot?.file,
-    ...(snapshot?.relatedShots || []).map((shot) => shot?.file)
+    snapshot?.homeOverview?.file,
+    ...(snapshot?.relatedShots || []).map((shot) => shot?.file),
+    ...snapshotRelatedSourceFiles(snapshot)
   ]);
   return removeArchiveFiles(files, archiveRoot);
+}
+
+function snapshotRelatedSourceFiles(snapshot) {
+  const files = [];
+  const collectItems = (items) => {
+    if (!Array.isArray(items)) {
+      return;
+    }
+    for (const item of items) {
+      if (item?.sourceFile) {
+        files.push(item.sourceFile);
+      }
+    }
+  };
+  for (const shot of snapshot?.relatedShots || []) {
+    collectItems(shot.visibleItems);
+    collectItems(shot.composite?.variants);
+  }
+  collectItems(snapshot?.homeOverview?.visibleItems);
+  collectItems(snapshot?.homeOverview?.composite?.variants);
+  return files;
 }
 
 async function cleanupUnusedDiffFiles(changes, archiveRoot) {

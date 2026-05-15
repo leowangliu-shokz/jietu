@@ -2976,7 +2976,6 @@ async function captureShokzHomeBanners(client, outputPath, viewport) {
     viewport
   });
   if (compositeResult.captures.length) {
-    await removeIntermediateRelatedOutputs(captures, compositeResult.captures);
     return {
       width: compositeResult.width,
       height: compositeResult.height,
@@ -3274,7 +3273,6 @@ async function captureShokzHomeRelatedSection(client, outputPath, captureContext
     });
     warnings.push(...compositeResult.warnings);
     if (compositeResult.captures.length) {
-      await removeIntermediateRelatedOutputs(captures, compositeResult.captures);
       return {
         width: compositeResult.width,
         height: compositeResult.height,
@@ -3296,7 +3294,6 @@ async function captureShokzHomeRelatedSection(client, outputPath, captureContext
     });
     warnings.push(...compositeResult.warnings);
     if (compositeResult.captures.length) {
-      await removeIntermediateRelatedOutputs(captures, compositeResult.captures);
       return {
         width: compositeResult.width,
         height: compositeResult.height,
@@ -3426,7 +3423,8 @@ async function composeShokzHomeModuleCompositeCaptures({
     bannerIndex: item.capture.bannerIndex || null,
     interactionState: item.capture.interactionState || "default",
     rect: item.compositeRect,
-    sourceClip: item.capture.clip || item.capture.bannerClip || null
+    sourceClip: item.capture.clip || item.capture.bannerClip || null,
+    sourceOutputPath: item.capture.outputPath || null
   }));
   const itemRects = visibleItems.map((item) => ({
     key: item.key,
@@ -3849,7 +3847,8 @@ function composeShokzHomeModuleComposite({ mainCapture, stateCaptures = [], view
         key: item.capture.coverageKey || item.capture.logicalSignature || item.capture.bannerSignature || item.capture.stateLabel || `state-${item.index + 1}`,
         label: item.capture.stateLabel || item.capture.label || `State ${item.index + 1}`,
         rect: item.compositeRect,
-        sourceClip: item.capture.clip || item.capture.bannerClip || null
+        sourceClip: item.capture.clip || item.capture.bannerClip || null,
+        sourceOutputPath: item.capture.outputPath || null
       });
       x += item.image.width + itemGap;
     }
@@ -3909,6 +3908,222 @@ function homeModuleCompositeRows(items, itemGap = 18) {
     }
   }
   return rows.sort((a, b) => Number(a.y || 0) - Number(b.y || 0));
+}
+
+export async function composeShokzHomeOverviewCompositeCapture({
+  mainOutputPath,
+  relatedShots = [],
+  outputPath,
+  viewport = {}
+}) {
+  const mainBuffer = await fs.readFile(mainOutputPath);
+  const moduleCaptures = [];
+
+  for (const shot of relatedShots) {
+    if (shot?.kind !== "collection-tab-composite" || !shot.outputPath || !shot.composite) {
+      continue;
+    }
+    moduleCaptures.push({
+      ...shot,
+      buffer: await fs.readFile(shot.outputPath)
+    });
+  }
+
+  const composite = composeShokzHomeOverviewComposite({
+    mainCapture: { buffer: mainBuffer },
+    moduleCaptures,
+    viewport
+  });
+  await fs.writeFile(outputPath, composite.buffer);
+
+  const visualSignature = hashBuffer(composite.buffer);
+  const visualHash = visualHashForBuffer(composite.buffer);
+  const visualAudit = visualAuditForBuffer(composite.buffer, visualHash);
+
+  return {
+    outputPath,
+    width: composite.width,
+    height: composite.height,
+    kind: "home-overview-composite",
+    sectionKey: "home-overview",
+    sectionLabel: "Home overview",
+    sectionTitle: "首页总览图",
+    stateIndex: 1,
+    stateCount: 1,
+    stateLabel: "首页总览图",
+    label: "首页总览图",
+    interactionState: "default",
+    logicalSignature: "home-overview|all-modules",
+    visualSignature,
+    visualHash,
+    visualAudit,
+    captureValidation: {
+      ok: true,
+      label: "home overview composite",
+      attempts: moduleCaptures.map((item) => item.captureValidation).filter(Boolean)
+    },
+    clip: {
+      x: 0,
+      y: 0,
+      width: composite.width,
+      height: composite.height
+    },
+    scrollInfo: {
+      height: composite.height,
+      viewportWidth: Number(viewport.width || 0) || composite.layout?.mainWidth || composite.width,
+      viewportHeight: Number(viewport.height || 0) || 852,
+      pageCount: composite.layout?.sectionCount || moduleCaptures.length
+    },
+    composite: composite.layout,
+    itemCount: composite.layout?.variantCount || null,
+    visibleItemCount: composite.layout?.variantCount || null,
+    visibleItems: composite.layout?.variants || null,
+    itemRects: (composite.layout?.variants || []).map((item) => ({
+      key: item.key,
+      label: item.label,
+      rect: item.rect
+    }))
+  };
+}
+
+function composeShokzHomeOverviewComposite({ mainCapture, moduleCaptures = [], viewport = {} }) {
+  const mainImage = decodePng(mainCapture.buffer);
+  const gutter = 24;
+  const outerPad = 24;
+  const variants = [];
+
+  for (const [moduleIndex, capture] of moduleCaptures.entries()) {
+    const image = decodePng(capture.buffer);
+    const layout = capture.composite || {};
+    const moduleMainWidth = Number(layout.mainWidth || 0) || mainImage.width;
+    const moduleGutter = Number(layout.gutter || 0) || gutter;
+    const baseX = moduleMainWidth + moduleGutter;
+    const layoutVariants = Array.isArray(layout.variants) ? layout.variants : [];
+
+    for (const [variantIndex, variant] of layoutVariants.entries()) {
+      const sourceRect = normalizeCompositeRect(variant?.rect, image);
+      if (!sourceRect) {
+        continue;
+      }
+      const relativeX = Math.max(0, sourceRect.x - baseX);
+      const targetRect = {
+        x: mainImage.width + gutter + relativeX,
+        y: Math.max(0, sourceRect.y),
+        width: sourceRect.width,
+        height: sourceRect.height
+      };
+      variants.push({
+        key: [
+          capture.sectionKey || `section-${moduleIndex + 1}`,
+          variant?.key || variant?.label || `variant-${variantIndex + 1}`
+        ].join(":"),
+        label: variant?.label || capture.stateLabel || capture.label || `State ${variantIndex + 1}`,
+        sectionKey: capture.sectionKey || null,
+        sectionLabel: capture.sectionLabel || null,
+        sourceClip: variant?.sourceClip || null,
+        sourceFile: variant?.sourceFile || null,
+        sourceOutputPath: variant?.sourceOutputPath || null,
+        image,
+        sourceRect,
+        targetRect,
+        index: variants.length
+      });
+    }
+  }
+
+  if (!variants.length) {
+    throw new Error("No module variants to compose.");
+  }
+
+  const width = Math.max(
+    mainImage.width + gutter + 1,
+    variants.reduce((max, item) => Math.max(max, item.targetRect.x + item.targetRect.width), 0) + outerPad
+  );
+  const height = Math.max(
+    mainImage.height,
+    variants.reduce((max, item) => Math.max(max, item.targetRect.y + item.targetRect.height), 0) + outerPad
+  );
+  const rgba = new Uint8Array(width * height * 4);
+  fillRgba(rgba, [246, 248, 248, 255]);
+  copyRgbaImage({
+    source: mainImage.rgba,
+    sourceWidth: mainImage.width,
+    sourceHeight: mainImage.height,
+    target: rgba,
+    targetWidth: width,
+    targetHeight: height,
+    x: 0,
+    y: 0
+  });
+
+  const layoutVariants = [];
+  for (const item of variants) {
+    copyRgbaRect({
+      source: item.image.rgba,
+      sourceWidth: item.image.width,
+      sourceHeight: item.image.height,
+      sourceX: item.sourceRect.x,
+      sourceY: item.sourceRect.y,
+      width: item.sourceRect.width,
+      height: item.sourceRect.height,
+      target: rgba,
+      targetWidth: width,
+      targetHeight: height,
+      x: item.targetRect.x,
+      y: item.targetRect.y
+    });
+    layoutVariants.push({
+      key: item.key,
+      label: item.label,
+      sectionKey: item.sectionKey,
+      sectionLabel: item.sectionLabel,
+      rect: item.targetRect,
+      sourceClip: item.sourceClip,
+      sourceFile: item.sourceFile || null,
+      sourceOutputPath: item.sourceOutputPath || null
+    });
+  }
+
+  return {
+    buffer: encodePng(width, height, rgba),
+    width,
+    height,
+    layout: {
+      kind: "home-overview-composite",
+      sourceKind: "home-overview",
+      mainWidth: mainImage.width,
+      mainHeight: mainImage.height,
+      viewportWidth: Number(viewport.width || 0) || mainImage.width,
+      viewportHeight: Number(viewport.height || 0) || 852,
+      gutter,
+      variantCount: layoutVariants.length,
+      sectionCount: new Set(layoutVariants.map((item) => item.sectionKey).filter(Boolean)).size,
+      rowCount: homeModuleCompositeRows(layoutVariants.map((item, index) => ({
+        index,
+        y: item.rect.y,
+        width: item.rect.width,
+        height: item.rect.height
+      }))).length,
+      variants: layoutVariants
+    }
+  };
+}
+
+function normalizeCompositeRect(rect, image) {
+  const x = Math.max(0, Math.floor(Number(rect?.x || 0)));
+  const y = Math.max(0, Math.floor(Number(rect?.y || 0)));
+  const width = Math.min(
+    Math.max(1, Math.floor(Number(rect?.width || 0))),
+    image.width - x
+  );
+  const height = Math.min(
+    Math.max(1, Math.floor(Number(rect?.height || 0))),
+    image.height - y
+  );
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return null;
+  }
+  return { x, y, width, height };
 }
 
 function composeShokzHomeProductShowcaseComposite({ defaultCaptures, hoverCaptures = [], viewport = {} }) {
@@ -4208,14 +4423,6 @@ function combinedRelatedCaptureImages(captures) {
     }
   }
   return images;
-}
-
-async function removeIntermediateRelatedOutputs(sourceCaptures, keepCaptures) {
-  const keepPaths = new Set((keepCaptures || []).map((capture) => capture.outputPath).filter(Boolean));
-  await Promise.all((sourceCaptures || [])
-    .map((capture) => capture.outputPath)
-    .filter((outputPath) => outputPath && !keepPaths.has(outputPath))
-    .map((outputPath) => fs.rm(outputPath, { force: true }).catch(() => null)));
 }
 
 async function captureShokzCollectionRelatedSection(client, outputPath, captureContext, definition) {
@@ -5052,6 +5259,45 @@ function copyRgbaImage({ source, sourceWidth, sourceHeight, target, targetWidth,
   }
   for (let row = 0; row < copyHeight; row += 1) {
     const sourceStart = row * sourceWidth * 4;
+    const sourceEnd = sourceStart + copyWidth * 4;
+    const targetStart = ((targetY + row) * targetWidth + targetX) * 4;
+    target.set(source.subarray(sourceStart, sourceEnd), targetStart);
+  }
+}
+
+function copyRgbaRect({
+  source,
+  sourceWidth,
+  sourceHeight,
+  sourceX,
+  sourceY,
+  width,
+  height,
+  target,
+  targetWidth,
+  targetHeight,
+  x,
+  y
+}) {
+  const fromX = Math.max(0, Math.floor(sourceX));
+  const fromY = Math.max(0, Math.floor(sourceY));
+  const targetX = Math.max(0, Math.floor(x));
+  const targetY = Math.max(0, Math.floor(y));
+  const copyWidth = Math.min(
+    Math.max(0, Math.floor(width)),
+    sourceWidth - fromX,
+    targetWidth - targetX
+  );
+  const copyHeight = Math.min(
+    Math.max(0, Math.floor(height)),
+    sourceHeight - fromY,
+    targetHeight - targetY
+  );
+  if (copyWidth <= 0 || copyHeight <= 0) {
+    return;
+  }
+  for (let row = 0; row < copyHeight; row += 1) {
+    const sourceStart = ((fromY + row) * sourceWidth + fromX) * 4;
     const sourceEnd = sourceStart + copyWidth * 4;
     const targetStart = ((targetY + row) * targetWidth + targetX) * 4;
     target.set(source.subarray(sourceStart, sourceEnd), targetStart);
@@ -14086,6 +14332,7 @@ export const __testOnly = {
   isViewMoreLabel,
   composeShokzCollectionTabComposite,
   composeShokzHomeModuleComposite,
+  composeShokzHomeOverviewComposite,
   composeShokzHomeTopbarComposite,
   composeShokzHomeProductShowcaseComposite,
   shouldUseDedicatedViewMoreExpansion,
