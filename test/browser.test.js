@@ -354,7 +354,7 @@ test("home topbar composite keeps the main screenshot and lays carousel states t
 });
 
 test("home module composite reuses the Topbar layout for other carousel sections", () => {
-  const main = encodePng(120, 160, solidImage(120, 160, [40, 50, 60, 255]));
+  const main = encodePng(120, 200, solidImage(120, 200, [40, 50, 60, 255]));
   const firstState = encodePng(90, 50, solidImage(90, 50, [220, 30, 30, 255]));
   const secondState = encodePng(90, 50, solidImage(90, 50, [30, 220, 30, 255]));
 
@@ -364,12 +364,12 @@ test("home module composite reuses the Topbar layout for other carousel sections
     },
     viewport: {
       width: 120,
-      height: 160
+      height: 200
     },
     sourceKind: "home-banner",
     stateCaptures: [
-      topbarCapture(firstState, 1),
-      topbarCapture(secondState, 2)
+      topbarCapture(firstState, 1, 64),
+      topbarCapture(secondState, 2, 112)
     ]
   });
 
@@ -378,11 +378,12 @@ test("home module composite reuses the Topbar layout for other carousel sections
   assert.equal(result.layout.sourceKind, "home-banner");
   assert.equal(result.layout.mainWidth, 120);
   assert.equal(result.layout.variantCount, 2);
+  assert.equal(result.layout.rowCount, 2);
   assert.equal(result.stateCaptures.length, 2);
-  assert.equal(decoded.height, 160);
+  assert.equal(decoded.height, 200);
   assert.equal(pixelAt(decoded, 10, 10)[0], 40);
-  assert.equal(pixelAt(decoded, 144, 10)[0], 220);
-  assert.equal(pixelAt(decoded, 252, 10)[1], 220);
+  assert.equal(pixelAt(decoded, 144, 74)[0], 220);
+  assert.equal(pixelAt(decoded, 144, 122)[1], 220);
 });
 
 test("collection and comparison page capture modes prefer direct full-page clip capture", () => {
@@ -440,7 +441,7 @@ function homeShowcaseCapture(buffer, pageIndex) {
   };
 }
 
-function topbarCapture(buffer, pageIndex) {
+function topbarCapture(buffer, pageIndex, y = 0) {
   return {
     buffer,
     pageIndex,
@@ -451,6 +452,12 @@ function topbarCapture(buffer, pageIndex) {
       text: `Topbar ${pageIndex}`,
       textBlocks: [],
       images: []
+    },
+    clip: {
+      x: 0,
+      y,
+      width: 80,
+      height: 16
     }
   };
 }

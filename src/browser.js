@@ -3795,7 +3795,8 @@ function composeShokzHomeModuleComposite({ mainCapture, stateCaptures = [], view
         image,
         index,
         width: image.width,
-        height: image.height
+        height: image.height,
+        y: homeModuleCompositeSourceY(capture, image)
       };
     })
     .filter((item) => item.width > 0 && item.height > 0);
@@ -3804,9 +3805,13 @@ function composeShokzHomeModuleComposite({ mainCapture, stateCaptures = [], view
     throw new Error("No module captures to compose.");
   }
 
-  const rightWidth = items.reduce((sum, item) => sum + item.width, 0) + Math.max(0, items.length - 1) * itemGap;
+  const rows = homeModuleCompositeRows(items, itemGap);
+  const rightWidth = rows.reduce((max, row) => Math.max(max, row.width), 0);
   const width = Math.max(1, mainImage.width + gutter + rightWidth + outerPad);
-  const height = Math.max(mainImage.height, Math.max(...items.map((item) => item.height), 1) + outerPad);
+  const height = Math.max(
+    mainImage.height,
+    rows.reduce((max, row) => Math.max(max, row.y + row.height), 0) + outerPad
+  );
   const rgba = new Uint8Array(width * height * 4);
   fillRgba(rgba, [246, 248, 248, 255]);
   copyRgbaImage({
@@ -3821,31 +3826,33 @@ function composeShokzHomeModuleComposite({ mainCapture, stateCaptures = [], view
   });
 
   const variants = [];
-  let x = mainImage.width + gutter;
-  for (const item of items) {
-    copyRgbaImage({
-      source: item.image.rgba,
-      sourceWidth: item.image.width,
-      sourceHeight: item.image.height,
-      target: rgba,
-      targetWidth: width,
-      targetHeight: height,
-      x,
-      y: 0
-    });
-    item.compositeRect = {
-      x,
-      y: 0,
-      width: item.image.width,
-      height: item.image.height
-    };
-    variants.push({
-      key: item.capture.coverageKey || item.capture.logicalSignature || item.capture.bannerSignature || item.capture.stateLabel || `state-${item.index + 1}`,
-      label: item.capture.stateLabel || item.capture.label || `State ${item.index + 1}`,
-      rect: item.compositeRect,
-      sourceClip: item.capture.clip || item.capture.bannerClip || null
-    });
-    x += item.image.width + itemGap;
+  for (const row of rows) {
+    let x = mainImage.width + gutter;
+    for (const item of row.items) {
+      copyRgbaImage({
+        source: item.image.rgba,
+        sourceWidth: item.image.width,
+        sourceHeight: item.image.height,
+        target: rgba,
+        targetWidth: width,
+        targetHeight: height,
+        x,
+        y: row.y
+      });
+      item.compositeRect = {
+        x,
+        y: row.y,
+        width: item.image.width,
+        height: item.image.height
+      };
+      variants.push({
+        key: item.capture.coverageKey || item.capture.logicalSignature || item.capture.bannerSignature || item.capture.stateLabel || `state-${item.index + 1}`,
+        label: item.capture.stateLabel || item.capture.label || `State ${item.index + 1}`,
+        rect: item.compositeRect,
+        sourceClip: item.capture.clip || item.capture.bannerClip || null
+      });
+      x += item.image.width + itemGap;
+    }
   }
 
   return {
@@ -3862,10 +3869,46 @@ function composeShokzHomeModuleComposite({ mainCapture, stateCaptures = [], view
       gutter,
       itemGap,
       variantCount: items.length,
+      rowCount: rows.length,
       variants
     },
     stateCaptures: items
   };
+}
+
+function homeModuleCompositeSourceY(capture, image) {
+  const clip = capture?.clip || capture?.bannerClip || null;
+  const y = Math.round(Number(clip?.y || 0));
+  if (!Number.isFinite(y)) {
+    return 0;
+  }
+  return Math.max(0, y);
+}
+
+function homeModuleCompositeRows(items, itemGap = 18) {
+  const tolerance = 8;
+  const rows = [];
+  for (const item of [...items].sort((a, b) =>
+    Number(a.y || 0) - Number(b.y || 0) ||
+    Number(a.index || 0) - Number(b.index || 0)
+  )) {
+    const row = rows.find((candidate) => Math.abs(candidate.y - item.y) <= tolerance);
+    if (row) {
+      row.y = Math.min(row.y, item.y);
+      row.items.push(item);
+      row.height = Math.max(row.height, item.height);
+      row.width = row.items.reduce((sum, rowItem) => sum + rowItem.width, 0) +
+        Math.max(0, row.items.length - 1) * itemGap;
+    } else {
+      rows.push({
+        y: item.y,
+        height: item.height,
+        width: item.width,
+        items: [item]
+      });
+    }
+  }
+  return rows.sort((a, b) => Number(a.y || 0) - Number(b.y || 0));
 }
 
 function composeShokzHomeProductShowcaseComposite({ defaultCaptures, hoverCaptures = [], viewport = {} }) {
