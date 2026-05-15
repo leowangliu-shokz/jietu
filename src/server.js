@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
-import { captureAllDevices, captureConfiguredUrls, captureOne, browserStatus, replaceHomeOverviewTile } from "./capture-service.js";
+import { captureAllDevices, captureConfiguredUrls, captureOne, browserStatus, replaceCaptureTile } from "./capture-service.js";
 import { loadCaptureIssues, markCaptureTileIssue, resolveCaptureTileIssue } from "./capture-issues.js";
 import { loadChanges } from "./changes.js";
 import { archiveDir, publicDir } from "./paths.js";
@@ -180,7 +180,7 @@ async function replaceCaptureIssueTile(body) {
   let payload = null;
   try {
     const issue = await markCaptureTileIssue(body);
-    const replacement = await replaceHomeOverviewTile(body, config);
+    const replacement = await replaceCaptureTile(body, config);
     const resolvedIssue = await resolveCaptureTileIssue(body);
     captureState.lastResults = [{
       ok: true,

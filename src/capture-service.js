@@ -47,6 +47,59 @@ export async function captureOne(inputTarget, config = null, options = {}) {
   return runCaptureExecution(execution, activeConfig);
 }
 
+export async function replaceCaptureTile(input, config = null) {
+  const snapshotId = stringOrNull(input?.snapshotId);
+  const tileKey = stringOrNull(input?.tileKey);
+  if (!snapshotId || !tileKey) {
+    const error = new Error("snapshotId and tileKey are required");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const activeConfig = normalizeConfig(config || await loadConfig());
+  const snapshots = await loadSnapshots();
+  const snapshotIndex = snapshots.findIndex((entry) => entry?.id === snapshotId);
+  if (snapshotIndex === -1) {
+    const error = new Error("Snapshot not found");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const snapshot = snapshots[snapshotIndex];
+  const homeTile = findHomeOverviewTile(snapshot, tileKey) ||
+    findHomeOverviewTileBySourceFile(snapshot, input?.sourceFile);
+  if (homeTile && (replacementTargetsHomeOverview(snapshot, input) || snapshot.targetId === "shokz-home")) {
+    return replaceHomeOverviewTile({ ...input, tileKey: homeTile.key }, activeConfig);
+  }
+
+  const relatedMatch = findRelatedShotForReplacement(snapshot, input);
+  if (relatedMatch) {
+    return replaceRelatedShotTile({
+      input,
+      snapshots,
+      snapshotIndex,
+      snapshot,
+      relatedShot: relatedMatch.shot,
+      activeConfig
+    });
+  }
+
+  const previewFile = stringOrNull(input?.previewFile) || stringOrNull(input?.overviewFile);
+  if (previewFile && !fileMatchesReplacement(snapshot.file, previewFile)) {
+    const error = new Error("Related screenshot for replacement was not found");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  return replaceSnapshotImage({
+    input,
+    snapshots,
+    snapshotIndex,
+    snapshot,
+    activeConfig
+  });
+}
+
 export async function replaceHomeOverviewTile(input, config = null) {
   const snapshotId = stringOrNull(input?.snapshotId);
   const tileKey = stringOrNull(input?.tileKey);
@@ -176,6 +229,119 @@ export async function replaceHomeOverviewTile(input, config = null) {
     sourceFile: tile.sourceFile,
     relatedShot: updatedModuleShot,
     homeOverview: overview.homeOverview,
+    changeRefresh
+  };
+}
+
+async function replaceRelatedShotTile({ input, snapshots, snapshotIndex, snapshot, relatedShot, activeConfig }) {
+  const sourceFile = stringOrNull(input?.sourceFile) || relatedShot.file;
+  if (!relatedShot?.file) {
+    const error = new Error("Selected related screenshot cannot be replaced individually");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const mainOutputPath = archiveAbsolutePath(snapshot.file);
+  const relatedOutputPath = archiveAbsolutePath(relatedShot.file);
+  const captureConfig = buildTileReplacementCaptureConfig(snapshot, activeConfig);
+  const captureMode = relatedReplacementCaptureMode(snapshot, relatedShot, input);
+  const sectionKey = stringOrNull(input?.sectionKey) || relatedShot.sectionKey || null;
+  const relatedCapture = await capturePage(snapshot.url || snapshot.requestedUrl || snapshot.finalUrl, mainOutputPath, {
+    ...captureConfig,
+    captureMode,
+    sectionKey: sectionKey === "banner" || sectionKey === "navigation" ? null : sectionKey,
+    fullPage: false,
+    lazyLoadScroll: false,
+    relatedStateFilter: replacementFilterForRelatedShot(input, relatedShot, sourceFile),
+    relatedStateOutputPath: relatedOutputPath,
+    skipRelatedComposite: false
+  });
+
+  const validation = validationForRelatedCaptureResult(relatedCapture, {
+    sectionKey: relatedShot.sectionKey || sectionKey || "related",
+    sectionLabel: relatedShot.sectionLabel || "More screenshots"
+  });
+  const replacementShots = await relatedShotsFromCaptureResult(
+    {
+      ...relatedCapture,
+      requestedUrl: snapshot.requestedUrl || snapshot.url,
+      finalUrl: snapshot.finalUrl || snapshot.url
+    },
+    snapshot.url,
+    validation
+  );
+  const replacementShot = selectReplacementRelatedShot(replacementShots, relatedShot, input);
+  if (!replacementShot) {
+    const error = new Error("Replacement capture did not produce a matching related screenshot");
+    error.statusCode = 500;
+    throw error;
+  }
+
+  const nextRelatedShots = (snapshot.relatedShots || [])
+    .map((shot) => shot === relatedShot ? mergeRelatedShotForReplacement(relatedShot, replacementShot) : shot)
+    .sort(compareRelatedShots);
+  const updatedSnapshot = {
+    ...snapshot,
+    relatedShots: nextRelatedShots,
+    relatedValidation: relatedValidationWithWarnings(snapshot.relatedValidation, validation?.warnings || [])
+  };
+  snapshots[snapshotIndex] = updatedSnapshot;
+  await saveSnapshots(snapshots);
+  const changeRefresh = await refreshChangeRecords();
+  const preview = nextRelatedShots.find((shot) => shot.file === replacementShot.file) || replacementShot;
+
+  return {
+    ok: true,
+    snapshot: updatedSnapshot,
+    tile: input,
+    sourceFile,
+    relatedShot: preview,
+    preview,
+    changeRefresh
+  };
+}
+
+async function replaceSnapshotImage({ input, snapshots, snapshotIndex, snapshot, activeConfig }) {
+  const outputPath = archiveAbsolutePath(snapshot.file);
+  const captureConfig = buildTileReplacementCaptureConfig(snapshot, activeConfig);
+  const captureMode = stringOrNull(snapshot.captureMode) || stringOrNull(input?.captureMode) || null;
+  const capture = await capturePage(snapshot.url || snapshot.requestedUrl || snapshot.finalUrl, outputPath, {
+    ...captureConfig,
+    captureMode,
+    fullPage: captureMode === "shokz-products-nav" ? false : Boolean(activeConfig.fullPage),
+    lazyLoadScroll: captureMode === "shokz-products-nav" ? false : activeConfig.lazyLoadScroll !== false
+  });
+  const stat = await fs.stat(outputPath);
+  const updatedSnapshot = {
+    ...snapshot,
+    requestedUrl: capture.requestedUrl || snapshot.requestedUrl,
+    finalUrl: capture.finalUrl || snapshot.finalUrl,
+    urlCheck: capture.urlCheck || snapshot.urlCheck || null,
+    title: capture.title || snapshot.title,
+    bytes: stat.size,
+    width: capture.width || snapshot.width,
+    height: capture.height || snapshot.height,
+    fullPageHeight: capture.fullPageHeight,
+    truncated: capture.truncated,
+    scrollInfo: capture.scrollInfo || snapshot.scrollInfo || null,
+    browserPath: capture.browserPath || snapshot.browserPath || null,
+    visualHash: capture.visualHash || snapshot.visualHash || null,
+    visualAudit: capture.visualAudit || snapshot.visualAudit || null
+  };
+  updatedSnapshot.captureConfidence = assessSnapshotConfidence({
+    visualAudit: updatedSnapshot.visualAudit,
+    urlCheck: updatedSnapshot.urlCheck
+  });
+  snapshots[snapshotIndex] = updatedSnapshot;
+  await saveSnapshots(snapshots);
+  const changeRefresh = await refreshChangeRecords();
+
+  return {
+    ok: true,
+    snapshot: updatedSnapshot,
+    tile: input,
+    sourceFile: snapshot.file,
+    preview: updatedSnapshot,
     changeRefresh
   };
 }
@@ -497,6 +663,145 @@ function findHomeOverviewTile(snapshot, tileKey) {
     return null;
   }
   return variants.find((variant) => variant?.key === tileKey) || null;
+}
+
+function findHomeOverviewTileBySourceFile(snapshot, sourceFile) {
+  const file = stringOrNull(sourceFile);
+  const variants = snapshot?.homeOverview?.composite?.variants;
+  if (!file || !Array.isArray(variants)) {
+    return null;
+  }
+  return variants.find((variant) => fileMatchesReplacement(variant?.sourceFile, file)) || null;
+}
+
+function replacementTargetsHomeOverview(snapshot, input) {
+  const previewFile = stringOrNull(input?.previewFile) || stringOrNull(input?.overviewFile);
+  return stringOrNull(input?.imageKind) === "home-overview-composite" ||
+    (previewFile && previewFile === snapshot?.homeOverview?.file);
+}
+
+function findRelatedShotForReplacement(snapshot, input) {
+  const relatedShots = Array.isArray(snapshot?.relatedShots) ? snapshot.relatedShots : [];
+  if (!relatedShots.length) {
+    return null;
+  }
+
+  const previewFile = stringOrNull(input?.previewFile) || stringOrNull(input?.overviewFile);
+  const sourceFile = stringOrNull(input?.sourceFile);
+  const tileKey = stringOrNull(input?.tileKey) || "";
+  const sectionKey = stringOrNull(input?.sectionKey);
+
+  const exact = relatedShots.find((shot) =>
+    fileMatchesReplacement(shot.file, previewFile) ||
+    fileMatchesReplacement(shot.file, sourceFile)
+  );
+  if (exact) {
+    return { shot: exact };
+  }
+
+  const byVariant = relatedShots.find((shot) =>
+    Array.isArray(shot.composite?.variants) &&
+    shot.composite.variants.some((variant) =>
+      fileMatchesReplacement(variant.sourceFile, sourceFile) ||
+      tileMatchesReplacement(variant, tileKey, input)
+    )
+  );
+  if (byVariant) {
+    return { shot: byVariant };
+  }
+
+  const byMetadata = relatedShots.find((shot) =>
+    (!sectionKey || shot.sectionKey === sectionKey) &&
+    tileMatchesReplacement(shot, tileKey, input)
+  );
+  return byMetadata ? { shot: byMetadata } : null;
+}
+
+function fileMatchesReplacement(candidate, requested) {
+  const candidateFile = stringOrNull(candidate);
+  const requestedFile = stringOrNull(requested);
+  if (!candidateFile || !requestedFile) {
+    return false;
+  }
+  return candidateFile === requestedFile ||
+    candidateFile.endsWith(`/${requestedFile}`) ||
+    requestedFile.endsWith(`/${candidateFile}`);
+}
+
+function tileMatchesReplacement(item, tileKey, input) {
+  const values = [
+    item?.key,
+    item?.coverageKey,
+    item?.logicalSignature,
+    item?.stateLabel,
+    item?.label,
+    item?.categoryKey,
+    item?.productKey,
+    item?.variantKey,
+    item?.hoverItemKey,
+    item?.file,
+    item?.sourceFile,
+    input?.categoryKey,
+    input?.productKey,
+    input?.variantKey
+  ].map((value) => stringOrNull(value)).filter(Boolean);
+  return values.some((value) => value === tileKey || tileKey.includes(value));
+}
+
+function relatedReplacementCaptureMode(snapshot, relatedShot, input) {
+  const sectionKey = stringOrNull(input?.sectionKey) || relatedShot?.sectionKey || "";
+  if (sectionKey === "navigation" || snapshot?.targetId === "shokz-products-nav" || snapshot?.captureMode === "shokz-products-nav") {
+    return "shokz-products-nav-related";
+  }
+  if (snapshot?.captureMode === "shokz-collection-page" ||
+    shokzCollectionRelatedSectionDefinitions.some((definition) => definition.key === sectionKey)) {
+    return "shokz-collection-related-section";
+  }
+  if (snapshot?.captureMode === "shokz-comparison-page" ||
+    shokzComparisonRelatedSectionDefinitions.some((definition) => definition.key === sectionKey)) {
+    return "shokz-comparison-related-section";
+  }
+  if (sectionKey === "banner") {
+    return "shokz-home-banners";
+  }
+  if (shokzHomeRelatedSectionDefinitions.some((definition) => definition.key === sectionKey)) {
+    return "shokz-home-related-section";
+  }
+
+  const error = new Error("Selected screenshot does not have a supported replacement capture mode");
+  error.statusCode = 400;
+  throw error;
+}
+
+function replacementFilterForRelatedShot(input, relatedShot, sourceFile) {
+  return {
+    tileKey: stringOrNull(input?.tileKey) || "",
+    tileLabel: stringOrNull(input?.tileLabel) || stringOrNull(relatedShot?.label) || "",
+    sectionKey: stringOrNull(input?.sectionKey) || relatedShot?.sectionKey || "",
+    sourceFile: sourceFile || relatedShot?.file || "",
+    relatedShotFile: relatedShot?.file || "",
+    categoryKey: stringOrNull(input?.categoryKey) || relatedShot?.categoryKey || "",
+    categoryLabel: stringOrNull(input?.categoryLabel) || relatedShot?.categoryLabel || "",
+    productKey: stringOrNull(input?.productKey) || relatedShot?.productKey || "",
+    productLabel: stringOrNull(input?.productLabel) || relatedShot?.productLabel || "",
+    variantKey: stringOrNull(input?.variantKey) || relatedShot?.variantKey || "",
+    variantLabel: stringOrNull(input?.variantLabel) || relatedShot?.variantLabel || "",
+    tabLabel: stringOrNull(input?.tabLabel) || relatedShot?.tabLabel || "",
+    pageIndex: input?.pageIndex || relatedShot?.pageIndex || null,
+    wholeImage: Boolean(input?.wholeImage)
+  };
+}
+
+function selectReplacementRelatedShot(replacementShots, previousShot, input) {
+  const shots = Array.isArray(replacementShots) ? replacementShots : [];
+  if (!shots.length) {
+    return null;
+  }
+  return shots.find((shot) => shot.file === previousShot.file) ||
+    shots.find((shot) => shot.sectionKey === previousShot.sectionKey && shot.categoryKey && shot.categoryKey === previousShot.categoryKey) ||
+    shots.find((shot) => shot.sectionKey === previousShot.sectionKey && shot.coverageKey && shot.coverageKey === previousShot.coverageKey) ||
+    shots.find((shot) => tileMatchesReplacement(shot, stringOrNull(input?.tileKey) || "", input)) ||
+    shots[0];
 }
 
 function findModuleShotForOverviewTile(snapshot, tile) {
@@ -1260,6 +1565,9 @@ export async function browserStatus() {
 
 export const __testOnly = {
   captureConfigForExecution,
+  findRelatedShotForReplacement,
+  relatedReplacementCaptureMode,
+  replacementFilterForRelatedShot,
   relatedCaptureModeForTarget,
   resolveAdHocCaptureExecution,
   runnerNameForPlatform

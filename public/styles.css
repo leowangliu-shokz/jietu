@@ -867,7 +867,7 @@ select:focus {
   display: block;
   overflow: hidden;
   aspect-ratio: 16 / 10;
-  border: 1px solid var(--line);
+  border: 0;
   border-radius: 4px;
   background: var(--panel);
   color: var(--ink);

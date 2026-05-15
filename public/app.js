@@ -986,9 +986,78 @@ function handleImagePreviewFrameClick(event) {
 }
 
 function imagePreviewCanMarkTiles() {
-  return imagePreviewZoomState.snapshot?.kind === "home-overview-composite" &&
-    Array.isArray(imagePreviewZoomState.snapshot?.composite?.variants) &&
-    imagePreviewZoomState.snapshot.composite.variants.length > 0;
+  return imagePreviewIssueTiles().length > 0;
+}
+
+function imagePreviewIssueTiles() {
+  const snapshot = imagePreviewZoomState.snapshot;
+  if (!snapshot?.id) {
+    return [];
+  }
+
+  const variants = Array.isArray(snapshot.composite?.variants)
+    ? snapshot.composite.variants
+    : [];
+  if (variants.length) {
+    return variants
+      .map((tile, index) => normalizeImagePreviewIssueTile(snapshot, tile, index))
+      .filter((tile) => tile?.key && tile?.rect);
+  }
+
+  return imagePreviewWholeImageIssueTile(snapshot);
+}
+
+function normalizeImagePreviewIssueTile(snapshot, tile, index) {
+  if (!tile || typeof tile !== "object" || !tile.rect) {
+    return null;
+  }
+  const key = String(tile.key ||
+    [
+      snapshot.file,
+      tile.sourceFile,
+      tile.categoryKey,
+      tile.productKey,
+      tile.variantKey,
+      tile.pageIndex,
+      tile.label,
+      index + 1
+    ].filter(Boolean).join(":")
+  );
+  return {
+    ...tile,
+    key,
+    sectionKey: tile.sectionKey || snapshot.sectionKey || "",
+    sectionLabel: tile.sectionLabel || snapshot.sectionLabel || "",
+    label: tile.label || tile.variantLabel || tile.productLabel || tile.stateLabel || snapshot.stateLabel || key,
+    sourceFile: tile.sourceFile || snapshot.file || "",
+    sourceImageUrl: tile.sourceImageUrl || snapshot.imageUrl || "",
+    wholeImage: false
+  };
+}
+
+function imagePreviewWholeImageIssueTile(snapshot) {
+  if (snapshot.kind === "home-overview-composite") {
+    return [];
+  }
+  const width = Number(imagePreviewZoomState.naturalWidth || snapshot.width || 0);
+  const height = Number(imagePreviewZoomState.naturalHeight || snapshot.height || 0);
+  if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
+    return [];
+  }
+  const key = [
+    "whole",
+    snapshot.file || snapshot.targetId || snapshot.id
+  ].filter(Boolean).join(":");
+  return [{
+    key,
+    label: snapshot.stateLabel || snapshot.label || snapshot.displayUrl || snapshot.file || "Image",
+    sectionKey: snapshot.sectionKey || "screenshot",
+    sectionLabel: snapshot.sectionLabel || snapshot.targetLabel || snapshot.displayUrl || "Screenshot",
+    sourceFile: snapshot.file || "",
+    sourceImageUrl: snapshot.imageUrl || "",
+    rect: { x: 0, y: 0, width, height },
+    wholeImage: true
+  }];
 }
 
 function imagePreviewNaturalPointForEvent(event) {
@@ -1003,11 +1072,15 @@ function imagePreviewNaturalPointForEvent(event) {
 }
 
 function imagePreviewTileAtPoint(x, y) {
+  const tiles = imagePreviewIssueTiles();
+  if (tiles.some((tile) => tile.wholeImage)) {
+    return tiles.find((tile) => tile.wholeImage) || null;
+  }
   const mainWidth = Number(imagePreviewZoomState.snapshot?.composite?.mainWidth || 0);
   if (Number.isFinite(mainWidth) && mainWidth > 0 && x <= mainWidth) {
     return null;
   }
-  return [...(imagePreviewZoomState.snapshot?.composite?.variants || [])]
+  return [...tiles]
     .reverse()
     .find((tile) => {
       const rect = tile?.rect || null;
@@ -1027,7 +1100,7 @@ function renderImagePreviewIssueSelection() {
 
   const scale = imagePreviewZoomState.scale || 1;
   const tile = imagePreviewZoomState.selectedIssueTile;
-  for (const candidate of imagePreviewZoomState.snapshot?.composite?.variants || []) {
+  for (const candidate of imagePreviewIssueTiles()) {
     if (!candidate?.rect) {
       continue;
     }
@@ -1146,8 +1219,8 @@ async function replaceImagePreviewTileIssue() {
     const updatedSnapshot = payload.replacement?.snapshot ||
       state?.snapshots?.find((item) => item.id === snapshot.id) ||
       null;
-    if (updatedSnapshot?.homeOverview) {
-      refreshOpenHomeOverviewPreview(updatedSnapshot);
+    if (updatedSnapshot) {
+      refreshOpenImagePreviewAfterReplacement(updatedSnapshot, payload.replacement?.preview || null);
     }
     setArchiveStatus(`已重截并替换：${tile.sectionLabel || tile.sectionKey || "模块"} / ${tile.label || tile.key}`, "success");
   } catch (error) {
@@ -1163,18 +1236,32 @@ function imagePreviewTileIssuePayload(snapshot, tile) {
   return {
     snapshotId: snapshot.id,
     overviewFile: snapshot.file || "",
+    previewFile: snapshot.file || "",
+    targetId: snapshot.targetId || "",
+    capturePlanId: snapshot.capturePlanId || "",
+    captureMode: snapshot.captureMode || "",
+    imageKind: snapshot.kind || "",
     tileKey: tile.key,
     tileLabel: tile.label || "",
     sectionKey: tile.sectionKey || "",
     sectionLabel: tile.sectionLabel || "",
     sourceFile: tile.sourceFile || "",
     sourceImageUrl: tile.sourceImageUrl || "",
+    categoryKey: tile.categoryKey || snapshot.categoryKey || "",
+    categoryLabel: tile.categoryLabel || snapshot.categoryLabel || "",
+    productKey: tile.productKey || "",
+    productLabel: tile.productLabel || "",
+    variantKey: tile.variantKey || "",
+    variantLabel: tile.variantLabel || "",
+    tabLabel: tile.tabLabel || snapshot.tabLabel || "",
+    pageIndex: tile.pageIndex || snapshot.pageIndex || null,
+    wholeImage: Boolean(tile.wholeImage),
     rect: tile.rect || null
   };
 }
 
-function refreshOpenHomeOverviewPreview(snapshot) {
-  const previewSnapshot = snapshotForHomeOverviewPreview(snapshot);
+function refreshOpenImagePreviewAfterReplacement(snapshot, replacementPreview = null) {
+  const previewSnapshot = snapshotForReplacementPreview(snapshot, replacementPreview);
   const previewUrl = previewSnapshot?.imageUrl || "";
   if (!previewSnapshot || !previewUrl) {
     return;
@@ -1197,6 +1284,30 @@ function refreshOpenHomeOverviewPreview(snapshot) {
       snapshot: previewSnapshot
     };
   }
+}
+
+function snapshotForReplacementPreview(snapshot, replacementPreview = null) {
+  if (!replacementPreview && snapshot?.homeOverview) {
+    return snapshotForHomeOverviewPreview(snapshot);
+  }
+  if (!replacementPreview) {
+    return snapshot;
+  }
+  return {
+    ...snapshot,
+    ...replacementPreview,
+    id: snapshot.id,
+    file: replacementPreview.file || snapshot.file || "",
+    imageUrl: replacementPreview.imageUrl || snapshot.imageUrl || "",
+    width: replacementPreview.width || snapshot.width || 0,
+    height: replacementPreview.height || snapshot.height || 0,
+    kind: replacementPreview.kind || snapshot.kind || "",
+    composite: replacementPreview.composite || snapshot.composite || null,
+    scrollInfo: {
+      ...(snapshot.scrollInfo || {}),
+      ...(replacementPreview.scrollInfo || {})
+    }
+  };
 }
 
 function snapshotForHomeOverviewPreview(snapshot) {
@@ -1441,6 +1552,7 @@ function relatedShotSnapshotForPreviewLink(link) {
   const card = link.closest(".shot");
   const mainLink = card?.querySelector(".shot-main-image");
   const parentSnapshot = snapshotForPreviewLink(mainLink);
+  const relatedShot = findRelatedShotForPreviewLink(parentSnapshot, link);
   const width = Number(link.dataset.previewWidth || 0) || parentSnapshot?.width || 0;
   const height = Number(link.dataset.previewHeight || 0) || parentSnapshot?.height || 0;
   const scrollViewportHeight = Number(
@@ -1456,25 +1568,51 @@ function relatedShotSnapshotForPreviewLink(link) {
 
   return {
     ...(parentSnapshot || {}),
-    file: link.dataset.shotFile || parentSnapshot?.file || "",
-    imageUrl: link.href,
+    ...(relatedShot || {}),
+    id: parentSnapshot?.id || relatedShot?.id || null,
+    file: link.dataset.shotFile || relatedShot?.file || parentSnapshot?.file || "",
+    imageUrl: link.href || relatedShot?.imageUrl || "",
     width,
     height,
-    kind: link.dataset.shotKind || parentSnapshot?.kind || null,
+    kind: link.dataset.shotKind || relatedShot?.kind || parentSnapshot?.kind || null,
     devicePresetId: parentSnapshot?.devicePresetId || card?.dataset.devicePresetId || null,
-    sectionKey: link.dataset.sectionKey || parentSnapshot?.sectionKey || null,
-    navigationLevel: link.dataset.navigationLevel || parentSnapshot?.navigationLevel || null,
+    sectionKey: link.dataset.sectionKey || relatedShot?.sectionKey || parentSnapshot?.sectionKey || null,
+    navigationLevel: link.dataset.navigationLevel || relatedShot?.navigationLevel || parentSnapshot?.navigationLevel || null,
     composite: Number(link.dataset.previewMainWidth || 0)
-      ? { mainWidth: Number(link.dataset.previewMainWidth || 0) }
-      : null,
+      ? {
+          ...(relatedShot?.composite || {}),
+          mainWidth: Number(link.dataset.previewMainWidth || 0)
+        }
+      : relatedShot?.composite || null,
     scrollInfo: Number.isFinite(scrollViewportHeight) && scrollViewportHeight > 0
       ? {
           ...(parentSnapshot?.scrollInfo || {}),
-          viewportWidth: Number(link.dataset.previewViewportWidth || 0) || parentSnapshot?.scrollInfo?.viewportWidth || null,
+          ...(relatedShot?.scrollInfo || {}),
+          viewportWidth: Number(link.dataset.previewViewportWidth || 0) || relatedShot?.scrollInfo?.viewportWidth || parentSnapshot?.scrollInfo?.viewportWidth || null,
           viewportHeight: scrollViewportHeight
         }
-      : parentSnapshot?.scrollInfo || null
+      : relatedShot?.scrollInfo || parentSnapshot?.scrollInfo || null
   };
+}
+
+function findRelatedShotForPreviewLink(parentSnapshot, link) {
+  const relatedShots = Array.isArray(parentSnapshot?.relatedShots)
+    ? parentSnapshot.relatedShots
+    : [];
+  if (!relatedShots.length) {
+    return null;
+  }
+
+  const shotFile = link.dataset.shotFile || "";
+  if (shotFile) {
+    const byFile = relatedShots.find((shot) => shot.file === shotFile);
+    if (byFile) {
+      return byFile;
+    }
+  }
+
+  const hrefPath = safePathname(link.href);
+  return relatedShots.find((shot) => safePathname(shot.imageUrl) === hrefPath) || null;
 }
 
 function safePathname(value) {

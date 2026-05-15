@@ -781,6 +781,7 @@ async function captureShokzHomeRelated(client, outputPath, captureContext) {
 
 async function captureShokzProductsNavigationRelated(client, outputPath, captureContext) {
   const viewport = viewportForCaptureContext(captureContext);
+  const targetFilter = captureContext.relatedStateFilter || null;
   await scrollTo(client, 0);
   await sleep(700);
   await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 3, hideOnly: true });
@@ -846,11 +847,7 @@ async function captureShokzProductsNavigationRelated(client, outputPath, capture
     }
 
     for (const secondaryItem of productsSecondaryPlan.items || []) {
-      expectedCount += 1;
-      await hoverShokzNavigationPoint(client, secondaryItem.hoverPoint);
-      await sleep(650);
-      await primeLazyImages(client);
-      await saveShokzNavigationCapture(client, outputPath, viewport, {
+      const state = {
         navigationLevel: "secondary",
         topLevelLabel: productsTopItem.label,
         topLevelIndex: productsTopItem.index,
@@ -864,7 +861,21 @@ async function captureShokzProductsNavigationRelated(client, outputPath, capture
         stateLabel: `${productsTopItem.label} / ${secondaryItem.label}`,
         fileId: `top-${productsTopItem.index}-secondary-${secondaryItem.index}-${secondaryItem.label}`,
         skipMainDuplicate: false
-      }, { captures, warnings, seenVisual, mainSeed });
+      };
+      if (targetFilter && !navigationStateMatchesFilter(outputPath, state, targetFilter)) {
+        continue;
+      }
+      expectedCount += 1;
+      await hoverShokzNavigationPoint(client, secondaryItem.hoverPoint);
+      await sleep(650);
+      await primeLazyImages(client);
+      await saveShokzNavigationCapture(client, outputPath, viewport, state, {
+        captures,
+        warnings,
+        seenVisual,
+        mainSeed,
+        relatedStateOutputPath: captureContext.relatedStateOutputPath
+      });
     }
   } catch (error) {
     warnings.push({
@@ -881,12 +892,7 @@ async function captureShokzProductsNavigationRelated(client, outputPath, capture
       continue;
     }
 
-    await hoverShokzNavigationPoint(client, topItem.hoverPoint);
-    await sleep(750);
-    await primeLazyImages(client);
-
-    expectedCount += 1;
-    await saveShokzNavigationCapture(client, outputPath, viewport, {
+    const state = {
       navigationLevel: "primary",
       topLevelLabel: topItem.label,
       topLevelIndex: topItem.index,
@@ -900,7 +906,25 @@ async function captureShokzProductsNavigationRelated(client, outputPath, capture
       stateLabel: `Primary ${topItem.label}`,
       fileId: `top-${topItem.index}-${topItem.label}`,
       skipMainDuplicate: false
-    }, { captures, warnings, seenVisual, mainSeed });
+    };
+    if (targetFilter && !navigationStateMatchesFilter(outputPath, state, targetFilter)) {
+      continue;
+    }
+    expectedCount += 1;
+    await hoverShokzNavigationPoint(client, topItem.hoverPoint);
+    await sleep(750);
+    await primeLazyImages(client);
+    await saveShokzNavigationCapture(client, outputPath, viewport, state, {
+      captures,
+      warnings,
+      seenVisual,
+      mainSeed,
+      relatedStateOutputPath: captureContext.relatedStateOutputPath
+    });
+  }
+
+  if (targetFilter && !expectedCount) {
+    throw new Error("Could not match the requested navigation screenshot.");
   }
 
   captures.forEach((capture, index) => {
@@ -936,11 +960,20 @@ async function captureShokzMobileNavigationRelated(client, outputPath, captureCo
   const warnings = [];
   const seenVisual = new Set();
   const mainSeed = await visualSeedForFile(outputPath);
-  const expectedCount = shokzMobileNavigationSecondaryStateDefinitions.length;
+  const targetFilter = captureContext.relatedStateFilter || null;
+  const definitions = targetFilter
+    ? shokzMobileNavigationSecondaryStateDefinitions.filter((definition) =>
+        navigationStateMatchesFilter(outputPath, definition, targetFilter)
+      )
+    : shokzMobileNavigationSecondaryStateDefinitions;
+  const expectedCount = definitions.length;
+  if (targetFilter && !definitions.length) {
+    throw new Error("Could not match the requested mobile navigation screenshot.");
+  }
 
   await openShokzProductsNavigation(client, captureContext);
 
-  for (const definition of shokzMobileNavigationSecondaryStateDefinitions) {
+  for (const definition of definitions) {
     try {
       await saveShokzNavigationCapture(client, outputPath, viewport, {
         navigationLevel: "secondary",
@@ -958,7 +991,13 @@ async function captureShokzMobileNavigationRelated(client, outputPath, captureCo
         skipMainDuplicate: false,
         restoreMode: "mobile-tap",
         activationLabel: definition.clickLabel
-      }, { captures, warnings, seenVisual, mainSeed });
+      }, {
+        captures,
+        warnings,
+        seenVisual,
+        mainSeed,
+        relatedStateOutputPath: captureContext.relatedStateOutputPath
+      });
     } catch (error) {
       warnings.push({
         sectionKey: "navigation",
@@ -1121,7 +1160,9 @@ async function saveShokzNavigationCapture(client, outputPath, viewport, state, c
   }
 
   context.seenVisual.add(visualSignature);
-  const relatedOutput = relatedOutputPath(outputPath, "navigation", state.fileId);
+  const relatedOutput = context.relatedStateOutputPath && context.captures.length === 0
+    ? context.relatedStateOutputPath
+    : relatedOutputPath(outputPath, "navigation", state.fileId);
   await fs.writeFile(relatedOutput, buffer);
   const imageSize = pngSizeForBuffer(buffer, viewport);
   const stateIndex = context.captures.length + 1;
@@ -4517,8 +4558,15 @@ async function captureShokzCollectionRelatedSection(client, outputPath, captureC
 
   const captures = [];
   const warnings = [];
+  const targetFilter = captureContext.relatedStateFilter || null;
+  const targetStates = targetFilter
+    ? states.filter((state) => homeRelatedStateMatchesFilter(outputPath, definition, state, targetFilter))
+    : states;
+  if (targetFilter && !targetStates.length) {
+    throw new Error(`Could not match the requested ${definition.sectionLabel} screenshot.`);
+  }
 
-  for (const [index, state] of states.entries()) {
+  for (const [index, state] of targetStates.entries()) {
     const activation = await activateShokzCollectionRelatedState(client, definition, state);
     if (!activation.ok) {
       warnings.push({
@@ -4659,7 +4707,9 @@ async function captureShokzCollectionRelatedSection(client, outputPath, captureC
     const visualHash = visualHashForBuffer(buffer);
     const visualAudit = visualAuditForBuffer(buffer, visualHash);
     const logicalSignature = current.logicalSignature || state.logicalSignature || `${definition.key}:${state.fileId || state.stateLabel || index + 1}`;
-    const relatedOutput = relatedOutputPath(outputPath, definition.key, state.fileId || state.stateIndex || index + 1);
+    const relatedOutput = captureContext.relatedStateOutputPath && targetStates.length === 1
+      ? captureContext.relatedStateOutputPath
+      : relatedOutputPath(outputPath, definition.key, state.fileId || state.stateIndex || index + 1);
     await fs.writeFile(relatedOutput, buffer);
 
     const width = Math.round(clip.width);
@@ -4673,7 +4723,7 @@ async function captureShokzCollectionRelatedSection(client, outputPath, captureC
       sectionLabel: definition.sectionLabel,
       sectionTitle: definition.title,
       stateIndex: state.stateIndex || index + 1,
-      stateCount: states.length,
+      stateCount: targetStates.length,
       stateLabel: state.stateLabel,
       label: state.stateLabel,
       tabLabel: state.tabLabel || null,
@@ -4725,7 +4775,7 @@ async function captureShokzCollectionRelatedSection(client, outputPath, captureC
     height: captures.reduce((max, capture) => Math.max(max, Number(capture.height || 0)), Number(viewport.height || 0) || 852),
     captures,
     warnings,
-    expectedCount: states.length,
+    expectedCount: targetStates.length,
     capturedCount: captures.length
   };
 }
@@ -4733,12 +4783,19 @@ async function captureShokzCollectionRelatedSection(client, outputPath, captureC
 async function captureShokzCollectionProductVariantSection(client, outputPath, captureContext, definition) {
   const viewport = viewportForCaptureContext(captureContext);
   const categories = Array.isArray(definition?.states) ? definition.states : [];
+  const targetFilter = captureContext.relatedStateFilter || null;
+  const targetCategories = targetFilter
+    ? categories.filter((category) => homeRelatedStateMatchesFilter(outputPath, definition, category, targetFilter))
+    : categories;
+  if (targetFilter && !targetCategories.length) {
+    throw new Error(`Could not match the requested ${definition.sectionLabel} product map.`);
+  }
   const captures = [];
   const warnings = [];
   let maxWidth = Number(viewport.width || 0) || 393;
   let maxHeight = Number(viewport.height || 0) || 852;
 
-  for (const category of categories) {
+  for (const category of targetCategories) {
     await scrollTo(client, 0);
     const activation = await activateShokzCollectionTab(client, category);
     if (!activation.ok) {
@@ -4833,7 +4890,9 @@ async function captureShokzCollectionProductVariantSection(client, outputPath, c
     const visualAudit = visualAuditForBuffer(composite.buffer, visualHash);
     const categoryKey = category.categoryKey || category.matchHandle || category.fileId || `category-${captures.length + 1}`;
     const categoryLabel = category.categoryLabel || category.tabLabel || category.stateLabel || categoryKey;
-    const relatedOutput = relatedOutputPath(outputPath, definition.key, category.fileId || categoryKey);
+    const relatedOutput = captureContext.relatedStateOutputPath && targetCategories.length === 1
+      ? captureContext.relatedStateOutputPath
+      : relatedOutputPath(outputPath, definition.key, category.fileId || categoryKey);
     await fs.writeFile(relatedOutput, composite.buffer);
 
     const variantItems = variantCaptures.map((item) => ({
@@ -4864,7 +4923,7 @@ async function captureShokzCollectionProductVariantSection(client, outputPath, c
       sectionLabel: definition.sectionLabel,
       sectionTitle: definition.title,
       stateIndex: category.stateIndex || captures.length + 1,
-      stateCount: categories.length || null,
+      stateCount: targetCategories.length || null,
       stateLabel,
       label: stateLabel,
       tabLabel: category.tabLabel || categoryLabel,
@@ -4955,7 +5014,7 @@ async function captureShokzCollectionProductVariantSection(client, outputPath, c
     });
   }
 
-  const plannedCategories = categories.map((category) => ({ ...category, sectionKey: definition.key }));
+  const plannedCategories = targetCategories.map((category) => ({ ...category, sectionKey: definition.key }));
   warnings.push(...relatedSectionCoverageWarnings(definition, plannedCategories, captures));
 
   return {
@@ -4963,7 +5022,7 @@ async function captureShokzCollectionProductVariantSection(client, outputPath, c
     height: maxHeight,
     captures,
     warnings,
-    expectedCount: categories.length,
+    expectedCount: targetCategories.length,
     capturedCount: captures.length
   };
 }
@@ -5943,8 +6002,15 @@ async function captureShokzComparisonRelatedSection(client, outputPath, captureC
 
   const captures = [];
   const warnings = Array.isArray(plan.warnings) ? [...plan.warnings] : [];
+  const targetFilter = captureContext.relatedStateFilter || null;
+  const targetStates = targetFilter
+    ? plan.states.filter((state) => homeRelatedStateMatchesFilter(outputPath, definition, state, targetFilter))
+    : plan.states;
+  if (targetFilter && !targetStates.length) {
+    throw new Error(`Could not match the requested ${definition.sectionLabel} screenshot.`);
+  }
 
-  for (const [index, state] of plan.states.entries()) {
+  for (const [index, state] of targetStates.entries()) {
     const activation = await activateShokzComparisonRelatedState(client, definition, state);
     if (!activation.ok) {
       warnings.push({
@@ -6040,7 +6106,9 @@ async function captureShokzComparisonRelatedSection(client, outputPath, captureC
     const visualHash = visualHashForBuffer(buffer);
     const visualAudit = visualAuditForBuffer(buffer, visualHash);
     const logicalSignature = current.logicalSignature || state.logicalSignature || `${definition.key}:${state.fileId || state.stateLabel || index + 1}`;
-    const relatedOutput = relatedOutputPath(outputPath, definition.key, state.fileId || state.stateIndex || index + 1);
+    const relatedOutput = captureContext.relatedStateOutputPath && targetStates.length === 1
+      ? captureContext.relatedStateOutputPath
+      : relatedOutputPath(outputPath, definition.key, state.fileId || state.stateIndex || index + 1);
     await fs.writeFile(relatedOutput, buffer);
 
     const width = Math.round(clip.width);
@@ -6054,7 +6122,7 @@ async function captureShokzComparisonRelatedSection(client, outputPath, captureC
       sectionLabel: definition.sectionLabel,
       sectionTitle: definition.title,
       stateIndex: state.stateIndex || index + 1,
-      stateCount: state.pageCount || plan.states.length,
+      stateCount: state.pageCount || targetStates.length,
       stateLabel: state.stateLabel,
       label: state.stateLabel,
       tabLabel: state.tabLabel || null,
@@ -6091,14 +6159,14 @@ async function captureShokzComparisonRelatedSection(client, outputPath, captureC
     });
   }
 
-  warnings.push(...relatedSectionCoverageWarnings(definition, plan.states, captures));
+  warnings.push(...relatedSectionCoverageWarnings(definition, targetStates, captures));
 
   return {
     width: captures.reduce((max, capture) => Math.max(max, Number(capture.width || 0)), Number(viewport.width || 0) || 393),
     height: captures.reduce((max, capture) => Math.max(max, Number(capture.height || 0)), Number(viewport.height || 0) || 852),
     captures,
     warnings,
-    expectedCount: plan.states.length,
+    expectedCount: targetStates.length,
     capturedCount: captures.length
   };
 }
@@ -11847,13 +11915,53 @@ function homeRelatedStateMatchesFilter(outputPath, definition, state, filter) {
   const expectedOutput = relatedOutputPath(outputPath, definition.key, state.fileId || state.stateIndex);
   const coverageKey = relatedCoverageKeyForState(state);
   const tileKey = String(filter.tileKey || "");
+  const filterValues = [
+    filter.categoryKey,
+    filter.productKey,
+    filter.variantKey,
+    filter.tabLabel,
+    filter.pageIndex
+  ].map((value) => String(value || "").trim()).filter(Boolean);
   return outputMatchesFilter(expectedOutput, filter.sourceFile) ||
+    outputMatchesFilter(expectedOutput, filter.relatedShotFile) ||
     tileKey === coverageKey ||
     tileKey === `${definition.key}:${coverageKey}` ||
     tileKey.includes(coverageKey) ||
-    [state.fileId, state.logicalSignature, state.stateLabel, state.label]
+    [
+      state.fileId,
+      state.logicalSignature,
+      state.stateLabel,
+      state.label,
+      state.categoryKey,
+      state.productKey,
+      state.variantKey,
+      state.tabLabel,
+      state.pageIndex
+    ]
       .filter(Boolean)
-      .some((value) => tileKey.includes(String(value)));
+      .some((value) => tileKey.includes(String(value)) || filterValues.includes(String(value)));
+}
+
+function navigationStateMatchesFilter(outputPath, state, filter) {
+  if (!filter) {
+    return true;
+  }
+  const expectedOutput = relatedOutputPath(outputPath, "navigation", state.fileId);
+  const tileKey = String(filter.tileKey || "");
+  const values = [
+    state.fileId,
+    state.logicalSignature,
+    state.stateLabel,
+    state.label,
+    state.tabLabel,
+    state.topLevelLabel,
+    state.hoverItemKey,
+    state.hoverItemLabel,
+    state.navigationLevel
+  ].map((value) => String(value || "").trim()).filter(Boolean);
+  return outputMatchesFilter(expectedOutput, filter.sourceFile) ||
+    outputMatchesFilter(expectedOutput, filter.relatedShotFile) ||
+    values.some((value) => tileKey.includes(value) || String(filter.tileLabel || "").includes(value));
 }
 
 function outputMatchesFilter(outputPath, sourceFile) {
