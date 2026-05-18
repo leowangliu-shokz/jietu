@@ -30,6 +30,8 @@ const defaultVisualJudgmentOptions = {
   mediaRectResizeRatio: 0.08
 };
 
+export const defaultChangeMonitorScope = "home-banner";
+
 export async function loadChanges(filePath = changesPath) {
   try {
     const parsed = JSON.parse(await fs.readFile(filePath, "utf8"));
@@ -49,14 +51,19 @@ export async function saveChanges(changes, filePath = changesPath) {
 
 export async function rebuildChanges(options = {}) {
   const snapshots = options.snapshots || await loadSnapshots();
-  const changes = await compareSnapshots(snapshots, options);
+  const changes = await compareSnapshots(snapshots, {
+    monitorScope: defaultChangeMonitorScope,
+    ...options
+  });
   await saveChanges(changes, options.changesFilePath || changesPath);
   return changes;
 }
 
 export async function compareSnapshots(snapshots, options = {}) {
   const archiveRoot = options.archiveRoot || archiveDir;
+  const monitorScope = options.monitorScope || "all";
   const items = flattenComparableItems(snapshots)
+    .filter((item) => itemMatchesMonitorScope(item, monitorScope))
     .sort((a, b) =>
       timestamp(a.capturedAt) - timestamp(b.capturedAt) ||
       String(a.itemId).localeCompare(String(b.itemId))
@@ -236,10 +243,18 @@ async function compareItems(fromItem, toItem, options) {
   }
 
   const id = changeId(fromItem, toItem);
+  const report = buildChangeReportFields(fromItem, toItem, textChange, visualChange, options.monitorScope || "all");
   return {
     id,
     comparisonKey: toItem.comparisonKey,
     changeType: [textChange ? "text" : "", visualChange ? "visual" : ""].filter(Boolean).join("+"),
+    changeLevel: report.level,
+    changeLevelReason: report.levelReason,
+    changeTypes: report.types,
+    changeLocation: report.location,
+    oldStyle: report.oldStyle,
+    newStyle: report.newStyle,
+    monitorScope: report.monitorScope,
     location: {
       url: toItem.url,
       displayUrl: toItem.displayUrl,
@@ -636,6 +651,143 @@ function publicItemRef(item) {
     hoverItemLabel: item.hoverItemLabel || null,
     hoverItemRect: item.hoverItemRect || null,
     captureConfidence: item.captureConfidence
+  };
+}
+
+function itemMatchesMonitorScope(item, scope) {
+  if (scope === "all") {
+    return true;
+  }
+  if (scope === defaultChangeMonitorScope) {
+    return isHomeBannerItem(item);
+  }
+  return false;
+}
+
+function isHomeBannerItem(item) {
+  if (!item || item.sectionKey !== "banner" || !Number.isFinite(Number(item.bannerIndex))) {
+    return false;
+  }
+
+  const targetId = String(item.targetId || "");
+  if (targetId === "shokz-home" || /^shokz-home-banner-\d+$/.test(targetId)) {
+    return true;
+  }
+
+  const targetLabel = `${item.targetLabel || ""} ${item.displayUrl || ""}`;
+  if (/首页\s*Banner|首页/.test(targetLabel)) {
+    return true;
+  }
+
+  try {
+    const url = new URL(item.url || "");
+    return url.hostname.replace(/^www\./, "") === "shokz.com" && url.pathname.replace(/\/+$/, "") === "";
+  } catch {
+    return false;
+  }
+}
+
+function buildChangeReportFields(fromItem, toItem, textChange, visualChange, monitorScope) {
+  const types = changeTypeLabelsForReport(textChange, visualChange);
+  const riskReasons = changeRiskReasons(textChange, visualChange);
+  const level = riskReasons.length
+    ? "P0"
+    : types.some((type) => ["文案变动", "图片变动", "布局变动", "埋点变动"].includes(type))
+      ? "P1"
+      : "P2";
+
+  return {
+    level,
+    levelReason: riskReasons.join("；") || (level === "P1" ? "重大但无风险变动" : "不重大变动"),
+    types,
+    location: changeLocationLabel(toItem),
+    oldStyle: changeStyleRef(fromItem),
+    newStyle: changeStyleRef(toItem),
+    monitorScope
+  };
+}
+
+function changeTypeLabelsForReport(textChange, visualChange) {
+  const types = new Set();
+  if (textChange) {
+    types.add("文案变动");
+  }
+
+  for (const signal of visualChange?.signals || []) {
+    if (signal.type === "copy") {
+      types.add("文案变动");
+    } else if (signal.type === "image" || signal.type === "large-visual") {
+      types.add("图片变动");
+    } else if (signal.type === "layout") {
+      types.add("布局变动");
+    } else if (signal.type === "dimension") {
+      types.add("尺寸变动");
+    } else if (signal.type === "tracking" || signal.type === "analytics") {
+      types.add("埋点变动");
+    } else if (signal.type === "media-item" || signal.type === "product-hover-item") {
+      types.add("内容变动");
+    }
+  }
+
+  if (visualChange && !types.has("图片变动") && !types.has("布局变动") && !types.has("尺寸变动")) {
+    types.add("图片变动");
+  }
+
+  return [...types];
+}
+
+function changeRiskReasons(textChange, visualChange) {
+  const before = normalizeComparableText(textChange?.before || textChange?.beforeFragment || "");
+  const after = normalizeComparableText(textChange?.after || textChange?.afterFragment || "");
+  if (!before && !after) {
+    return [];
+  }
+
+  const reasons = [];
+  if (languageFamilyChangedBetweenEnglishAndChinese(before, after)) {
+    reasons.push("按钮或核心文案出现中英文切换");
+  }
+
+  const productChanged = productNameSet(before) !== productNameSet(after);
+  if (productChanged && !visualChange) {
+    reasons.push("产品名文案疑似单独变化");
+  }
+
+  return reasons;
+}
+
+function languageFamilyChangedBetweenEnglishAndChinese(before, after) {
+  const beforeHasCjk = /[\u3400-\u9fff]/.test(before);
+  const afterHasCjk = /[\u3400-\u9fff]/.test(after);
+  const beforeHasLatin = /[A-Za-z]/.test(before);
+  const afterHasLatin = /[A-Za-z]/.test(after);
+  return beforeHasCjk !== afterHasCjk && beforeHasLatin !== afterHasLatin;
+}
+
+function productNameSet(text) {
+  return [...new Set((text.match(/\b(?:Shokz|OpenRun(?:\s+Pro)?(?:\s+\d)?|OpenFit(?:\s+Pro)?|OpenComm(?:\s*2)?|OpenSwim(?:\s+Pro)?|OpenDots(?:\s+ONE)?|OpenMeet|Aeropex|AfterShokz)\b/gi) || [])
+    .map((value) => value.toLowerCase().replace(/\s+/g, " ").trim()))]
+    .sort()
+    .join("|");
+}
+
+function changeLocationLabel(item) {
+  if (item.sectionKey === "banner" || item.bannerIndex) {
+    const index = Number(item.bannerIndex || item.stateIndex || 1);
+    return `banner区-banner${Number.isFinite(index) && index > 0 ? index : 1}`;
+  }
+  return [item.sectionLabel, item.label].filter(Boolean).join("-") || "页面区域";
+}
+
+function changeStyleRef(item) {
+  return {
+    imageUrl: item.imageUrl,
+    file: item.file,
+    capturedAt: item.capturedAt,
+    timestamp: item.capturedAt,
+    text: truncateText(normalizeComparableText(extractText(item)), 2000),
+    width: item.width,
+    height: item.height
   };
 }
 

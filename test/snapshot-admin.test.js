@@ -95,7 +95,8 @@ test("deleteSnapshotArchive rebuilds change links and removes stale diff images"
   await deleteSnapshotArchive("snap-2", {
     archiveRoot: fixture.archiveRoot,
     snapshotsFilePath: fixture.snapshotsFilePath,
-    changesFilePath: fixture.changesFilePath
+    changesFilePath: fixture.changesFilePath,
+    monitorScope: "all"
   });
 
   const rebuiltChanges = await loadChanges(fixture.changesFilePath);

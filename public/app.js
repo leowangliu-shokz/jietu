@@ -613,6 +613,9 @@ function handleImagePreviewClick(event) {
 }
 
 function imagePreviewCaptionForLink(link) {
+  if (link.dataset.previewCaption) {
+    return link.dataset.previewCaption;
+  }
   const image = link.querySelector("img");
   return image?.getAttribute("alt") || link.getAttribute("title") || link.href;
 }
@@ -2173,25 +2176,26 @@ function renderChangesSummary(options = {}) {
   elements.changesEmpty.classList.toggle("visible", filteredChanges.length === 0);
   renderChangesPagination(filteredChanges.length, pageStart, pageChanges.length, totalPages);
 
-  for (const change of pageChanges) {
-    const item = document.createElement("article");
-    item.className = "change-card";
-    item.innerHTML = `
-      <div class="change-card-main">
-        <div>
-          <p class="change-title">${escapeHtml(changeTitle(change))}</p>
-          <p class="change-meta">
-            <span class="pill">${escapeHtml(changeTypeLabel(change))}</span>
-            <span class="pill device">${escapeHtml(change.location?.deviceName || change.location?.devicePresetId || "未知设备")}</span>
-            <span>${formatDate(change.from?.capturedAt)} → ${formatDate(change.to?.capturedAt)}</span>
-          </p>
-        </div>
-      </div>
-      ${renderChangeComparisonImages(change)}
-      ${renderTextChange(change.textChange)}
-      ${renderVisualChange(change.visualChange)}
+  if (pageChanges.length) {
+    const table = document.createElement("div");
+    table.className = "changes-table-wrap";
+    table.innerHTML = `
+      <table class="changes-table">
+        <thead>
+          <tr>
+            <th scope="col">变更级别</th>
+            <th scope="col">变更类型</th>
+            <th scope="col">变更位置</th>
+            <th scope="col">旧样式</th>
+            <th scope="col">新样式</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${pageChanges.map(renderChangeTableRow).join("")}
+        </tbody>
+      </table>
     `;
-    elements.changesList.append(item);
+    elements.changesList.append(table);
   }
 }
 
@@ -2224,6 +2228,112 @@ function matchesChangeFilters(change) {
   const matchesTime = matchesChangesTimeFilter(change);
   const matchesDevice = matchesChangesDeviceFilters(change);
   return matchesUrl && matchesTime && matchesDevice;
+}
+
+function renderChangeTableRow(change) {
+  const level = changeLevelForDisplay(change);
+  return `
+    <tr>
+      <td>
+        <span class="change-level change-level-${escapeHtml(level.toLowerCase())}" title="${escapeHtml(change.changeLevelReason || "")}">
+          ${escapeHtml(level)}
+        </span>
+      </td>
+      <td>
+        <div class="change-type-chips">
+          ${changeTypesForDisplay(change).map((type) => `<span class="change-type-chip">${escapeHtml(type)}</span>`).join("")}
+        </div>
+      </td>
+      <td>${escapeHtml(changeLocationForDisplay(change))}</td>
+      <td>${renderChangeStyleLink("旧样式", styleRefForChange(change, "old"), change)}</td>
+      <td>${renderChangeStyleLink("新样式", styleRefForChange(change, "new"), change)}</td>
+    </tr>
+  `;
+}
+
+function renderChangeStyleLink(label, style, change) {
+  const imageUrl = style?.imageUrl || "";
+  const capturedAt = style?.capturedAt || style?.timestamp || "";
+  if (!imageUrl) {
+    return `<span class="change-style-empty">暂无图片</span>`;
+  }
+
+  const caption = [
+    label,
+    changeLocationForDisplay(change),
+    `截图时间：${formatOptionalDate(capturedAt)}`,
+    style?.text ? `文案：${truncateDisplayText(style.text, 120)}` : ""
+  ].filter(Boolean).join(" · ");
+
+  return `
+    <a
+      class="change-style-link change-image"
+      href="${escapeHtml(imageUrl)}"
+      target="_blank"
+      rel="noreferrer"
+      title="${escapeHtml(caption)}"
+      data-preview-caption="${escapeHtml(caption)}"
+    >
+      <span>${escapeHtml(label)}</span>
+      <small>${escapeHtml(formatOptionalDate(capturedAt))}</small>
+    </a>
+  `;
+}
+
+function styleRefForChange(change, kind) {
+  if (kind === "old") {
+    return change.oldStyle || change.from || {};
+  }
+  return change.newStyle || change.to || {};
+}
+
+function changeLevelForDisplay(change) {
+  if (/^P[0-2]$/.test(change.changeLevel || "")) {
+    return change.changeLevel;
+  }
+  const types = changeTypesForDisplay(change);
+  return types.includes("文案变动") || types.includes("图片变动") ? "P1" : "P2";
+}
+
+function changeTypesForDisplay(change) {
+  if (Array.isArray(change.changeTypes) && change.changeTypes.length) {
+    return change.changeTypes;
+  }
+
+  const types = new Set();
+  if (change.textChange) {
+    types.add("文案变动");
+  }
+  for (const signal of change.visualChange?.signals || []) {
+    if (signal.type === "copy") {
+      types.add("文案变动");
+    } else if (signal.type === "image" || signal.type === "large-visual") {
+      types.add("图片变动");
+    } else if (signal.type === "layout") {
+      types.add("布局变动");
+    } else if (signal.type === "dimension") {
+      types.add("尺寸变动");
+    } else if (signal.type === "tracking" || signal.type === "analytics") {
+      types.add("埋点变动");
+    } else {
+      types.add("内容变动");
+    }
+  }
+  if (!types.size && change.visualChange) {
+    types.add("图片变动");
+  }
+  return [...types];
+}
+
+function changeLocationForDisplay(change) {
+  if (change.changeLocation) {
+    return change.changeLocation;
+  }
+  const bannerIndex = Number(change.location?.bannerIndex || change.location?.stateIndex || 0);
+  if (change.location?.sectionKey === "banner" || bannerIndex > 0) {
+    return `banner区-banner${bannerIndex > 0 ? bannerIndex : 1}`;
+  }
+  return changeTitle(change);
 }
 
 function renderChangeComparisonImages(change) {
@@ -3298,6 +3408,15 @@ function formatDate(value) {
     minute: "2-digit",
     second: "2-digit"
   }).format(new Date(value));
+}
+
+function formatOptionalDate(value) {
+  return timestamp(value) ? formatDate(value) : "未知时间";
+}
+
+function truncateDisplayText(value, maxLength) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text;
 }
 
 function browserName(browserPath) {

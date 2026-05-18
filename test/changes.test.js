@@ -381,6 +381,71 @@ test("detects visual regions and filters tiny noise", async () => {
   assert.equal(noiseDiff.changed, false);
 });
 
+test("home banner monitor emits P1 table fields for copy and image changes", async () => {
+  const archiveRoot = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-home-banner-scope-"));
+  const beforeFile = "2026-05-03/shokz-com/banner-1-before.png";
+  const afterFile = "2026-05-03/shokz-com/banner-1-after.png";
+
+  const beforeImage = solidImage(100, 50, [255, 255, 255, 255]);
+  const afterImage = solidImage(100, 50, [255, 255, 255, 255]);
+  fillRect(afterImage, 100, 24, 14, 20, 10, [220, 220, 220, 255]);
+  await writeArchiveImage(archiveRoot, beforeFile, 100, 50, beforeImage);
+  await writeArchiveImage(archiveRoot, afterFile, 100, 50, afterImage);
+
+  const changes = await compareSnapshots([
+    homeBannerSnapshot("snap-1", "2026-05-03T08:00:00.000Z", beforeFile, 1, {
+      text: "OpenRun Pro 2 Shop Now",
+      images: ["https://cdn.example.com/openrun-pro-2.webp"]
+    }),
+    homeBannerSnapshot("snap-2", "2026-05-03T09:00:00.000Z", afterFile, 1, {
+      text: "OpenSwim Pro Shop Now",
+      images: ["https://cdn.example.com/openswim-pro.webp"]
+    })
+  ], { archiveRoot, monitorScope: "home-banner", writeDiffImages: false });
+
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].changeLevel, "P1");
+  assert.deepEqual(changes[0].changeTypes, ["文案变动", "图片变动"]);
+  assert.equal(changes[0].changeLocation, "banner区-banner1");
+  assert.equal(changes[0].oldStyle.capturedAt, "2026-05-03T08:00:00.000Z");
+  assert.equal(changes[0].newStyle.capturedAt, "2026-05-03T09:00:00.000Z");
+});
+
+test("home banner monitor ignores other homepage sections for now", async () => {
+  const changes = await compareSnapshots([
+    {
+      ...snapshot("snap-1", "2026-05-03T08:00:00.000Z", [{
+        file: "missing-before.png",
+        sectionKey: "product-showcase",
+        sectionLabel: "产品橱窗",
+        stateIndex: 1,
+        tabIndex: 1,
+        sectionState: { text: "Old product copy" }
+      }]),
+      url: "https://shokz.com/",
+      targetId: "shokz-home",
+      targetLabel: "https://shokz.com/（首页）",
+      displayUrl: "https://shokz.com/（首页）"
+    },
+    {
+      ...snapshot("snap-2", "2026-05-03T09:00:00.000Z", [{
+        file: "missing-after.png",
+        sectionKey: "product-showcase",
+        sectionLabel: "产品橱窗",
+        stateIndex: 1,
+        tabIndex: 1,
+        sectionState: { text: "New product copy" }
+      }]),
+      url: "https://shokz.com/",
+      targetId: "shokz-home",
+      targetLabel: "https://shokz.com/（首页）",
+      displayUrl: "https://shokz.com/（首页）"
+    }
+  ], { monitorScope: "home-banner", writeDiffImages: false });
+
+  assert.equal(changes.length, 0);
+});
+
 test("ignores banner pixel drift when copy and image assets are unchanged", async () => {
   const archiveRoot = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-banner-drift-"));
   const beforeFile = "2026-05-03/example-com/banner-before.png";
@@ -673,6 +738,20 @@ function snapshot(id, capturedAt, relatedShots = [], file = `${id}.png`) {
     devicePresetId: "pc",
     deviceName: "PC",
     relatedShots
+  };
+}
+
+function homeBannerSnapshot(id, capturedAt, file, bannerIndex, bannerStateOverrides = {}) {
+  return {
+    ...snapshot(id, capturedAt, [], file),
+    url: "https://shokz.com/",
+    targetId: `shokz-home-banner-${bannerIndex}`,
+    targetLabel: `首页 Banner ${bannerIndex}`,
+    displayUrl: `https://shokz.com/（首页 Banner ${bannerIndex}）`,
+    bannerIndex,
+    bannerCount: 3,
+    stateIndex: bannerIndex,
+    bannerState: bannerState(bannerStateOverrides)
   };
 }
 

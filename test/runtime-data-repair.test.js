@@ -51,6 +51,7 @@ test("repairSnapshotsRuntimeMetadata fixes corrupted runtime labels and rebuilt 
   const rebuiltChanges = await rebuildChanges({
     snapshots: repairResult.snapshots,
     archiveRoot: fixture.archiveRoot,
+    monitorScope: "all",
     changesFilePath: fixture.changesFilePath
   });
 

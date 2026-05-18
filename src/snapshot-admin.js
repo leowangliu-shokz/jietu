@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { compareSnapshots, saveChanges } from "./changes.js";
+import { compareSnapshots, defaultChangeMonitorScope, saveChanges } from "./changes.js";
 import { archiveDir, changesPath, snapshotsPath } from "./paths.js";
 import { readSnapshots, saveSnapshots } from "./store.js";
 
@@ -81,6 +81,7 @@ export async function deleteSnapshotArchive(snapshotId, options = {}) {
   try {
     changes = await compareSnapshots(remainingSnapshots, {
       ...options,
+      monitorScope: options.monitorScope || defaultChangeMonitorScope,
       archiveRoot
     });
     await saveChanges(changes, changesFilePath);

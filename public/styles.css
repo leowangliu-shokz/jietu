@@ -502,9 +502,142 @@ select:focus {
 }
 
 .changes-list {
-  display: grid;
-  gap: 10px;
   padding: 0 18px 12px;
+}
+
+.changes-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.changes-table {
+  width: 100%;
+  min-width: 840px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 13px;
+}
+
+.changes-table th,
+.changes-table td {
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 10px 12px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.changes-table th:last-child,
+.changes-table td:last-child {
+  border-right: 0;
+}
+
+.changes-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.changes-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f3f7f6;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.changes-table td {
+  color: var(--text);
+}
+
+.change-level {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 42px;
+  height: 28px;
+  border-radius: 6px;
+  font-weight: 850;
+  border: 1px solid currentColor;
+}
+
+.change-level-p0 {
+  color: #b42318;
+  background: #fff1f0;
+}
+
+.change-level-p1 {
+  color: #a15c00;
+  background: #fff7e6;
+}
+
+.change-level-p2 {
+  color: #276749;
+  background: #edf7f1;
+}
+
+.change-type-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.change-type-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 9px;
+  border: 1px solid rgba(25, 122, 104, 0.25);
+  border-radius: 999px;
+  background: #eef8f5;
+  color: var(--accent-dark);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.change-style-link.change-image {
+  display: inline-flex;
+  min-width: 128px;
+  min-height: 38px;
+  aspect-ratio: auto;
+  place-items: initial;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #f8fbfa;
+  color: var(--accent-dark);
+  font-weight: 750;
+}
+
+.change-style-link.change-image span {
+  position: static;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.change-style-link small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.change-style-link:hover {
+  border-color: rgba(25, 122, 104, 0.55);
+  background: #eef8f5;
+}
+
+.change-style-empty {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .changes-pagination {
