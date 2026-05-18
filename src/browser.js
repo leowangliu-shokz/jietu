@@ -5223,7 +5223,7 @@ function composeShokzCollectionTabComposite({ longCapture, variantCaptures, view
           index,
           productKey: capture.state?.productKey || `product-${index + 1}`,
           productIndex: Number(capture.state?.productIndex || 0) || index + 1,
-          y: Math.max(0, Math.round(Number(capture.clip?.y || 0))),
+          y: Math.max(0, Math.round(Number(capture.compositeY ?? capture.state?.compositeY ?? capture.clip?.y ?? 0))),
           width: image.width,
           height: image.height
         };
@@ -5321,7 +5321,7 @@ function composeShokzCollectionTabComposite({ longCapture, variantCaptures, view
 function collectionCompositeCardGroups(cards) {
   const groups = new Map();
   for (const card of cards) {
-    const key = card.productKey || `product-${card.productIndex}`;
+    const key = card.capture.state?.compositeGroupKey || card.productKey || `product-${card.productIndex}`;
     if (!groups.has(key)) {
       groups.set(key, {
         key,
@@ -6391,9 +6391,29 @@ async function captureShokzComparisonProductComposite(client, {
     variantCaptures.push(variantCapture);
   }
 
+  const productAnchorYs = comparisonProductCardAnchorYs(longCapture.current, productKey);
+  const alignedVariantCaptures = alignComparisonProductVariantCaptures(variantCaptures, {
+    productKey,
+    productLabel,
+    anchorYs: productAnchorYs
+  });
+  const quickLookDefinition = findShokzComparisonRelatedSectionDefinition("comparison-quick-look");
+  const quickLookCaptures = quickLookDefinition
+    ? await captureShokzComparisonProductQuickLookCaptures(client, quickLookDefinition, {
+      product: pairedProduct,
+      viewport,
+      anchorY: comparisonQuickLookAnchorY(longCapture.current),
+      warnings
+    })
+    : [];
+  const compositeCaptures = [
+    ...alignedVariantCaptures,
+    ...quickLookCaptures
+  ];
+
   const composite = composeShokzCollectionTabComposite({
     longCapture,
-    variantCaptures,
+    variantCaptures: compositeCaptures,
     viewport
   });
   const relatedOutput = useRelatedStateOutputPath
@@ -6404,7 +6424,7 @@ async function captureShokzComparisonProductComposite(client, {
   const visualSignature = hashBuffer(composite.buffer);
   const visualHash = visualHashForBuffer(composite.buffer);
   const visualAudit = visualAuditForBuffer(composite.buffer, visualHash);
-  const variantItems = variantCaptures.map((item) => ({
+  const variantItems = compositeCaptures.map((item) => ({
     key: item.state.variantKey || item.state.stateLabel,
     label: item.state.variantLabel || item.state.stateLabel,
     text: item.current.text || item.state.stateLabel || "",
@@ -6424,7 +6444,7 @@ async function captureShokzComparisonProductComposite(client, {
       productKey,
       productLabel,
       productIndex: pairedProduct.productIndex || productIndex,
-      variantCount: variantCaptures.length
+      variantCount: compositeCaptures.length
     }]
   });
   const stateLabel = productLabel;
@@ -6450,7 +6470,7 @@ async function captureShokzComparisonProductComposite(client, {
     productLabel,
     productIndex: pairedProduct.productIndex || productIndex,
     variantKey: null,
-    variantLabel: `${variantCaptures.length} color states`,
+    variantLabel: `${variantCaptures.length} color states, ${quickLookCaptures.length} carousel states`,
     variantOptions: null,
     logicalSignature: [definition.key, productKey, "product-map"].join("|"),
     visualSignature,
@@ -6461,7 +6481,7 @@ async function captureShokzComparisonProductComposite(client, {
       label: `${definition.key} ${productLabel}`,
       attempts: [
         longCapture.captureValidation,
-        ...variantCaptures.map((item) => item.captureValidation)
+        ...compositeCaptures.map((item) => item.captureValidation)
       ].filter(Boolean)
     },
     clip: {
@@ -6488,8 +6508,8 @@ async function captureShokzComparisonProductComposite(client, {
     productCount: 1,
     visibleProductCount: visibleProducts.length || 1,
     visibleProducts,
-    itemCount: variantCaptures.length,
-    visibleItemCount: variantCaptures.length,
+    itemCount: compositeCaptures.length,
+    visibleItemCount: compositeCaptures.length,
     visibleItems: variantItems,
     itemRects: variantItems.map((item) => ({
       key: item.key,
@@ -6503,7 +6523,7 @@ async function captureShokzComparisonProductComposite(client, {
     sectionState: {
       text: [
         longCapture.current?.text || "",
-        ...variantCaptures.map((item) => item.current?.text || item.state?.stateLabel || "")
+        ...compositeCaptures.map((item) => item.current?.text || item.state?.stateLabel || "")
       ].filter(Boolean).join(" ").slice(0, 3200),
       textBlocks: longCapture.current?.textBlocks || [],
       images: longCapture.current?.images || [],
@@ -6518,7 +6538,7 @@ async function captureShokzComparisonProductComposite(client, {
       productCount: 1,
       visibleProductCount: visibleProducts.length || 1,
       visibleProducts,
-      visibleItemCount: variantCaptures.length,
+      visibleItemCount: compositeCaptures.length,
       visibleItems: variantItems,
       itemRects: variantItems.map((item) => ({
         key: item.key,
@@ -6534,6 +6554,230 @@ async function captureShokzComparisonProductComposite(client, {
   };
 
   return { capture, warnings };
+}
+
+function comparisonProductCardAnchorYs(pageState, productKey) {
+  const normalizedProductKey = String(productKey || "").trim().toLowerCase();
+  const anchors = Array.isArray(pageState?.comparisonProductCardAnchors)
+    ? pageState.comparisonProductCardAnchors
+    : [];
+  const matches = anchors
+    .filter((anchor) => !normalizedProductKey || String(anchor?.productKey || "").trim().toLowerCase() === normalizedProductKey)
+    .map((anchor) => Number(anchor?.y))
+    .filter((value) => Number.isFinite(value) && value >= 0)
+    .sort((a, b) => a - b);
+  const distinct = [];
+  for (const value of matches) {
+    if (!distinct.some((item) => Math.abs(item - value) < 240)) {
+      distinct.push(value);
+    }
+  }
+  if (distinct.length) {
+    return distinct.slice(0, 2);
+  }
+  const fallbackY = Number(pageState?.comparisonAnchors?.productCardsY);
+  return Number.isFinite(fallbackY) && fallbackY >= 0 ? [fallbackY] : [0];
+}
+
+function comparisonQuickLookAnchorY(pageState) {
+  const y = Number(pageState?.comparisonAnchors?.quickLookY);
+  return Number.isFinite(y) && y >= 0 ? y : null;
+}
+
+function alignComparisonProductVariantCaptures(variantCaptures, { productKey, productLabel, anchorYs }) {
+  const anchors = Array.isArray(anchorYs) && anchorYs.length ? anchorYs : [0];
+  const aligned = [];
+  for (const [anchorIndex, anchorY] of anchors.entries()) {
+    for (const capture of variantCaptures || []) {
+      aligned.push({
+        ...capture,
+        compositeY: anchorY,
+        state: {
+          ...(capture.state || {}),
+          productKey: capture.state?.productKey || productKey,
+          productLabel: capture.state?.productLabel || productLabel,
+          compositeY: anchorY,
+          compositeGroupKey: [
+            "comparison-products",
+            productKey || capture.state?.productKey || "product",
+            anchorIndex + 1
+          ].join(":")
+        }
+      });
+    }
+  }
+  return aligned;
+}
+
+async function captureShokzComparisonProductQuickLookCaptures(client, definition, {
+  product,
+  viewport,
+  anchorY,
+  warnings
+}) {
+  const positioned = await positionShokzComparisonQuickLookSection(client);
+  if (!positioned.ok) {
+    warnings.push({
+      sectionKey: definition.key,
+      sectionLabel: definition.sectionLabel,
+      stateLabel: product.productLabel || product.productKey,
+      message: positioned.reason || `Could not position ${definition.sectionLabel}.`
+    });
+    return [];
+  }
+
+  await sleep(360);
+  await primeLazyImages(client);
+  const plan = await readShokzComparisonRelatedSectionPlan(client, definition, {
+    viewport
+  });
+  if (!plan.ok) {
+    warnings.push({
+      sectionKey: definition.key,
+      sectionLabel: definition.sectionLabel,
+      stateLabel: product.productLabel || product.productKey,
+      message: plan.reason || `Could not read ${definition.sectionLabel} plan.`
+    });
+    return [];
+  }
+
+  const productKey = String(product.productKey || "").trim().toLowerCase();
+  const productStates = (plan.states || []).filter((state) =>
+    String(state.handle || state.productKey || "").trim().toLowerCase() === productKey ||
+    String(state.tabLabel || "").trim() === String(product.productLabel || "").trim()
+  );
+  const pageIndexes = [...new Set([
+    1,
+    ...productStates.map((state) => Number(state.pageIndex || 0)).filter((pageIndex) => pageIndex > 0)
+  ])].sort((a, b) => a - b);
+  const captures = [];
+  for (const [index, pageIndex] of pageIndexes.entries()) {
+    const state = {
+      sectionKey: definition.key,
+      stateIndex: index + 1,
+      stateLabel: `${product.productLabel || product.productKey} / Quick Look Slide ${pageIndex}`,
+      tabLabel: product.productLabel || product.productKey,
+      tabIndex: product.productIndex || index + 1,
+      pageIndex,
+      pageCount: Math.max(...pageIndexes),
+      fileId: [product.productKey || product.fileId || "product", "quick-look", "slide", pageIndex].filter(Boolean).join("-"),
+      logicalSignature: [definition.key, product.productKey || product.fileId || product.productLabel, "slide-" + pageIndex].filter(Boolean).join("|"),
+      handle: product.productKey || "",
+      productKey: product.productKey || null,
+      productLabel: product.productLabel || null,
+      productIndex: product.productIndex || null,
+      compositeY: Number.isFinite(Number(anchorY)) ? Math.max(0, Math.round(Number(anchorY))) : null,
+      compositeGroupKey: ["comparison-quick-look", product.productKey || product.fileId || "product"].join(":")
+    };
+    const activation = await activateShokzComparisonQuickLookPairState(client, state);
+    if (!activation.ok) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: state.stateLabel,
+        message: activation.reason || `Could not activate ${state.stateLabel}.`
+      });
+      continue;
+    }
+    const ready = await waitForShokzComparisonQuickLookPairState(client, state);
+    if (!ready.ok) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: state.stateLabel,
+        message: ready.reason || `Could not confirm ${state.stateLabel}.`
+      });
+      continue;
+    }
+    await sleep(360);
+    await primeLazyImages(client);
+    await waitForRelatedSectionImages(client, definition.key);
+    await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2 });
+    await dismissObstructions(client, { rounds: 2 });
+
+    let current = await readShokzComparisonRelatedState(client, definition, state);
+    if (!current.ok) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: state.stateLabel,
+        message: current.reason || `Could not read ${state.stateLabel}.`
+      });
+      continue;
+    }
+    let clip = normalizeRelatedClip(current.clip, viewport);
+    if (!clip) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: state.stateLabel,
+        message: `Could not compute a valid crop for ${state.stateLabel}.`
+      });
+      continue;
+    }
+    try {
+      const screenshotCapture = await captureScreenshotWithValidation(client, () => ({
+        format: "png",
+        fromSurface: true,
+        captureBeyondViewport: true,
+        clip
+      }), {
+        label: `${definition.key} ${state.stateLabel} paired columns`,
+        beforeAttempt: async ({ attempt }) => {
+          if (attempt > 1) {
+            const retryActivation = await activateShokzComparisonQuickLookPairState(client, state);
+            if (!retryActivation.ok) {
+              throw new Error(retryActivation.reason || `Could not reactivate ${state.stateLabel}.`);
+            }
+            const retryReady = await waitForShokzComparisonQuickLookPairState(client, state);
+            if (!retryReady.ok) {
+              throw new Error(retryReady.reason || `Could not confirm ${state.stateLabel} on retry.`);
+            }
+            await sleep(420);
+          }
+          await prepareForScreenshotCapture(client, {
+            rounds: 2,
+            shokzKnownPopups: true,
+            stage: `before Shokz ${definition.sectionLabel} paired carousel screenshot capture`
+          });
+          await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2 });
+          await dismissObstructions(client, { rounds: 2 });
+          current = await readShokzComparisonRelatedState(client, definition, state);
+          if (!current.ok) {
+            throw new Error(current.reason || `Could not reread ${state.stateLabel}.`);
+          }
+          clip = normalizeRelatedClip(current.clip, viewport);
+          if (!clip) {
+            throw new Error(`Could not compute a valid crop for ${state.stateLabel}.`);
+          }
+        }
+      });
+      captures.push({
+        ok: true,
+        buffer: screenshotCapture.buffer,
+        width: Math.round(clip.width),
+        height: Math.round(clip.height),
+        state,
+        current,
+        compositeY: Number.isFinite(Number(state.compositeY)) ? Number(state.compositeY) : Math.round(clip.y),
+        clip: {
+          x: Math.round(clip.x),
+          y: Math.round(clip.y),
+          width: Math.round(clip.width),
+          height: Math.round(clip.height)
+        },
+        captureValidation: screenshotCapture.captureValidation
+      });
+    } catch (error) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: state.stateLabel,
+        message: error.message
+      });
+    }
+  }
+  return captures;
 }
 
 function comparisonProductMatchesFilter(definition, product, filter) {
@@ -6947,6 +7191,11 @@ async function readShokzComparisonProductsPageState(client, definition) {
         width: rect.width,
         height: rect.height
       });
+      const absoluteRectInfo = (rect) => ({
+        ...rectInfo(rect),
+        absoluteY: Math.round(window.scrollY + rect.top),
+        absoluteBottom: Math.round(window.scrollY + rect.bottom)
+      });
       const textBlocks = Array.from(document.querySelectorAll("h1, h2, h3, h4, p, a, button, span, strong, li"))
         .filter((element) => visible(element))
         .map((element) => {
@@ -6990,6 +7239,39 @@ async function readShokzComparisonProductsPageState(client, definition) {
         })
         .filter((item) => item.key && item.label)
         .slice(0, 4);
+      const productCardAnchors = Array.from(document.querySelectorAll(".item.product-wrapper .content.active[data-handle]"))
+        .map((node) => {
+          const handle = clean(node.getAttribute("data-handle"), 100).toLowerCase();
+          const label = clean(node.querySelector(".swatch-active")?.innerText || node.innerText || node.textContent, 100);
+          const card = node.closest(".item.product-wrapper, .compare-col") || node;
+          const rect = card.getBoundingClientRect();
+          const classText = String(card.className || "");
+          const trackMatch = classText.match(/compare-col-(\\d+)/) || classText.match(/product-info-item-(\\d+)/);
+          return {
+            productKey: handle || label,
+            productLabel: label || handle,
+            trackIndex: trackMatch ? Number(trackMatch[1]) : null,
+            y: Math.max(0, Math.round(window.scrollY + rect.top)),
+            rect: absoluteRectInfo(rect)
+          };
+        })
+        .filter((item) => item.productKey && Number.isFinite(item.y))
+        .filter((item, index, list) =>
+          list.findIndex((candidate) =>
+            candidate.productKey === item.productKey &&
+            Math.abs(candidate.y - item.y) < 12 &&
+            (candidate.trackIndex || 0) === (item.trackIndex || 0)
+          ) === index
+        )
+        .sort((a, b) => a.y - b.y || Number(a.trackIndex || 0) - Number(b.trackIndex || 0))
+        .slice(0, 24);
+      const quickLookTitle = Array.from(document.querySelectorAll("h2"))
+        .find((node) => clean(node.textContent) === "Quick Look") || null;
+      const quickLookRect = quickLookTitle?.getBoundingClientRect?.() || null;
+      const comparisonAnchors = {
+        productCardsY: productCardAnchors.length ? productCardAnchors[0].y : null,
+        quickLookY: quickLookRect ? Math.max(0, Math.round(window.scrollY + quickLookRect.top - 12)) : null
+      };
       const text = textBlocks.map((block) => block.text).join(" ").slice(0, 3200);
       return {
         ok: true,
@@ -6999,6 +7281,8 @@ async function readShokzComparisonProductsPageState(client, definition) {
         logicalSignature: [definition.key, "product-map"].join("|"),
         visibleItemCount: products.length,
         visibleItems: products,
+        comparisonAnchors,
+        comparisonProductCardAnchors: productCardAnchors,
         itemRects: products.map((item) => ({
           key: item.key,
           label: item.label,
@@ -8006,6 +8290,151 @@ async function waitForShokzComparisonQuickLookState(client, state, options = {})
     await sleep(160);
   }
   return { ok: false, reason: `Quick Look slide ${state?.pageIndex || "?"} did not become active.` };
+}
+
+async function activateShokzComparisonQuickLookPairState(client, state) {
+  const positioned = await positionShokzComparisonQuickLookSection(client);
+  if (!positioned.ok) {
+    return positioned;
+  }
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const state = ${JSON.stringify({
+        handle: String(state?.handle || "").trim().toLowerCase(),
+        pageIndex: Number(state?.pageIndex || 1) || 1,
+        stateLabel: state?.stateLabel || ""
+      })};
+      const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const title = Array.from(document.querySelectorAll("h2")).find((node) => clean(node.textContent) === "Quick Look") || null;
+      const wrapper = title?.closest(".less-wrapper-sec, .content-wrapper, section, .shopify-section") || null;
+      const itemList = wrapper?.querySelector(".item.item-imagelist") || null;
+      if (!itemList) {
+        return { ok: false, reason: "Could not find Quick Look carousel list." };
+      }
+      const tracks = Array.from(itemList.querySelectorAll(".content.data.active[data-handle]"))
+        .filter((node) => visible(node))
+        .map((node) => ({ node, rect: node.getBoundingClientRect() }))
+        .sort((a, b) => a.rect.left - b.rect.left)
+        .map((entry) => entry.node);
+      const matchingTracks = tracks.filter((node) => clean(node.getAttribute("data-handle")).toLowerCase() === state.handle);
+      const targetTracks = (matchingTracks.length ? matchingTracks : tracks).slice(0, 2);
+      if (!targetTracks.length) {
+        return { ok: false, reason: "Could not find active carousel for " + (state.stateLabel || state.handle || "Quick Look") + "." };
+      }
+      const targetIndex = Math.max(1, Number(state.pageIndex || 1) || 1);
+      const clicked = [];
+      for (const track of targetTracks) {
+        const bullets = Array.from(track.querySelectorAll(".swiper-pagination-bullet"));
+        const currentActive = track.querySelector(".swiper-slide-active img, .swiper-slide-visible img") || null;
+        const currentIndex = Number(currentActive?.getAttribute("data-index") || 1) || 1;
+        const targetBullet = bullets[targetIndex - 1] || null;
+        if (targetBullet && typeof targetBullet.click === "function") {
+          targetBullet.click();
+          clicked.push("bullet");
+          continue;
+        }
+        const next = track.querySelector("[class*='swiper-btnnext'], .swiper-button-next");
+        const prev = track.querySelector("[class*='swiper-btnprev'], .swiper-button-prev");
+        if (targetIndex > currentIndex && next) {
+          for (let step = currentIndex; step < targetIndex; step += 1) {
+            next.click();
+          }
+          clicked.push("next");
+          continue;
+        }
+        if (targetIndex < currentIndex && prev) {
+          for (let step = currentIndex; step > targetIndex; step -= 1) {
+            prev.click();
+          }
+          clicked.push("prev");
+          continue;
+        }
+        if (targetIndex === currentIndex) {
+          clicked.push("noop");
+          continue;
+        }
+        return { ok: false, reason: "Could not activate " + (state.stateLabel || state.handle || "Quick Look") + " slide " + targetIndex + "." };
+      }
+      return { ok: true, targetIndex, trackCount: targetTracks.length, clicked };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
+  if (result?.result?.value?.ok) {
+    await sleep(320);
+  }
+  return result?.result?.value || { ok: false, reason: `Could not activate ${state?.stateLabel || "Quick Look"} state.` };
+}
+
+async function waitForShokzComparisonQuickLookPairState(client, state, options = {}) {
+  const timeoutMs = Math.max(400, Math.min(5000, Number(options.timeoutMs) || 2600));
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const result = await client.send("Runtime.evaluate", {
+      expression: `(() => {
+        const state = ${JSON.stringify({
+          handle: String(state?.handle || "").trim().toLowerCase(),
+          pageIndex: Number(state?.pageIndex || 1) || 1
+        })};
+        const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+        const visible = (element) => {
+          if (!element || !(element instanceof Element)) return false;
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 0 &&
+            rect.height > 0 &&
+            style.visibility !== "hidden" &&
+            style.display !== "none" &&
+            Number(style.opacity || 1) > 0.01;
+        };
+        const title = Array.from(document.querySelectorAll("h2")).find((node) => clean(node.textContent) === "Quick Look") || null;
+        const wrapper = title?.closest(".less-wrapper-sec, .content-wrapper, section, .shopify-section") || null;
+        const itemList = wrapper?.querySelector(".item.item-imagelist") || null;
+        if (!itemList) {
+          return { ok: false, reason: "Quick Look list is missing." };
+        }
+        const tracks = Array.from(itemList.querySelectorAll(".content.data.active[data-handle]"))
+          .filter((node) => visible(node))
+          .map((node) => ({ node, rect: node.getBoundingClientRect() }))
+          .sort((a, b) => a.rect.left - b.rect.left)
+          .map((entry) => entry.node);
+        const matchingTracks = tracks.filter((node) => clean(node.getAttribute("data-handle")).toLowerCase() === state.handle);
+        const targetTracks = (matchingTracks.length ? matchingTracks : tracks).slice(0, 2);
+        if (!targetTracks.length) {
+          return { ok: false, reason: "Quick Look carousel track is missing." };
+        }
+        const targetIndex = Math.max(1, Number(state.pageIndex || 1) || 1);
+        const activeIndexes = targetTracks.map((track) => {
+          const activeImage = track.querySelector(".swiper-slide-active img, .swiper-slide-visible img") || null;
+          const activeIndex = Number(activeImage?.getAttribute("data-index") || 0) || 0;
+          const bullets = Array.from(track.querySelectorAll(".swiper-pagination-bullet"));
+          const activeBulletIndex = bullets.findIndex((element) => element.classList.contains("swiper-pagination-bullet-active"));
+          return activeIndex || (activeBulletIndex >= 0 ? activeBulletIndex + 1 : 0);
+        });
+        return {
+          ok: activeIndexes.every((activeIndex) => activeIndex === targetIndex),
+          activeIndexes,
+          targetIndex
+        };
+      })()`,
+      returnByValue: true
+    }).catch(() => null);
+    const value = result?.result?.value || {};
+    if (value.ok) {
+      return { ok: true, activeIndexes: value.activeIndexes || [] };
+    }
+    await sleep(160);
+  }
+  return { ok: false, reason: `Quick Look slide ${state?.pageIndex || "?"} did not become active in both columns.` };
 }
 
 async function readShokzComparisonRelatedState(client, definition, state) {
