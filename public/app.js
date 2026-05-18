@@ -2099,15 +2099,7 @@ async function handleBulkDeleteSelectedClick() {
   renderGallery({ preserveScroll: true });
 
   try {
-    const response = await fetch("/api/snapshots/delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ snapshotIds })
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok || !payload?.ok) {
-      throw new Error(payload?.error || `批量删除失败（HTTP ${response.status}）`);
-    }
+    const payload = await deleteSelectedSnapshots(snapshotIds);
 
     selectedSnapshotIds.clear();
     const deletedCount = Array.isArray(payload.deletedSnapshotIds)
@@ -2116,7 +2108,16 @@ async function handleBulkDeleteSelectedClick() {
     setArchiveStatus(`已批量删除 ${deletedCount} 张截图。`, "success");
     await refreshState({ preserveScroll: true });
   } catch (error) {
-    setArchiveStatus(error?.message || "批量删除失败，请稍后重试。", "error");
+    const deletedCount = Array.isArray(error?.deletedSnapshotIds) ? error.deletedSnapshotIds.length : 0;
+    if (deletedCount > 0) {
+      for (const snapshotId of error.deletedSnapshotIds) {
+        selectedSnapshotIds.delete(snapshotId);
+      }
+      setArchiveStatus(`已删除 ${deletedCount} 张，后续删除失败：${error.message || "请稍后重试。"}`, "error");
+      await refreshState({ preserveScroll: true });
+    } else {
+      setArchiveStatus(error?.message || "批量删除失败，请稍后重试。", "error");
+    }
   } finally {
     pendingBulkSnapshotDelete = false;
     for (const snapshotId of snapshotIds) {
@@ -2124,6 +2125,61 @@ async function handleBulkDeleteSelectedClick() {
     }
     renderGallery({ preserveScroll: true });
   }
+}
+
+async function deleteSelectedSnapshots(snapshotIds) {
+  if (supportsBatchSnapshotDelete()) {
+    const payload = await requestBatchSnapshotDelete(snapshotIds);
+    if (payload) {
+      return payload;
+    }
+  }
+
+  return deleteSnapshotsIndividually(snapshotIds);
+}
+
+function supportsBatchSnapshotDelete() {
+  return Boolean(state?.permissions?.canBatchDeleteSnapshots);
+}
+
+async function requestBatchSnapshotDelete(snapshotIds) {
+  const response = await fetch("/api/snapshots/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ snapshotIds })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (response.ok && payload?.ok) {
+    return payload;
+  }
+
+  const message = payload?.error || `批量删除失败（HTTP ${response.status}）`;
+  if (response.status === 404 && message.trim().toLowerCase() === "not found") {
+    return null;
+  }
+
+  throw new Error(message);
+}
+
+async function deleteSnapshotsIndividually(snapshotIds) {
+  const deletedSnapshotIds = [];
+  for (const snapshotId of snapshotIds) {
+    const response = await fetch(`/api/snapshots/${encodeURIComponent(snapshotId)}`, {
+      method: "DELETE"
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload?.ok) {
+      const error = new Error(payload?.error || `删除失败（HTTP ${response.status}）`);
+      error.deletedSnapshotIds = deletedSnapshotIds;
+      throw error;
+    }
+    deletedSnapshotIds.push(snapshotId);
+  }
+
+  return {
+    ok: true,
+    deletedSnapshotIds
+  };
 }
 
 async function handleSnapshotDeleteClick(button) {

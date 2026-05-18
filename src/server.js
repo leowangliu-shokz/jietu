@@ -266,7 +266,8 @@ async function buildState() {
     changes,
     captureIssues,
     permissions: {
-      canDeleteSnapshots: snapshotDeleteEnabled
+      canDeleteSnapshots: snapshotDeleteEnabled,
+      canBatchDeleteSnapshots: snapshotDeleteEnabled
     }
   });
 }
