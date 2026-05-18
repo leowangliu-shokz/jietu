@@ -278,6 +278,31 @@ test("collection tab composite keeps the long screenshot and lays variants to th
   assert.equal(pixelAt(decoded, 214, 140)[2], 200);
 });
 
+test("collection tab composite does not accumulate row drift from natural source spacing", () => {
+  const longBuffer = encodePng(100, 180, solidImage(100, 180, [30, 40, 50, 255]));
+  const firstCard = encodePng(40, 50, solidImage(40, 50, [200, 20, 20, 255]));
+  const secondCard = encodePng(40, 50, solidImage(40, 50, [20, 200, 20, 255]));
+  const thirdCard = encodePng(40, 50, solidImage(40, 50, [20, 20, 200, 255]));
+
+  const result = composeShokzCollectionTabComposite({
+    longCapture: {
+      buffer: longBuffer
+    },
+    viewport: {
+      width: 100,
+      height: 120
+    },
+    variantCaptures: [
+      collectionVariantCapture(firstCard, "openrun-pro", 1, "black", 10),
+      collectionVariantCapture(secondCard, "openrun", 2, "black", 63),
+      collectionVariantCapture(thirdCard, "openmove", 3, "black", 116)
+    ]
+  });
+
+  const variantRows = result.layout.variants.map((variant) => variant.rect.y);
+  assert.deepEqual(variantRows, [10, 63, 116]);
+});
+
 test("home product showcase composite stacks default pages and crops hover cards", () => {
   const firstPage = encodePng(100, 80, solidImage(100, 80, [200, 20, 20, 255]));
   const secondPage = encodePng(100, 80, solidImage(100, 80, [20, 200, 20, 255]));

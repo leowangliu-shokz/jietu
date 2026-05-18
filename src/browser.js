@@ -5208,7 +5208,8 @@ async function captureShokzCollectionProductVariantCard(client, definition, stat
 function composeShokzCollectionTabComposite({ longCapture, variantCaptures, viewport = {} }) {
   const longImage = decodePng(longCapture.buffer);
   const cardGap = 18;
-  const rowGap = 18;
+  // Keep variant rows on the source card Y; a fixed row gap accumulates drift down the product map.
+  const rowGap = 0;
   const gutter = 24;
   const outerPad = 24;
   const minCardWidth = Math.max(220, Math.round((Number(viewport.width || 0) || longImage.width || 393) * 0.62));
