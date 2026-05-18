@@ -809,6 +809,54 @@ select:focus {
   color: #b42318;
 }
 
+.bulk-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+  background: #f8fbf9;
+  padding: 12px 18px;
+}
+
+.bulk-actions[hidden] {
+  display: none;
+}
+
+.bulk-selection-count {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.bulk-actions.has-selection .bulk-selection-count {
+  color: var(--accent-dark);
+}
+
+.bulk-action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.bulk-action-buttons button {
+  min-height: 36px;
+  padding: 0 12px;
+}
+
+.danger-button {
+  border-color: rgba(153, 27, 27, 0.34);
+  background: #991b1b;
+  color: #fff;
+}
+
+.danger-button:hover:not(:disabled),
+.danger-button:focus-visible:not(:disabled) {
+  background: #7f1d1d;
+}
+
 .shot {
   display: grid;
   grid-template-rows: 170px 104px minmax(0, 144px);
@@ -818,6 +866,11 @@ select:focus {
   border-radius: 8px;
   background: #fff;
   box-shadow: 0 10px 28px rgba(23, 33, 28, 0.1);
+}
+
+.shot.is-selected {
+  border-color: rgba(15, 118, 110, 0.72);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14), 0 10px 28px rgba(23, 33, 28, 0.1);
 }
 
 .shot-hero {
@@ -839,6 +892,42 @@ select:focus {
   display: block;
   object-fit: cover;
   object-position: top;
+}
+
+.shot-select-control {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.86);
+  border-radius: 999px;
+  background: rgba(16, 34, 53, 0.76);
+  color: #fff;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1;
+  padding: 7px 9px;
+  box-shadow: 0 10px 24px rgba(20, 31, 27, 0.22);
+}
+
+.shot-select-control input {
+  width: 14px;
+  min-height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.shot-select-control.is-selected {
+  background: rgba(15, 118, 110, 0.92);
+}
+
+.shot-select-control.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.68;
 }
 
 .shot-delete-button {
@@ -1596,6 +1685,19 @@ select:focus {
 
   .timeline-filters {
     grid-template-columns: 1fr;
+  }
+
+  .bulk-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .bulk-action-buttons {
+    justify-content: stretch;
+  }
+
+  .bulk-action-buttons button {
+    flex: 1 1 130px;
   }
 
   .status-grid,

@@ -17,6 +17,13 @@ export class SnapshotAdminError extends Error {
 }
 
 export async function deleteSnapshotAction(options = {}) {
+  return deleteSnapshotsAction({
+    ...options,
+    snapshotIds: [options.snapshotId]
+  });
+}
+
+export async function deleteSnapshotsAction(options = {}) {
   if (options.canDeleteSnapshots === false) {
     return {
       status: 403,
@@ -32,12 +39,13 @@ export async function deleteSnapshotAction(options = {}) {
   }
 
   try {
-    const result = await deleteSnapshotArchive(options.snapshotId, options);
+    const result = await deleteSnapshotsArchive(options.snapshotIds, options);
     return {
       status: 200,
       payload: {
         ok: true,
         deletedSnapshotId: result.deletedSnapshotId,
+        deletedSnapshotIds: result.deletedSnapshotIds,
         removedFiles: result.removedFiles,
         changeRefresh: result.changeRefresh,
         state: options.buildState ? await options.buildState() : null
@@ -60,8 +68,12 @@ export async function deleteSnapshotAction(options = {}) {
 }
 
 export async function deleteSnapshotArchive(snapshotId, options = {}) {
-  const cleanSnapshotId = String(snapshotId || "").trim();
-  if (!cleanSnapshotId) {
+  return deleteSnapshotsArchive([snapshotId], options);
+}
+
+export async function deleteSnapshotsArchive(snapshotIds, options = {}) {
+  const cleanSnapshotIds = cleanSnapshotIdList(snapshotIds);
+  if (cleanSnapshotIds.length === 0) {
     throw new SnapshotAdminError("SNAPSHOT_ID_REQUIRED", "Snapshot id is required.");
   }
 
@@ -69,12 +81,15 @@ export async function deleteSnapshotArchive(snapshotId, options = {}) {
   const snapshotsFilePath = options.snapshotsFilePath || snapshotsPath;
   const changesFilePath = options.changesFilePath || changesPath;
   const snapshots = await readSnapshots(snapshotsFilePath);
-  const snapshot = snapshots.find((item) => item.id === cleanSnapshotId);
-  if (!snapshot) {
-    throw new SnapshotAdminError("SNAPSHOT_NOT_FOUND", `Snapshot not found: ${cleanSnapshotId}`);
+  const snapshotsById = new Map(snapshots.map((snapshot) => [String(snapshot?.id || "").trim(), snapshot]));
+  const missingSnapshotIds = cleanSnapshotIds.filter((snapshotId) => !snapshotsById.has(snapshotId));
+  if (missingSnapshotIds.length > 0) {
+    throw new SnapshotAdminError("SNAPSHOT_NOT_FOUND", `Snapshot not found: ${missingSnapshotIds.join(", ")}`);
   }
 
-  const remainingSnapshots = snapshots.filter((item) => item.id !== cleanSnapshotId);
+  const deleteSet = new Set(cleanSnapshotIds);
+  const deletedSnapshots = cleanSnapshotIds.map((snapshotId) => snapshotsById.get(snapshotId)).filter(Boolean);
+  const remainingSnapshots = snapshots.filter((item) => !deleteSet.has(String(item?.id || "").trim()));
   await saveSnapshots(remainingSnapshots, snapshotsFilePath);
 
   let changes;
@@ -90,11 +105,12 @@ export async function deleteSnapshotArchive(snapshotId, options = {}) {
     throw error;
   }
 
-  const removedFiles = await removeSnapshotFiles(snapshot, archiveRoot);
+  const removedFiles = await removeSnapshotsFiles(deletedSnapshots, archiveRoot);
   const removedDiffFiles = await cleanupUnusedDiffFiles(changes, archiveRoot);
 
   return {
-    deletedSnapshotId: cleanSnapshotId,
+    deletedSnapshotId: cleanSnapshotIds[0],
+    deletedSnapshotIds: cleanSnapshotIds,
     removedFiles: [...removedFiles, ...removedDiffFiles],
     changeRefresh: {
       ok: true,
@@ -103,14 +119,21 @@ export async function deleteSnapshotArchive(snapshotId, options = {}) {
   };
 }
 
-async function removeSnapshotFiles(snapshot, archiveRoot) {
+async function removeSnapshotsFiles(snapshots, archiveRoot) {
   const files = uniqueFileList([
-    snapshot?.file,
-    snapshot?.homeOverview?.file,
-    ...(snapshot?.relatedShots || []).map((shot) => shot?.file),
-    ...snapshotRelatedSourceFiles(snapshot)
+    ...(snapshots || []).flatMap((snapshot) => [
+      snapshot?.file,
+      snapshot?.homeOverview?.file,
+      ...(snapshot?.relatedShots || []).map((shot) => shot?.file),
+      ...snapshotRelatedSourceFiles(snapshot)
+    ])
   ]);
   return removeArchiveFiles(files, archiveRoot);
+}
+
+function cleanSnapshotIdList(snapshotIds) {
+  const values = Array.isArray(snapshotIds) ? snapshotIds : [snapshotIds];
+  return [...new Set(values.map((snapshotId) => String(snapshotId || "").trim()).filter(Boolean))];
 }
 
 function snapshotRelatedSourceFiles(snapshot) {

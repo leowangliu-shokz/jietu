@@ -7,7 +7,7 @@ import { loadChanges } from "./changes.js";
 import { archiveDir, publicDir } from "./paths.js";
 import { safeJoin } from "./path-safety.js";
 import { annotateChangesForResponse, buildStatePayload } from "./server-state.js";
-import { deleteSnapshotAction, viewerModeErrorMessage } from "./snapshot-admin.js";
+import { deleteSnapshotAction, deleteSnapshotsAction, viewerModeErrorMessage } from "./snapshot-admin.js";
 import { ensureStorage, loadConfig, loadSnapshots, saveConfig } from "./store.js";
 
 const host = "127.0.0.1";
@@ -82,6 +82,17 @@ const server = http.createServer(async (request, response) => {
       });
       scheduleNext();
       return sendJson(response, await buildState());
+    }
+
+    if (request.method === "POST" && pathname === "/api/snapshots/delete") {
+      const body = await readJsonBody(request);
+      const result = await deleteSnapshotsAction({
+        canDeleteSnapshots: snapshotDeleteEnabled,
+        captureRunning: captureState.running,
+        snapshotIds: Array.isArray(body?.snapshotIds) ? body.snapshotIds : [],
+        buildState
+      });
+      return sendJson(response, result.payload, result.status);
     }
 
     if (request.method === "DELETE" && pathname.startsWith("/api/snapshots/")) {

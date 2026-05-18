@@ -131,6 +131,14 @@
                 </select>
               </div>
             </div>
+            <div id="bulkActions" class="bulk-actions" hidden>
+              <p id="bulkSelectionCount" class="bulk-selection-count">已选择 0 张</p>
+              <div class="bulk-action-buttons">
+                <button id="bulkSelectVisible" type="button">选择当前结果</button>
+                <button id="bulkClearSelection" type="button">清空选择</button>
+                <button id="bulkDeleteSelected" class="danger-button" type="button">删除所选</button>
+              </div>
+            </div>
             <p id="archiveStatus" class="timeline-status" hidden aria-live="polite"></p>
             <div id="gallery" class="gallery"></div>
             <p id="empty" class="empty">还没有归档截图。</p>

@@ -28,6 +28,11 @@ const elements = {
   changesDateEndFilter: document.querySelector("#changesDateEndFilter"),
   changesDateClearFilter: document.querySelector("#changesDateClearFilter"),
   changesUrlFilter: document.querySelector("#changesUrlFilter"),
+  bulkActions: document.querySelector("#bulkActions"),
+  bulkSelectionCount: document.querySelector("#bulkSelectionCount"),
+  bulkSelectVisible: document.querySelector("#bulkSelectVisible"),
+  bulkClearSelection: document.querySelector("#bulkClearSelection"),
+  bulkDeleteSelected: document.querySelector("#bulkDeleteSelected"),
   archiveStatus: document.querySelector("#archiveStatus"),
   gallery: document.querySelector("#gallery"),
   empty: document.querySelector("#empty"),
@@ -116,7 +121,10 @@ const activeTabByPlatform = {
 };
 const archiveFiltersByPlatform = createPlatformFilterMap();
 const changesFiltersByPlatform = createPlatformFilterMap();
+const selectedSnapshotIds = new Set();
 const pendingSnapshotDeletes = new Set();
+let visibleGallerySnapshotIds = new Set();
+let pendingBulkSnapshotDelete = false;
 let archiveStatusState = {
   tone: "info",
   message: ""
@@ -168,7 +176,11 @@ elements.changesDeviceFilterMenu.addEventListener("change", handleChangesDeviceF
 elements.changesDeviceFilterMenu.addEventListener("click", handleChangesDeviceFilterClick);
 elements.changesPrevPage.addEventListener("click", () => changeChangesPage(-1));
 elements.changesNextPage.addEventListener("click", () => changeChangesPage(1));
+elements.bulkSelectVisible.addEventListener("click", handleBulkSelectVisibleClick);
+elements.bulkClearSelection.addEventListener("click", handleBulkClearSelectionClick);
+elements.bulkDeleteSelected.addEventListener("click", () => void handleBulkDeleteSelectedClick());
 elements.gallery.addEventListener("click", handleGalleryClick);
+elements.gallery.addEventListener("change", handleGalleryChange);
 elements.changesList.addEventListener("click", handleImagePreviewClick);
 elements.imagePreview.addEventListener("click", handleImagePreviewBackdropClick);
 elements.imagePreviewMainFrame.addEventListener("click", handleImagePreviewFrameClick);
@@ -1985,6 +1997,11 @@ function handleDeviceFilterChangeFor(event, { selectedFilters, devices, renderOp
 }
 
 function handleGalleryClick(event) {
+  const selectionControl = event.target.closest("[data-action='select-snapshot']");
+  if (selectionControl && elements.gallery.contains(selectionControl)) {
+    return;
+  }
+
   const deleteButton = event.target.closest("[data-action='delete-snapshot']");
   if (deleteButton && elements.gallery.contains(deleteButton)) {
     event.preventDefault();
@@ -2007,6 +2024,106 @@ function handleGalleryClick(event) {
     warnings: parseWarningPayload(warning.dataset.warningItems),
     trigger: warning
   });
+}
+
+function handleGalleryChange(event) {
+  const input = event.target.closest("[data-action='select-snapshot']");
+  if (!(input instanceof HTMLInputElement) || !elements.gallery.contains(input)) {
+    return;
+  }
+
+  const snapshotId = String(input.dataset.snapshotId || "").trim();
+  if (!snapshotId) {
+    return;
+  }
+
+  if (input.checked) {
+    selectedSnapshotIds.add(snapshotId);
+  } else {
+    selectedSnapshotIds.delete(snapshotId);
+  }
+
+  input.closest(".shot")?.classList.toggle("is-selected", input.checked);
+  renderBulkDeleteControls();
+}
+
+function handleBulkSelectVisibleClick() {
+  for (const snapshotId of visibleGallerySnapshotIds) {
+    selectedSnapshotIds.add(snapshotId);
+  }
+  renderGallery({ preserveScroll: true });
+}
+
+function handleBulkClearSelectionClick() {
+  selectedSnapshotIds.clear();
+  renderGallery({ preserveScroll: true });
+}
+
+async function handleBulkDeleteSelectedClick() {
+  if (pendingBulkSnapshotDelete || state?.capture?.running) {
+    return;
+  }
+
+  const snapshotIds = selectedVisibleSnapshotIds();
+  if (snapshotIds.length === 0) {
+    setArchiveStatus("请先选择要删除的截图。", "error");
+    return;
+  }
+
+  const snapshotsById = new Map((state?.snapshots || []).map((snapshot) => [String(snapshot?.id || ""), snapshot]));
+  const previewLines = snapshotIds.slice(0, 6).map((snapshotId) => {
+    const snapshot = snapshotsById.get(snapshotId);
+    return snapshot
+      ? `- ${canonicalDisplayUrlForSnapshot(snapshot)} / ${deviceNameForSnapshot(snapshot)} / ${formatDate(snapshot.capturedAt)}`
+      : `- ${snapshotId}`;
+  });
+  if (snapshotIds.length > previewLines.length) {
+    previewLines.push(`- 另外 ${snapshotIds.length - previewLines.length} 张`);
+  }
+
+  if (!window.confirm([
+    `删除选中的 ${snapshotIds.length} 张截图？`,
+    "",
+    ...previewLines,
+    "",
+    "这会删除主图、相关小图，并只重算一次变更汇总。"
+  ].join("\n"))) {
+    return;
+  }
+
+  pendingBulkSnapshotDelete = true;
+  for (const snapshotId of snapshotIds) {
+    pendingSnapshotDeletes.add(snapshotId);
+  }
+  setArchiveStatus(`正在批量删除 ${snapshotIds.length} 张截图...`);
+  renderGallery({ preserveScroll: true });
+
+  try {
+    const response = await fetch("/api/snapshots/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ snapshotIds })
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `批量删除失败（HTTP ${response.status}）`);
+    }
+
+    selectedSnapshotIds.clear();
+    const deletedCount = Array.isArray(payload.deletedSnapshotIds)
+      ? payload.deletedSnapshotIds.length
+      : snapshotIds.length;
+    setArchiveStatus(`已批量删除 ${deletedCount} 张截图。`, "success");
+    await refreshState({ preserveScroll: true });
+  } catch (error) {
+    setArchiveStatus(error?.message || "批量删除失败，请稍后重试。", "error");
+  } finally {
+    pendingBulkSnapshotDelete = false;
+    for (const snapshotId of snapshotIds) {
+      pendingSnapshotDeletes.delete(snapshotId);
+    }
+    renderGallery({ preserveScroll: true });
+  }
 }
 
 async function handleSnapshotDeleteClick(button) {
@@ -2456,6 +2573,8 @@ function renderGallery(options = {}) {
     return matchesUrl && matchesTime && matchesDevice;
   });
   const cards = buildGalleryCards(snapshots);
+  visibleGallerySnapshotIds = new Set(cards.map((card) => String(card.snapshot?.id || "").trim()).filter(Boolean));
+  pruneSelectedSnapshotIds();
 
   elements.gallery.innerHTML = "";
   elements.empty.classList.toggle("visible", cards.length === 0);
@@ -2464,7 +2583,40 @@ function renderGallery(options = {}) {
     elements.gallery.append(renderShotCard(card));
   }
 
+  renderBulkDeleteControls(cards.length);
   restoreGalleryScrollState(scrollState);
+}
+
+function pruneSelectedSnapshotIds() {
+  for (const snapshotId of selectedSnapshotIds) {
+    if (!visibleGallerySnapshotIds.has(snapshotId)) {
+      selectedSnapshotIds.delete(snapshotId);
+    }
+  }
+}
+
+function selectedVisibleSnapshotIds() {
+  return [...selectedSnapshotIds].filter((snapshotId) => visibleGallerySnapshotIds.has(snapshotId));
+}
+
+function renderBulkDeleteControls(visibleCount = visibleGallerySnapshotIds.size) {
+  if (!elements.bulkActions) {
+    return;
+  }
+
+  const canDelete = Boolean(state?.permissions?.canDeleteSnapshots);
+  const selectedCount = selectedVisibleSnapshotIds().length;
+  const captureRunning = Boolean(state?.capture?.running);
+  elements.bulkActions.hidden = !canDelete || visibleCount === 0;
+  elements.bulkActions.classList.toggle("has-selection", selectedCount > 0);
+  elements.bulkActions.classList.toggle("is-pending", pendingBulkSnapshotDelete);
+  elements.bulkSelectionCount.textContent = `已选择 ${selectedCount} / 当前 ${visibleCount} 张`;
+  elements.bulkSelectVisible.disabled = !canDelete || captureRunning || pendingBulkSnapshotDelete || visibleCount === 0;
+  elements.bulkClearSelection.disabled = selectedCount === 0 || pendingBulkSnapshotDelete;
+  elements.bulkDeleteSelected.disabled = !canDelete || captureRunning || pendingBulkSnapshotDelete || selectedCount === 0;
+  elements.bulkDeleteSelected.textContent = pendingBulkSnapshotDelete
+    ? "删除中..."
+    : `删除所选${selectedCount ? ` ${selectedCount}` : ""}`;
 }
 
 function captureGalleryScrollState() {
@@ -2736,6 +2888,7 @@ function renderShotCard(card) {
       <a class="shot-main-image" href="${escapeHtml(mainPreviewUrl)}" target="_blank" rel="noreferrer" data-snapshot-id="${escapeHtml(snapshot.id || "")}" data-snapshot-file="${escapeHtml(snapshot.file || "")}" ${mainPreviewAttrs}>
         <img src="${snapshot.imageUrl}" alt="${escapeHtml(displayUrl)} ${formatDate(snapshot.capturedAt)}" loading="lazy">
       </a>
+      ${renderSnapshotSelectionControl(snapshot)}
       ${renderSnapshotDeleteButton(snapshot)}
     </div>
     <div class="shot-info">
@@ -2753,6 +2906,29 @@ function renderShotCard(card) {
   return item;
 }
 
+function renderSnapshotSelectionControl(snapshot) {
+  if (!state?.permissions?.canDeleteSnapshots) {
+    return "";
+  }
+
+  const snapshotId = String(snapshot?.id || "").trim();
+  const selected = selectedSnapshotIds.has(snapshotId);
+  const disabled = pendingSnapshotDeletes.has(snapshotId) || Boolean(state?.capture?.running) || pendingBulkSnapshotDelete;
+
+  return `
+    <label class="shot-select-control${selected ? " is-selected" : ""}${disabled ? " is-disabled" : ""}" title="选择这张截图用于批量删除">
+      <input
+        type="checkbox"
+        data-action="select-snapshot"
+        data-snapshot-id="${escapeHtml(snapshotId)}"
+        ${selected ? "checked" : ""}
+        ${disabled ? "disabled" : ""}
+      >
+      <span>选择</span>
+    </label>
+  `;
+}
+
 function renderSnapshotDeleteButton(snapshot) {
   if (!state?.permissions?.canDeleteSnapshots) {
     return "";
@@ -2761,7 +2937,7 @@ function renderSnapshotDeleteButton(snapshot) {
   const snapshotId = String(snapshot?.id || "").trim();
   const pending = pendingSnapshotDeletes.has(snapshotId);
   const captureRunning = Boolean(state?.capture?.running);
-  const disabled = pending || captureRunning;
+  const disabled = pending || captureRunning || pendingBulkSnapshotDelete;
   const label = pending ? "删除中..." : "删除本次截图";
   const title = captureRunning
     ? "截图运行中，暂时不能删除。"

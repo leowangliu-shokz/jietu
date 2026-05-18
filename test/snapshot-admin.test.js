@@ -8,6 +8,8 @@ import { encodePng } from "../src/png.js";
 import {
   deleteSnapshotAction,
   deleteSnapshotArchive,
+  deleteSnapshotsAction,
+  deleteSnapshotsArchive,
   snapshotDeleteDisabledMessage
 } from "../src/snapshot-admin.js";
 import { readSnapshots } from "../src/store.js";
@@ -41,6 +43,37 @@ test("deleteSnapshotArchive removes the snapshot record and its image files", as
   assert.deepEqual(await loadChanges(fixture.changesFilePath), []);
   assert.ok(result.removedFiles.some((item) => item.file === primaryFile && item.status === "deleted"));
   assert.ok(result.removedFiles.some((item) => item.file === relatedFile && item.status === "deleted"));
+});
+
+test("deleteSnapshotsArchive removes multiple snapshot records and image files in one pass", async () => {
+  const fixture = await createFixture();
+  const firstFile = "2026-05-12/example-com/snap-1.png";
+  const secondFile = "2026-05-12/example-com/snap-2.png";
+  const survivorFile = "2026-05-12/example-com/snap-3.png";
+
+  await writeArchiveImage(fixture.archiveRoot, firstFile, solidImage(12, 12, [255, 255, 255, 255]));
+  await writeArchiveImage(fixture.archiveRoot, secondFile, solidImage(12, 12, [0, 0, 0, 255]));
+  await writeArchiveImage(fixture.archiveRoot, survivorFile, solidImage(12, 12, [120, 120, 120, 255]));
+  await writeSnapshots(fixture.snapshotsFilePath, [
+    snapshot("snap-3", "2026-05-12T09:10:00.000Z", survivorFile),
+    snapshot("snap-2", "2026-05-12T09:05:00.000Z", secondFile),
+    snapshot("snap-1", "2026-05-12T09:00:00.000Z", firstFile)
+  ]);
+
+  const result = await deleteSnapshotsArchive(["snap-1", "snap-2", "snap-1"], {
+    archiveRoot: fixture.archiveRoot,
+    snapshotsFilePath: fixture.snapshotsFilePath,
+    changesFilePath: fixture.changesFilePath
+  });
+
+  const savedSnapshots = await readSnapshots(fixture.snapshotsFilePath);
+  assert.deepEqual(savedSnapshots.map((item) => item.id), ["snap-3"]);
+  assert.deepEqual(result.deletedSnapshotIds, ["snap-1", "snap-2"]);
+  assert.equal(await exists(path.join(fixture.archiveRoot, firstFile)), false);
+  assert.equal(await exists(path.join(fixture.archiveRoot, secondFile)), false);
+  assert.equal(await exists(path.join(fixture.archiveRoot, survivorFile)), true);
+  assert.equal(result.changeRefresh.count, 0);
+  assert.deepEqual(await loadChanges(fixture.changesFilePath), []);
 });
 
 test("deleteSnapshotArchive skips invalid archive paths without deleting outside files", async () => {
@@ -161,6 +194,30 @@ test("deleteSnapshotAction returns 404 when the snapshot id does not exist", asy
   assert.equal(result.status, 404);
   assert.equal(result.payload.ok, false);
   assert.match(result.payload.error, /missing-snapshot/);
+});
+
+test("deleteSnapshotsAction returns deleted ids and refreshed state for a batch", async () => {
+  const fixture = await createFixture();
+  await writeSnapshots(fixture.snapshotsFilePath, [
+    snapshot("snap-2", "2026-05-12T09:05:00.000Z", "missing-2.png"),
+    snapshot("snap-1", "2026-05-12T09:00:00.000Z", "missing-1.png")
+  ]);
+
+  const result = await deleteSnapshotsAction({
+    canDeleteSnapshots: true,
+    captureRunning: false,
+    snapshotIds: ["snap-1", "snap-2"],
+    archiveRoot: fixture.archiveRoot,
+    snapshotsFilePath: fixture.snapshotsFilePath,
+    changesFilePath: fixture.changesFilePath,
+    buildState: async () => ({ ok: true })
+  });
+
+  assert.equal(result.status, 200);
+  assert.equal(result.payload.ok, true);
+  assert.deepEqual(result.payload.deletedSnapshotIds, ["snap-1", "snap-2"]);
+  assert.deepEqual(result.payload.state, { ok: true });
+  assert.deepEqual(await readSnapshots(fixture.snapshotsFilePath), []);
 });
 
 async function createFixture() {
