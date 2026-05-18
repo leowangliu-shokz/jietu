@@ -5956,6 +5956,10 @@ function isAcceptableCollectionProductVariantBlankAudit(blankAudit, state) {
 }
 
 async function captureShokzComparisonRelatedSection(client, outputPath, captureContext, definition) {
+  if (definition?.mode === "product-map" || definition?.key === "comparison-products") {
+    return captureShokzComparisonProductMapSection(client, outputPath, captureContext, definition);
+  }
+
   const viewport = viewportForCaptureContext(captureContext);
   const positioned = await positionShokzComparisonQuickLookSection(client);
   if (!positioned.ok) {
@@ -6170,6 +6174,1164 @@ async function captureShokzComparisonRelatedSection(client, outputPath, captureC
     expectedCount: targetStates.length,
     capturedCount: captures.length
   };
+}
+
+async function captureShokzComparisonProductMapSection(client, outputPath, captureContext, definition) {
+  const viewport = viewportForCaptureContext(captureContext);
+  const positioned = await positionShokzComparisonProductsSection(client);
+  if (!positioned.ok) {
+    return {
+      width: Number(viewport.width || 0) || 393,
+      height: Number(viewport.height || 0) || 852,
+      captures: [],
+      warnings: [{
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        message: positioned.reason || `Could not position ${definition.sectionLabel}.`
+      }],
+      expectedCount: 0,
+      capturedCount: 0
+    };
+  }
+
+  await sleep(550);
+  await primeLazyImages(client);
+  const plan = await readShokzComparisonProductMapPlan(client, definition, captureContext);
+  const warnings = Array.isArray(plan.warnings) ? [...plan.warnings] : [];
+  if (!plan.ok || !Array.isArray(plan.products) || !plan.products.length) {
+    return {
+      width: Number(viewport.width || 0) || 393,
+      height: Number(viewport.height || 0) || 852,
+      captures: [],
+      warnings: [{
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        message: plan.reason || `Could not read ${definition.sectionLabel} products.`
+      }, ...warnings],
+      expectedCount: 0,
+      capturedCount: 0
+    };
+  }
+
+  const targetFilter = captureContext.relatedStateFilter || null;
+  if (targetFilter && !comparisonProductMapMatchesFilter(outputPath, definition, plan, targetFilter)) {
+    throw new Error(`Could not match the requested ${definition.sectionLabel} product map.`);
+  }
+
+  const activeProductForTrack = (trackIndex, fallback, preferredKey = "") => {
+    const normalizedPreferredKey = String(preferredKey || "").trim().toLowerCase();
+    const preferred = plan.products.find((product) => normalizedPreferredKey && product.productKey === normalizedPreferredKey);
+    if (preferred) {
+      return preferred;
+    }
+    const active = Array.isArray(plan.activeProducts)
+      ? plan.activeProducts.find((item) => Number(item?.trackIndex || 0) === trackIndex)
+      : null;
+    const activeKey = String(active?.productKey || "").trim().toLowerCase();
+    const activeLabel = String(active?.productLabel || "").trim();
+    return plan.products.find((product) => activeKey && product.productKey === activeKey) ||
+      (activeKey || activeLabel ? {
+        sectionKey: definition.key,
+        productKey: activeKey,
+        productLabel: activeLabel || activeKey,
+        productIndex: trackIndex,
+        stateIndex: trackIndex,
+        stateLabel: activeLabel || activeKey,
+        fileId: activeKey || activeLabel,
+        logicalSignature: [definition.key, activeKey || activeLabel].join("|")
+      } : null) ||
+      fallback;
+  };
+  const primaryProduct = activeProductForTrack(1, plan.products[0], "openrunpro2");
+  const secondaryProduct = activeProductForTrack(2, plan.products[1] || plan.products[0], "opendots-one");
+  await activateShokzComparisonProductSelection(client, { ...primaryProduct, trackIndex: 1 });
+  if (secondaryProduct) {
+    await activateShokzComparisonProductSelection(client, { ...secondaryProduct, trackIndex: 2 });
+  }
+  await waitForShokzComparisonProductSelection(client, { ...primaryProduct, trackIndex: 1 });
+  if (secondaryProduct) {
+    await waitForShokzComparisonProductSelection(client, { ...secondaryProduct, trackIndex: 2 });
+  }
+
+  let longCapture = null;
+  try {
+    longCapture = await captureShokzComparisonProductsLongScreenshot(client, definition, {
+      primaryProduct,
+      secondaryProduct
+    }, captureContext);
+  } catch (error) {
+    return {
+      width: Number(viewport.width || 0) || 393,
+      height: Number(viewport.height || 0) || 852,
+      captures: [],
+      warnings: [{
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        message: error.message
+      }, ...warnings],
+      expectedCount: 1,
+      capturedCount: 0
+    };
+  }
+
+  const variantCaptures = [];
+  let stateIndex = 0;
+  for (const product of plan.products) {
+    const activation = await activateShokzComparisonProductSelection(client, { ...product, trackIndex: 1 });
+    if (!activation.ok) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: product.productLabel || product.stateLabel,
+        message: activation.reason || `Could not select ${product.productLabel || "product"}.`
+      });
+      continue;
+    }
+    const ready = await waitForShokzComparisonProductSelection(client, { ...product, trackIndex: 1 });
+    if (!ready.ok) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: product.productLabel || product.stateLabel,
+        message: ready.reason || `Could not confirm ${product.productLabel || "product"} selection.`
+      });
+      continue;
+    }
+
+    await sleep(280);
+    await primeLazyImages(client);
+    const variantPlan = await readShokzComparisonProductVariantPlan(client, definition, {
+      ...product,
+      trackIndex: 1
+    });
+    if (!variantPlan.ok || !Array.isArray(variantPlan.states) || !variantPlan.states.length) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: product.productLabel || product.stateLabel,
+        message: variantPlan.reason || `Could not read color states for ${product.productLabel || "product"}.`
+      });
+      continue;
+    }
+
+    for (const state of variantPlan.states) {
+      stateIndex += 1;
+      const variantCapture = await captureShokzComparisonProductVariantCard(client, definition, {
+        ...state,
+        stateIndex
+      }, viewport);
+      if (!variantCapture.ok) {
+        warnings.push({
+          sectionKey: definition.key,
+          sectionLabel: definition.sectionLabel,
+          stateLabel: state.stateLabel,
+          message: variantCapture.reason || `Could not capture ${state.stateLabel}.`
+        });
+        continue;
+      }
+      variantCaptures.push(variantCapture);
+    }
+  }
+
+  const composite = composeShokzCollectionTabComposite({
+    longCapture,
+    variantCaptures,
+    viewport
+  });
+  const relatedOutput = captureContext.relatedStateOutputPath
+    ? captureContext.relatedStateOutputPath
+    : relatedOutputPath(outputPath, definition.key, "product-map");
+  await fs.writeFile(relatedOutput, composite.buffer);
+
+  const visualSignature = hashBuffer(composite.buffer);
+  const visualHash = visualHashForBuffer(composite.buffer);
+  const visualAudit = visualAuditForBuffer(composite.buffer, visualHash);
+  const variantItems = variantCaptures.map((item) => ({
+    key: item.state.variantKey || item.state.stateLabel,
+    label: item.state.variantLabel || item.state.stateLabel,
+    text: item.current.text || item.state.stateLabel || "",
+    productKey: item.state.productKey || null,
+    productLabel: item.state.productLabel || null,
+    productIndex: item.state.productIndex || null,
+    variantKey: item.state.variantKey || null,
+    variantLabel: item.state.variantLabel || null,
+    variantOptions: item.state.variantOptions || [],
+    rect: item.compositeRect || null,
+    sourceClip: item.clip || null
+  }));
+  const visibleProducts = collectionProductsFromVariantCaptures(variantCaptures, {
+    visibleProducts: plan.products
+  });
+  const stateLabel = "Compare Products Product Map";
+  const capture = {
+    outputPath: relatedOutput,
+    width: composite.width,
+    height: composite.height,
+    kind: "collection-tab-composite",
+    sectionKey: definition.key,
+    sectionLabel: definition.sectionLabel,
+    sectionTitle: definition.title,
+    stateIndex: 1,
+    stateCount: 1,
+    stateLabel,
+    label: stateLabel,
+    tabLabel: definition.title,
+    tabIndex: 1,
+    pageIndex: null,
+    interactionState: "default",
+    categoryKey: "comparison-products",
+    categoryLabel: "Compare Products",
+    productKey: null,
+    productLabel: null,
+    productIndex: null,
+    variantKey: null,
+    variantLabel: `${variantCaptures.length} product card states`,
+    variantOptions: null,
+    logicalSignature: [definition.key, "product-map"].join("|"),
+    visualSignature,
+    visualHash,
+    visualAudit,
+    captureValidation: {
+      ok: true,
+      label: `${definition.key} product map`,
+      attempts: [
+        longCapture.captureValidation,
+        ...variantCaptures.map((item) => item.captureValidation)
+      ].filter(Boolean)
+    },
+    clip: {
+      x: 0,
+      y: 0,
+      width: composite.width,
+      height: composite.height
+    },
+    scrollInfo: {
+      height: composite.height,
+      viewportWidth: Number(viewport.width || 0) || 393,
+      viewportHeight: Number(viewport.height || 0) || 852,
+      reachableHeight: Number(longCapture.scrollInfo?.reachableHeight || 0) || longCapture.height,
+      scrolls: Number(longCapture.scrollInfo?.scrolls || 0) || null
+    },
+    composite: composite.layout,
+    isDefaultState: true,
+    coverageKey: relatedCoverageKeyForState({
+      sectionKey: definition.key,
+      fileId: "product-map",
+      stateLabel
+    }),
+    productCount: Number(plan.productCount || visibleProducts.length || 0) || null,
+    visibleProductCount: visibleProducts.length || null,
+    visibleProducts,
+    itemCount: variantCaptures.length,
+    visibleItemCount: variantCaptures.length,
+    visibleItems: variantItems,
+    itemRects: variantItems.map((item) => ({
+      key: item.key,
+      label: item.label,
+      rect: item.rect
+    })),
+    windowSignature: JSON.stringify({
+      products: visibleProducts.map((item) => item.key || item.label),
+      variants: variantItems.map((item) => item.key || item.label)
+    }).slice(0, 1800),
+    sectionState: {
+      text: [
+        longCapture.current?.text || "",
+        ...variantCaptures.map((item) => item.current?.text || item.state?.stateLabel || "")
+      ].filter(Boolean).join(" ").slice(0, 3200),
+      textBlocks: longCapture.current?.textBlocks || [],
+      images: longCapture.current?.images || [],
+      activeIndex: 1,
+      tabLabel: definition.title,
+      tabIndex: 1,
+      interactionState: "default",
+      categoryKey: "comparison-products",
+      categoryLabel: "Compare Products",
+      productCount: Number(plan.productCount || visibleProducts.length || 0) || null,
+      visibleProductCount: visibleProducts.length || null,
+      visibleProducts,
+      visibleItemCount: variantCaptures.length,
+      visibleItems: variantItems,
+      itemRects: variantItems.map((item) => ({
+        key: item.key,
+        label: item.label,
+        rect: item.rect
+      })),
+      windowSignature: JSON.stringify({
+        variants: variantItems.map((item) => item.key || item.label)
+      }).slice(0, 1800),
+      composite: composite.layout
+    }
+  };
+
+  return {
+    width: composite.width,
+    height: composite.height,
+    captures: [capture],
+    warnings: [
+      ...warnings,
+      ...relatedSectionCoverageWarnings(definition, [{
+        sectionKey: definition.key,
+        fileId: "product-map",
+        stateLabel
+      }], [capture])
+    ],
+    expectedCount: 1,
+    capturedCount: 1
+  };
+}
+
+function comparisonProductMapMatchesFilter(outputPath, definition, plan, filter) {
+  if (!filter) {
+    return true;
+  }
+  const expectedOutput = relatedOutputPath(outputPath, definition.key, "product-map");
+  if (outputMatchesFilter(expectedOutput, filter.sourceFile) ||
+    outputMatchesFilter(expectedOutput, filter.relatedShotFile)) {
+    return true;
+  }
+  const tileKey = String(filter.tileKey || "");
+  const values = [
+    definition.key,
+    "product-map",
+    filter.categoryKey,
+    filter.productKey,
+    filter.variantKey,
+    filter.tabLabel
+  ].map((value) => String(value || "").trim()).filter(Boolean);
+  if (values.some((value) => tileKey.includes(value))) {
+    return true;
+  }
+  return (plan.products || []).some((product) => {
+    const productValues = [
+      product.productKey,
+      product.productLabel,
+      product.fileId,
+      product.logicalSignature
+    ].map((value) => String(value || "").trim()).filter(Boolean);
+    return productValues.some((value) => tileKey.includes(value) || values.includes(value));
+  });
+}
+
+async function positionShokzComparisonProductsSection(client) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const wrapper = Array.from(document.querySelectorAll(".item.product-name"))
+        .filter((element) => visible(element))
+        .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0] || null;
+      const title = Array.from(document.querySelectorAll("h1, h2"))
+        .find((node) => /compare\\s+products?/i.test(clean(node.textContent))) || null;
+      const anchor = title || wrapper;
+      if (!anchor) {
+        return { ok: false, reason: "Could not locate Compare Products selectors." };
+      }
+      const rect = anchor.getBoundingClientRect();
+      const targetY = Math.max(0, Math.round(window.scrollY + rect.top - 96));
+      window.scrollTo(0, targetY);
+      return { ok: true, scrollY: targetY };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
+  if (result?.result?.value?.ok) {
+    await sleep(360);
+  }
+  return result?.result?.value || { ok: false, reason: "Could not position Compare Products selectors." };
+}
+
+async function readShokzComparisonProductMapPlan(client, definition, captureContext = {}) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const definition = ${JSON.stringify(definition || {})};
+      const clean = (value, max = 180) => String(value || "").replace(/\\s+/g, " ").trim().slice(0, max);
+      const keyPart = (value) => clean(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const directInners = (wrapper) => Array.from(wrapper?.children || [])
+        .filter((element) => element.classList?.contains("item-inner"))
+        .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+      const wrapper = Array.from(document.querySelectorAll(".item.product-name"))
+        .filter((element) => visible(element))
+        .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0] || null;
+      if (!wrapper) {
+        return { ok: false, reason: "Could not locate Compare Products selector row." };
+      }
+      const inners = directInners(wrapper);
+      const optionRoot = inners[0] || wrapper;
+      const products = [];
+      const seen = new Set();
+      for (const item of Array.from(optionRoot.querySelectorAll(".s-item[data-handle]"))) {
+        const handle = clean(item.getAttribute("data-handle"), 100).toLowerCase();
+        const label = clean(item.innerText || item.textContent, 100);
+        const key = handle || keyPart(label);
+        if (!key || !label || seen.has(key)) continue;
+        seen.add(key);
+        products.push({
+          sectionKey: definition.key,
+          productKey: key,
+          productLabel: label,
+          productIndex: products.length + 1,
+          stateIndex: products.length + 1,
+          stateLabel: label,
+          fileId: key,
+          logicalSignature: [definition.key, key].join("|")
+        });
+      }
+      const activeProducts = inners.slice(0, 2).map((inner, index) => {
+        const active = inner.querySelector(".content.active[data-handle]") || inner.querySelector(".swatch-active[data-handle]");
+        const handle = clean(active?.getAttribute("data-handle"), 100).toLowerCase();
+        const label = clean(active?.querySelector?.(".swatch-active")?.innerText || active?.innerText || active?.textContent, 100);
+        return { trackIndex: index + 1, productKey: handle, productLabel: label };
+      });
+      return {
+        ok: true,
+        products,
+        productCount: products.length,
+        activeProducts,
+        warnings: []
+      };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
+  return result?.result?.value || { ok: false, reason: `Could not read ${definition?.sectionLabel || "comparison products"} plan.` };
+}
+
+async function activateShokzComparisonProductSelection(client, state) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const state = ${JSON.stringify({
+        productKey: state?.productKey || "",
+        productLabel: state?.productLabel || "",
+        trackIndex: Number(state?.trackIndex || 1) || 1
+      })};
+      const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+      const keyPart = (value) => clean(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+      const targetKey = clean(state.productKey).toLowerCase();
+      const targetLabel = keyPart(state.productLabel);
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const wrapper = Array.from(document.querySelectorAll(".item.product-name"))
+        .filter((element) => visible(element))
+        .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0] || null;
+      const inners = Array.from(wrapper?.children || [])
+        .filter((element) => element.classList?.contains("item-inner"))
+        .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+      const inner = inners[Math.max(0, state.trackIndex - 1)] || inners[0] || null;
+      const item = Array.from(inner?.querySelectorAll(".s-item[data-handle]") || [])
+        .find((element) => {
+          const handle = clean(element.getAttribute("data-handle")).toLowerCase();
+          const label = keyPart(element.innerText || element.textContent);
+          return (targetKey && handle === targetKey) || (targetLabel && label === targetLabel);
+        }) || null;
+      const selectors = [
+        ".compare-col-" + state.trackIndex,
+        ".item-inner-" + state.trackIndex,
+        ".product-info-item-" + state.trackIndex,
+        ".col-content-item-" + state.trackIndex
+      ];
+      const columns = Array.from(new Set(Array.from(document.querySelectorAll(selectors.join(", ")))));
+      let updatedColumns = 0;
+      for (const column of columns) {
+        const contents = Array.from(column.children || [])
+          .filter((element) => element.classList?.contains("content") && element.hasAttribute("data-handle"));
+        if (!contents.length) continue;
+        const target = contents.find((element) => {
+          const handle = clean(element.getAttribute("data-handle")).toLowerCase();
+          const label = keyPart(element.querySelector(".swatch-active")?.innerText || element.innerText || element.textContent);
+          return (targetKey && handle === targetKey) || (targetLabel && label === targetLabel);
+        }) || null;
+        if (!target) continue;
+        for (const content of contents) {
+          content.classList.toggle("active", content === target);
+        }
+        for (const option of Array.from(target.querySelectorAll(".s-item[data-handle]"))) {
+          const handle = clean(option.getAttribute("data-handle")).toLowerCase();
+          const label = keyPart(option.innerText || option.textContent);
+          option.classList.toggle("active", (targetKey && handle === targetKey) || (targetLabel && label === targetLabel));
+        }
+        updatedColumns += 1;
+      }
+
+      if (!updatedColumns && item) {
+        item.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+      }
+      if (!updatedColumns && !item) {
+        return { ok: false, reason: "Could not find product option " + (state.productLabel || state.productKey || "") + "." };
+      }
+      return { ok: true, productKey: targetKey, trackIndex: state.trackIndex, updatedColumns };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
+  if (result?.result?.value?.ok) {
+    await sleep(420);
+  }
+  return result?.result?.value || { ok: false, reason: `Could not select ${state?.productLabel || state?.productKey || "comparison product"}.` };
+}
+
+async function waitForShokzComparisonProductSelection(client, state, options = {}) {
+  const timeoutMs = Math.max(400, Math.min(5000, Number(options.timeoutMs) || 3200));
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const result = await client.send("Runtime.evaluate", {
+      expression: `(() => {
+        const state = ${JSON.stringify({
+          productKey: state?.productKey || "",
+          productLabel: state?.productLabel || "",
+          trackIndex: Number(state?.trackIndex || 1) || 1
+        })};
+        const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+        const keyPart = (value) => clean(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+        const targetKey = clean(state.productKey).toLowerCase();
+        const targetLabel = keyPart(state.productLabel);
+        const activeChild = (element) => Array.from(element?.children || [])
+          .find((child) => child.classList?.contains("content") && child.classList.contains("active") && child.hasAttribute("data-handle")) || null;
+        const entryFor = (element, source) => {
+          const active = activeChild(element);
+          return {
+            source,
+            handle: clean(active?.getAttribute("data-handle")).toLowerCase(),
+            label: clean(active?.querySelector(".swatch-active")?.innerText || active?.innerText || active?.textContent)
+          };
+        };
+        const selectorEntries = Array.from(document.querySelectorAll(
+          ".item.product-name .item-inner-" + state.trackIndex + ", .item.product-name .compare-col-" + state.trackIndex
+        ))
+          .map((element) => entryFor(element, "selector"))
+          .filter((item) => item.handle);
+        const productCards = Array.from(document.querySelectorAll(
+          ".item.product-wrapper.product-info-item-" + state.trackIndex + ".compare-col-" + state.trackIndex +
+          ", .item.product-wrapper.compare-col-" + state.trackIndex
+        ))
+          .map((element) => entryFor(element, "card"))
+          .filter((item) => item.handle);
+        const matches = (item) => (targetKey && item.handle === targetKey) ||
+          (targetLabel && keyPart(item.label) === targetLabel);
+        const selectorOk = !selectorEntries.length || selectorEntries.some((item) => matches(item));
+        const cardOk = !productCards.length || productCards.some((card) =>
+          matches(card)
+        );
+        const activeHandle = selectorEntries.find((item) => item.handle)?.handle || productCards.find((item) => item.handle)?.handle || "";
+        const activeLabel = selectorEntries.find((item) => item.label)?.label || productCards.find((item) => item.label)?.label || "";
+        return {
+          ok: selectorOk && cardOk,
+          activeHandle,
+          activeLabel,
+          selectorHandles: selectorEntries.map((item) => item.handle),
+          cardHandles: productCards.map((card) => card.handle)
+        };
+      })()`,
+      returnByValue: true
+    }).catch(() => null);
+    const value = result?.result?.value || {};
+    if (value.ok) {
+      return { ok: true, activeHandle: value.activeHandle || "", activeLabel: value.activeLabel || "" };
+    }
+    await sleep(180);
+  }
+  return { ok: false, reason: `${state?.productLabel || state?.productKey || "Comparison product"} did not become active.` };
+}
+
+async function captureShokzComparisonProductsLongScreenshot(client, definition, selection, captureContext) {
+  const viewport = viewportForCaptureContext(captureContext);
+  const viewportWidth = Number(viewport.width || 0) || 393;
+  const viewportHeight = Number(viewport.height || 0) || 852;
+  let scrollInfo = null;
+  let current = null;
+  let clip = null;
+
+  const refresh = async () => {
+    if (selection?.primaryProduct) {
+      await activateShokzComparisonProductSelection(client, { ...selection.primaryProduct, trackIndex: 1 });
+      await waitForShokzComparisonProductSelection(client, { ...selection.primaryProduct, trackIndex: 1 });
+    }
+    if (selection?.secondaryProduct) {
+      await activateShokzComparisonProductSelection(client, { ...selection.secondaryProduct, trackIndex: 2 });
+      await waitForShokzComparisonProductSelection(client, { ...selection.secondaryProduct, trackIndex: 2 });
+    }
+    scrollInfo = await prepareFullPage(client, {
+      captureUrl: "https://shokz.com/pages/product-comparison",
+      captureMode: "shokz-comparison-page",
+      dismissPopups: true
+    });
+    await scrollTo(client, 0);
+    await settlePositionedViewport(client, { delayMs: 220, frames: 2 });
+    current = await readShokzComparisonProductsPageState(client, definition);
+    if (!current.ok) {
+      throw new Error(current.reason || `Could not read ${definition.sectionLabel || "Compare Products"} page state.`);
+    }
+    const metrics = await client.send("Page.getLayoutMetrics");
+    const contentSize = metrics.cssContentSize || metrics.contentSize || {};
+    const pageWidth = Math.max(viewportWidth, Math.ceil(Number(contentSize.width || viewportWidth)));
+    let pageHeight = Math.max(viewportHeight, Math.ceil(Number(contentSize.height || viewportHeight)));
+    if (Number.isFinite(Number(scrollInfo?.reachableHeight))) {
+      pageHeight = Math.min(pageHeight, Math.max(viewportHeight, Math.ceil(Number(scrollInfo.reachableHeight))));
+    }
+    clip = {
+      x: 0,
+      y: 0,
+      width: pageWidth,
+      height: Math.min(pageHeight, 16000),
+      scale: 1
+    };
+  };
+
+  await refresh();
+  const screenshotCapture = await captureScreenshotWithValidation(client, () => ({
+    format: "png",
+    fromSurface: true,
+    captureBeyondViewport: true,
+    clip
+  }), {
+    label: `${definition.key} full comparison product page`,
+    beforeAttempt: async () => {
+      await prepareForScreenshotCapture(client, {
+        rounds: 2,
+        shokzKnownPopups: true,
+        stage: `before Shokz ${definition.sectionLabel} full product map screenshot capture`
+      });
+      await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2 });
+      await dismissObstructions(client, { rounds: 3 });
+      await refresh();
+    }
+  });
+
+  return {
+    buffer: screenshotCapture.buffer,
+    width: Math.round(clip.width),
+    height: Math.round(clip.height),
+    clip: {
+      x: Math.round(clip.x),
+      y: Math.round(clip.y),
+      width: Math.round(clip.width),
+      height: Math.round(clip.height)
+    },
+    current,
+    scrollInfo,
+    captureValidation: screenshotCapture.captureValidation
+  };
+}
+
+async function readShokzComparisonProductsPageState(client, definition) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const definition = ${JSON.stringify({
+        key: definition?.key || "",
+        sectionLabel: definition?.sectionLabel || "",
+        title: definition?.title || ""
+      })};
+      const clean = (value, max = 300) => String(value || "").replace(/\\s+/g, " ").trim().slice(0, max);
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const rectInfo = (rect) => ({
+        x: Math.round(rect.left),
+        y: Math.round(rect.top),
+        top: rect.top,
+        left: rect.left,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height
+      });
+      const textBlocks = Array.from(document.querySelectorAll("h1, h2, h3, h4, p, a, button, span, strong, li"))
+        .filter((element) => visible(element))
+        .map((element) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            text: clean(element.innerText || element.textContent, 160),
+            x: Math.round(rect.left),
+            y: Math.round(rect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height)
+          };
+        })
+        .filter((block) => block.text)
+        .filter((block, index, list) =>
+          list.findIndex((candidate) =>
+            candidate.text === block.text &&
+            Math.abs(candidate.x - block.x) <= 2 &&
+            Math.abs(candidate.y - block.y) <= 2
+          ) === index
+        )
+        .slice(0, 100);
+      const images = Array.from(document.images || [])
+        .filter((image) => visible(image))
+        .map((image) => ({
+          src: image.currentSrc || image.src || image.getAttribute("data-src") || "",
+          alt: clean(image.alt, 160),
+          rect: rectInfo(image.getBoundingClientRect())
+        }))
+        .filter((image) => image.src)
+        .slice(0, 30);
+      const products = Array.from(document.querySelectorAll(".item.product-name .content.active[data-handle]"))
+        .map((node, index) => {
+          const handle = clean(node.getAttribute("data-handle"), 100).toLowerCase();
+          const label = clean(node.querySelector(".swatch-active")?.innerText || node.innerText || node.textContent, 100);
+          return {
+            key: handle || label,
+            label,
+            productIndex: index + 1,
+            rect: rectInfo((node.closest(".item-inner") || node).getBoundingClientRect())
+          };
+        })
+        .filter((item) => item.key && item.label)
+        .slice(0, 4);
+      const text = textBlocks.map((block) => block.text).join(" ").slice(0, 3200);
+      return {
+        ok: true,
+        text,
+        textBlocks,
+        images,
+        logicalSignature: [definition.key, "product-map"].join("|"),
+        visibleItemCount: products.length,
+        visibleItems: products,
+        itemRects: products.map((item) => ({
+          key: item.key,
+          label: item.label,
+          rect: item.rect
+        })),
+        windowSignature: JSON.stringify({
+          products: products.map((item) => item.key || item.label),
+          texts: textBlocks.slice(0, 24).map((block) => block.text),
+          images: images.slice(0, 12).map((image) => image.src)
+        }).slice(0, 1800)
+      };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
+  return result?.result?.value || { ok: false, reason: `Could not read ${definition?.sectionLabel || "comparison products"} state.` };
+}
+
+async function readShokzComparisonProductVariantPlan(client, definition, productState) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const definition = ${JSON.stringify({
+        key: definition?.key || "",
+        sectionLabel: definition?.sectionLabel || ""
+      })};
+      const productState = ${JSON.stringify({
+        productKey: productState?.productKey || "",
+        productLabel: productState?.productLabel || "",
+        productIndex: productState?.productIndex || null,
+        trackIndex: Number(productState?.trackIndex || 1) || 1
+      })};
+      const clean = (value, max = 180) => String(value || "").replace(/\\s+/g, " ").trim().slice(0, max);
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const activeCard = () => {
+        const selectors = [
+          ".item.product-wrapper.product-info-item-" + productState.trackIndex + ".compare-col-" + productState.trackIndex,
+          ".item.product-wrapper.compare-col-" + productState.trackIndex
+        ];
+        const cards = Array.from(document.querySelectorAll(selectors.join(", ")))
+          .filter((element) => visible(element))
+          .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+          .filter((entry) => entry.rect.top > -80)
+          .sort((a, b) =>
+            Math.abs(a.rect.left - (productState.trackIndex === 2 ? window.innerWidth / 2 : 0)) -
+            Math.abs(b.rect.left - (productState.trackIndex === 2 ? window.innerWidth / 2 : 0)) ||
+            a.rect.top - b.rect.top
+          );
+        return cards.find((entry) => {
+          const active = entry.element.querySelector(".content.active[data-handle]");
+          const handle = clean(active?.getAttribute("data-handle"), 100).toLowerCase();
+          return active && (!productState.productKey || handle === productState.productKey);
+        })?.element || null;
+      };
+      const card = activeCard();
+      const content = card?.querySelector(".content.active[data-handle]") || null;
+      if (!card || !content) {
+        return { ok: false, reason: "Could not find active product card for " + (productState.productLabel || productState.productKey || "product") + "." };
+      }
+      const productKey = clean(content.getAttribute("data-handle"), 100).toLowerCase() || productState.productKey;
+      const productLabel = productState.productLabel || clean(
+        document.querySelector(".item.product-name .item-inner-" + productState.trackIndex + " .content.active .swatch-active")?.innerText ||
+        productKey.replace(/[-_]+/g, " "),
+        100
+      );
+      const swatches = Array.from(content.querySelectorAll(".product-color-swatch-wrapper .swatch[data-id]"))
+        .filter((element) => !element.classList.contains("hidden") && visible(element))
+        .map((element, index) => ({
+          element,
+          variantId: clean(element.getAttribute("data-id"), 100),
+          variantIndex: index + 1,
+          active: element.classList.contains("active")
+        }))
+        .filter((item, index, list) => item.variantId && list.findIndex((candidate) => candidate.variantId === item.variantId) === index);
+      const activeImage = content.querySelector(".variant-image.active[data-id]") || null;
+      const states = (swatches.length ? swatches : [{
+        variantId: clean(activeImage?.getAttribute("data-id"), 100) || productKey + "-default",
+        variantIndex: 1,
+        active: true
+      }]).map((swatch) => {
+        const variantLabel = "Color: Color " + swatch.variantIndex;
+        const variantKey = [productKey, swatch.variantId || swatch.variantIndex].filter(Boolean).join("-");
+        return {
+          sectionKey: definition.key,
+          productKey,
+          productLabel,
+          productIndex: productState.productIndex,
+          variantKey,
+          variantLabel,
+          variantId: swatch.variantId || "",
+          variantIndex: swatch.variantIndex,
+          variantOptions: [{ name: "Color", value: variantLabel, controlId: swatch.variantId || "" }],
+          trackIndex: productState.trackIndex,
+          stateLabel: [productLabel, variantLabel].filter(Boolean).join(" / "),
+          fileId: [productKey, "color", swatch.variantIndex].filter(Boolean).join("-"),
+          logicalSignature: [definition.key, productKey, variantKey].filter(Boolean).join("|")
+        };
+      });
+      return {
+        ok: true,
+        states,
+        productKey,
+        productLabel
+      };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
+  return result?.result?.value || { ok: false, reason: `Could not read variants for ${productState?.productLabel || "comparison product"}.` };
+}
+
+async function activateShokzComparisonProductVariantState(client, state) {
+  const productActivation = await activateShokzComparisonProductSelection(client, state);
+  if (!productActivation.ok) {
+    return productActivation;
+  }
+  const ready = await waitForShokzComparisonProductSelection(client, state);
+  if (!ready.ok) {
+    return ready;
+  }
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const state = ${JSON.stringify({
+        productKey: state?.productKey || "",
+        productLabel: state?.productLabel || "",
+        variantId: state?.variantId || "",
+        trackIndex: Number(state?.trackIndex || 1) || 1,
+        stateLabel: state?.stateLabel || ""
+      })};
+      const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const selectors = [
+        ".item.product-wrapper.product-info-item-" + state.trackIndex + ".compare-col-" + state.trackIndex,
+        ".item.product-wrapper.compare-col-" + state.trackIndex
+      ];
+      const cards = Array.from(document.querySelectorAll(selectors.join(", ")))
+        .filter((element) => visible(element))
+        .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+        .filter((entry) => entry.rect.top > -80)
+        .sort((a, b) => a.rect.top - b.rect.top);
+      const card = cards.find((entry) => {
+        const active = entry.element.querySelector(".content.active[data-handle]");
+        const handle = clean(active?.getAttribute("data-handle")).toLowerCase();
+        return active && (!state.productKey || handle === state.productKey);
+      })?.element || null;
+      const content = card?.querySelector(".content.active[data-handle]") || null;
+      if (!content) {
+        return { ok: false, reason: "Could not find active card for " + (state.productLabel || state.productKey || "product") + "." };
+      }
+      if (!state.variantId) {
+        return { ok: true, mode: "default" };
+      }
+      const swatch = Array.from(content.querySelectorAll(".product-color-swatch-wrapper .swatch[data-id]"))
+        .find((element) => clean(element.getAttribute("data-id")) === state.variantId) || null;
+      if (!swatch) {
+        return { ok: false, reason: "Could not find color swatch for " + (state.stateLabel || state.variantId) + "." };
+      }
+      swatch.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+      return { ok: true, variantId: state.variantId };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
+  if (result?.result?.value?.ok) {
+    await sleep(320);
+  }
+  return result?.result?.value || { ok: false, reason: `Could not activate ${state?.stateLabel || "comparison product color"}.` };
+}
+
+async function captureShokzComparisonProductVariantCard(client, definition, state, viewport) {
+  const variantActivation = await activateShokzComparisonProductVariantState(client, state);
+  if (!variantActivation.ok) {
+    return {
+      ok: false,
+      reason: variantActivation.reason || `Could not activate ${state.stateLabel}.`
+    };
+  }
+
+  await sleep(260);
+  await primeLazyImages(client);
+  await prepareForScreenshotCapture(client, {
+    rounds: 2,
+    shokzKnownPopups: true,
+    stage: `before Shokz ${definition.sectionLabel} product color screenshot capture`
+  });
+  await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2 });
+  await dismissObstructions(client, { rounds: 2 });
+
+  let current = await readShokzComparisonProductVariantState(client, definition, state);
+  if (!current.ok) {
+    return {
+      ok: false,
+      reason: current.reason || `Could not read ${state.stateLabel}.`
+    };
+  }
+
+  let clip = normalizeRelatedClip(current.clip, viewport);
+  if (!clip) {
+    return {
+      ok: false,
+      reason: `Could not compute a valid product-card crop for ${state.stateLabel}.`
+    };
+  }
+
+  try {
+    const screenshotCapture = await captureScreenshotWithValidation(client, () => ({
+      format: "png",
+      fromSurface: true,
+      captureBeyondViewport: true,
+      clip
+    }), {
+      label: `${definition.key} ${state.stateLabel}`,
+      acceptBlankAudit: (blankAudit) => isAcceptableCollectionProductVariantBlankAudit(blankAudit, current),
+      beforeAttempt: async ({ attempt }) => {
+        if (attempt > 1) {
+          const retryActivation = await activateShokzComparisonProductVariantState(client, state);
+          if (!retryActivation.ok) {
+            throw new Error(retryActivation.reason || `Could not reactivate ${state.stateLabel}.`);
+          }
+          await sleep(360);
+          await primeLazyImages(client);
+        }
+        await prepareForScreenshotCapture(client, {
+          rounds: 2,
+          shokzKnownPopups: true,
+          stage: `retrying Shokz ${definition.sectionLabel} product color screenshot capture`
+        });
+        await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2 });
+        await dismissObstructions(client, { rounds: 2 });
+        current = await readShokzComparisonProductVariantState(client, definition, state);
+        if (!current.ok) {
+          throw new Error(current.reason || `Could not reread ${state.stateLabel}.`);
+        }
+        clip = normalizeRelatedClip(current.clip, viewport);
+        if (!clip) {
+          throw new Error(`Could not compute a valid product-card crop for ${state.stateLabel}.`);
+        }
+      }
+    });
+
+    return {
+      ok: true,
+      buffer: screenshotCapture.buffer,
+      width: Math.round(clip.width),
+      height: Math.round(clip.height),
+      state,
+      current,
+      clip: {
+        x: Math.round(clip.x),
+        y: Math.round(clip.y),
+        width: Math.round(clip.width),
+        height: Math.round(clip.height)
+      },
+      captureValidation: screenshotCapture.captureValidation
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error.message
+    };
+  }
+}
+
+async function readShokzComparisonProductVariantState(client, definition, state) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const definition = ${JSON.stringify({
+        key: definition?.key || "",
+        sectionLabel: definition?.sectionLabel || "",
+        title: definition?.title || ""
+      })};
+      const state = ${JSON.stringify({
+        productKey: state?.productKey || "",
+        productLabel: state?.productLabel || "",
+        productIndex: state?.productIndex || null,
+        variantKey: state?.variantKey || "",
+        variantLabel: state?.variantLabel || "",
+        variantId: state?.variantId || "",
+        variantOptions: Array.isArray(state?.variantOptions) ? state.variantOptions : [],
+        logicalSignature: state?.logicalSignature || "",
+        stateLabel: state?.stateLabel || "",
+        trackIndex: Number(state?.trackIndex || 1) || 1
+      })};
+      const clean = (value, max = 300) => String(value || "").replace(/\\s+/g, " ").trim().slice(0, max);
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const rectInfo = (rect) => ({
+        x: Math.round(rect.left),
+        y: Math.round(rect.top),
+        top: rect.top,
+        left: rect.left,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height
+      });
+      const selectors = [
+        ".item.product-wrapper.product-info-item-" + state.trackIndex + ".compare-col-" + state.trackIndex,
+        ".item.product-wrapper.compare-col-" + state.trackIndex
+      ];
+      const cards = Array.from(document.querySelectorAll(selectors.join(", ")))
+        .filter((element) => visible(element))
+        .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+        .filter((entry) => entry.rect.top > -80)
+        .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+      const card = cards.find((entry) => {
+        const active = entry.element.querySelector(".content.active[data-handle]");
+        const handle = clean(active?.getAttribute("data-handle"), 100).toLowerCase();
+        return active && (!state.productKey || handle === state.productKey);
+      })?.element || null;
+      const content = card?.querySelector(".content.active[data-handle]") || null;
+      if (!card || !content || !visible(card)) {
+        return { ok: false, reason: "Could not read product card " + (state.productLabel || state.productKey || "") + "." };
+      }
+      card.scrollIntoView({ block: "center", inline: "center" });
+      const cardRect = card.getBoundingClientRect();
+      const clipX = Math.max(0, Math.floor(cardRect.left - 6));
+      const clipY = Math.max(0, Math.floor(window.scrollY + cardRect.top - 6));
+      const clipRight = Math.min(window.innerWidth || document.documentElement.clientWidth || 393, Math.ceil(cardRect.right + 6));
+      const clipWidth = Math.max(1, clipRight - clipX);
+      const clipHeight = Math.max(220, Math.ceil(cardRect.height + 12));
+      const textBlocks = Array.from(card.querySelectorAll("h1, h2, h3, h4, p, a, button, span, strong, li, label, legend"))
+        .filter((element) => visible(element))
+        .map((element) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            text: clean(element.innerText || element.textContent, 180),
+            x: Math.round(rect.left),
+            y: Math.round(rect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height)
+          };
+        })
+        .filter((block) => block.text)
+        .filter((block, index, list) =>
+          list.findIndex((candidate) =>
+            candidate.text === block.text &&
+            Math.abs(candidate.x - block.x) <= 2 &&
+            Math.abs(candidate.y - block.y) <= 2
+          ) === index
+        )
+        .slice(0, 80);
+      const images = Array.from(card.querySelectorAll("img"))
+        .filter((image) => visible(image))
+        .map((image) => ({
+          src: image.currentSrc || image.src || image.getAttribute("data-src") || "",
+          alt: clean(image.alt, 160),
+          rect: rectInfo(image.getBoundingClientRect())
+        }))
+        .filter((image) => image.src)
+        .slice(0, 12);
+      const visibleItem = {
+        key: state.productKey,
+        label: state.productLabel,
+        productIndex: state.productIndex,
+        variantKey: state.variantKey,
+        variantLabel: state.variantLabel,
+        variantOptions: state.variantOptions,
+        text: clean(card.innerText || card.textContent, 500),
+        rect: rectInfo(cardRect)
+      };
+      const text = textBlocks.map((block) => block.text).join(" ").slice(0, 3200);
+      return {
+        ok: true,
+        clip: {
+          x: clipX,
+          y: clipY,
+          width: clipWidth,
+          height: clipHeight
+        },
+        text,
+        textBlocks,
+        images,
+        logicalSignature: state.logicalSignature || [definition.key, state.productKey, state.variantKey].filter(Boolean).join("|"),
+        visibleItemCount: 1,
+        visibleItems: [visibleItem],
+        itemRects: [{
+          key: state.productKey,
+          label: state.productLabel,
+          rect: rectInfo(cardRect)
+        }],
+        windowSignature: JSON.stringify({
+          product: state.productKey,
+          variant: state.variantKey,
+          texts: textBlocks.slice(0, 24).map((block) => block.text),
+          images: images.map((image) => image.src)
+        }).slice(0, 1800)
+      };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
+  return result?.result?.value || { ok: false, reason: `Could not read ${state?.stateLabel || "comparison product color"} state.` };
 }
 
 async function positionShokzComparisonQuickLookSection(client) {

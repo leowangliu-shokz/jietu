@@ -233,6 +233,12 @@ export const shokzCollectionRelatedSectionDefinitions = [
 
 export const shokzComparisonRelatedSectionDefinitions = [
   {
+    key: "comparison-products",
+    sectionLabel: "Compare Products",
+    title: "Compare Products",
+    mode: "product-map"
+  },
+  {
     key: "comparison-quick-look",
     sectionLabel: "Quick Look",
     title: "Quick Look",
@@ -267,6 +273,7 @@ export const shokzRelatedSectionOrder = [
   "banner",
   "navigation",
   "collection-tabs",
+  "comparison-products",
   "comparison-quick-look",
   ...shokzHomeRelatedSectionDefinitions
     .map((definition) => definition.key)

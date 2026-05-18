@@ -201,6 +201,12 @@ test("defines collection page related sections with stable ordering metadata", (
 test("defines comparison page related sections with stable ordering metadata", () => {
   assert.deepEqual(shokzComparisonRelatedSectionDefinitions, [
     {
+      key: "comparison-products",
+      sectionLabel: "Compare Products",
+      title: "Compare Products",
+      mode: "product-map"
+    },
+    {
       key: "comparison-quick-look",
       sectionLabel: "Quick Look",
       title: "Quick Look",
@@ -210,4 +216,6 @@ test("defines comparison page related sections with stable ordering metadata", (
   ]);
 
   assert.ok(shokzRelatedSectionOrder.indexOf("comparison-quick-look") > shokzRelatedSectionOrder.indexOf("collection-tabs"));
+  assert.ok(shokzRelatedSectionOrder.indexOf("comparison-products") > shokzRelatedSectionOrder.indexOf("collection-tabs"));
+  assert.ok(shokzRelatedSectionOrder.indexOf("comparison-quick-look") > shokzRelatedSectionOrder.indexOf("comparison-products"));
 });
