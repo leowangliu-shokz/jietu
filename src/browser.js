@@ -1061,10 +1061,29 @@ async function captureShokzLandingRelated(client, outputPath, captureContext) {
       };
     });
 
+  const sortedCaptures = captures.sort(compareRelatedCaptures);
+  let outputCaptures = sortedCaptures;
+  if (!targetFilter && sortedCaptures.length) {
+    const compositeResult = await composeShokzHomeModuleCompositeCaptures({
+      captures: sortedCaptures,
+      definition: {
+        key: "landing-page",
+        sectionLabel: "PP Page Modules",
+        title: "PP Page Composite"
+      },
+      outputPath,
+      viewport
+    });
+    warnings.push(...compositeResult.warnings);
+    if (compositeResult.captures.length) {
+      outputCaptures = compositeResult.captures;
+    }
+  }
+
   return {
-    width: captures.reduce((max, capture) => Math.max(max, capture.width || 0), viewport.width || 393),
-    height: captures.reduce((max, capture) => Math.max(max, capture.height || 0), viewport.height || 852),
-    captures: captures.sort(compareRelatedCaptures),
+    width: outputCaptures.reduce((max, capture) => Math.max(max, capture.width || 0), viewport.width || 393),
+    height: outputCaptures.reduce((max, capture) => Math.max(max, capture.height || 0), viewport.height || 852),
+    captures: outputCaptures,
     relatedValidation: {
       status: warnings.length ? "warning" : "ok",
       warnings,
