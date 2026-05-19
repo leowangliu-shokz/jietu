@@ -7427,9 +7427,9 @@ async function readShokzComparisonProductVariantPlan(client, definition, product
           .filter((element) => visible(element));
         const namedBlocks = optionBlocks.filter((element) => {
           const optionName = clean(element.querySelector(".option-name")?.innerText || element.querySelector(".option-name")?.textContent, 80);
-          return /\\bsize\\b/i.test(optionName) || (/\\bsize\\b/i.test(clean(element.innerText || element.textContent, 240)) && element.querySelector(".o-item"));
+          return /^size\\s*:?$/i.test(optionName);
         });
-        const roots = namedBlocks.length ? namedBlocks : optionBlocks.filter((element) => element.querySelector(".o-item"));
+        const roots = namedBlocks;
         const controls = roots.flatMap((root) => Array.from(root.querySelectorAll(".o-item, button, [role='button'], label, [data-value]")));
         const seen = new Set();
         return controls
@@ -7466,49 +7466,89 @@ async function readShokzComparisonProductVariantPlan(client, definition, product
             return true;
           });
       };
+      const activeSizeKey = () => {
+        const active = readSizeOptions().find((item) => item.active) || null;
+        return active?.sizeKey || "";
+      };
+      const activeColorIndex = () => {
+        const swatches = readColorSwatches();
+        const active = swatches.find((item) => item.active) || null;
+        return active?.colorIndex || null;
+      };
       const activeVariantId = () => clean(
         content.querySelector(".product-color-swatch-wrapper .swatch.active[data-id]")?.getAttribute("data-id") ||
         content.querySelector(".variant-image.active[data-id], .variant-image.swatch-active[data-id]")?.getAttribute("data-id") ||
         content.querySelector(".prices.active[data-id]")?.getAttribute("data-id"),
         100
       );
+      const initialSizes = readSizeOptions();
+      const defaultSizeSlot = initialSizes.find((size) => size.active) || initialSizes[0] || null;
+      const selectSize = async (sizeSlot) => {
+        if (!sizeSlot || sizeSlot.isDefault) {
+          return sizeSlot || { sizeLabel: "", sizeKey: "default", sizeIndex: 1, isDefault: true };
+        }
+        const currentSizes = readSizeOptions();
+        const size = currentSizes.find((item) => item.sizeKey === sizeSlot.sizeKey) ||
+          currentSizes[sizeSlot.sizeIndex - 1] ||
+          sizeSlot;
+        if (size?.element) {
+          await clickElement(size.element, 180);
+        }
+        return size;
+      };
+      const resetDefaultSize = async () => {
+        if (!defaultSizeSlot) return true;
+        const size = await selectSize(defaultSizeSlot);
+        return !size?.sizeKey || activeSizeKey() === size.sizeKey;
+      };
+      await resetDefaultSize();
       const initialSwatches = readColorSwatches();
       const colorSlots = initialSwatches.length
         ? initialSwatches.map((swatch) => ({
           colorIndex: swatch.colorIndex,
-          colorControlId: swatch.variantId
+          variantId: swatch.variantId
         }))
         : [{
           colorIndex: 1,
-          colorControlId: activeVariantId() || productKey + "-default"
+          variantId: activeVariantId() || productKey + "-default"
         }];
       const states = [];
       const seenStates = new Set();
       for (const color of colorSlots) {
-        const swatches = readColorSwatches();
-        const swatch = swatches[color.colorIndex - 1] ||
-          swatches.find((item) => item.variantId === color.colorControlId) ||
+        await resetDefaultSize();
+        const defaultSwatches = readColorSwatches();
+        const defaultSwatch = defaultSwatches[color.colorIndex - 1] ||
+          defaultSwatches.find((item) => item.variantId === color.variantId) ||
           null;
-        if (swatch?.element) {
-          await clickElement(swatch.element, 180);
+        if (defaultSwatches.length && !defaultSwatch) {
+          continue;
         }
-        const initialSizes = readSizeOptions();
-        const sizeSlots = initialSizes.length ? initialSizes : [{
+        if (defaultSwatch?.element) {
+          await clickElement(defaultSwatch.element, 180);
+        }
+        if (defaultSwatches.length && activeColorIndex() !== color.colorIndex) {
+          continue;
+        }
+        const currentSizeOptions = readSizeOptions();
+        const sizeSlots = currentSizeOptions.length ? currentSizeOptions.map((size) => ({
+          sizeLabel: size.sizeLabel,
+          sizeKey: size.sizeKey,
+          sizeIndex: size.sizeIndex
+        })) : [{
           sizeLabel: "",
           sizeKey: "default",
           sizeIndex: 1,
-          active: true,
           isDefault: true
         }];
         for (const sizeSlot of sizeSlots) {
-          const currentSizes = readSizeOptions();
-          const size = currentSizes.find((item) => item.sizeKey === sizeSlot.sizeKey) ||
-            currentSizes[sizeSlot.sizeIndex - 1] ||
-            sizeSlot;
-          if (!size.isDefault && size.element) {
-            await clickElement(size.element, 180);
+          const size = await selectSize(sizeSlot);
+          if (!size?.isDefault && size?.sizeKey && activeSizeKey() !== size.sizeKey) {
+            continue;
           }
-          const resolvedVariantId = activeVariantId() || color.colorControlId || [productKey, "color", color.colorIndex].join("-");
+          if (defaultSwatches.length && activeColorIndex() !== color.colorIndex) {
+            continue;
+          }
+          const resolvedVariantId = activeVariantId() || defaultSwatch?.variantId || color.variantId || [productKey, "color", color.colorIndex].join("-");
           const colorLabel = "Color: Color " + color.colorIndex;
           const sizeLabel = size.sizeLabel ? "Size: " + size.sizeLabel : "";
           const variantLabel = [colorLabel, sizeLabel].filter(Boolean).join(" / ");
@@ -7523,30 +7563,38 @@ async function readShokzComparisonProductVariantPlan(client, definition, product
           if (seenStates.has(stateDedupeKey)) continue;
           seenStates.add(stateDedupeKey);
           states.push({
-          sectionKey: definition.key,
-          productKey,
-          productLabel,
-          productIndex: productState.productIndex,
-          variantKey,
-          variantLabel,
+            sectionKey: definition.key,
+            productKey,
+            productLabel,
+            productIndex: productState.productIndex,
+            variantKey,
+            variantLabel,
             variantId: resolvedVariantId,
             variantIndex: states.length + 1,
             colorIndex: color.colorIndex,
-            colorControlId: color.colorControlId || "",
+            colorControlId: defaultSwatch?.variantId || color.variantId || "",
             sizeLabel: size.sizeLabel || "",
             sizeKey: size.sizeLabel ? size.sizeKey : "",
             sizeIndex: size.sizeLabel ? size.sizeIndex : null,
             variantOptions: [
-              { name: "Color", value: colorLabel, controlId: color.colorControlId || "", index: color.colorIndex },
+              { name: "Color", value: colorLabel, controlId: defaultSwatch?.variantId || color.variantId || "", index: color.colorIndex },
               ...(size.sizeLabel ? [{ name: "Size", value: size.sizeLabel, controlId: size.sizeKey || "", index: size.sizeIndex }] : [])
             ],
-          trackIndex: productState.trackIndex,
+            trackIndex: productState.trackIndex,
             stateLabel: [productLabel, variantLabel].filter(Boolean).join(" / "),
             fileId: [productKey, "color", color.colorIndex, size.sizeLabel ? "size-" + size.sizeKey : ""].filter(Boolean).join("-"),
-          logicalSignature: [definition.key, productKey, variantKey].filter(Boolean).join("|")
+            logicalSignature: [definition.key, productKey, variantKey].filter(Boolean).join("|")
           });
         }
       }
+      states.sort((a, b) =>
+        Number(a.colorIndex || 0) - Number(b.colorIndex || 0) ||
+        Number(a.sizeIndex || 0) - Number(b.sizeIndex || 0) ||
+        String(a.variantKey || "").localeCompare(String(b.variantKey || ""), "en")
+      );
+      states.forEach((state, index) => {
+        state.variantIndex = index + 1;
+      });
       return {
         ok: true,
         states,
@@ -7629,25 +7677,14 @@ async function activateShokzComparisonProductVariantState(client, state) {
         element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
         await wait(delayMs);
       };
-      const colorSwatches = swatches();
-      const swatch = (state.colorIndex ? colorSwatches[state.colorIndex - 1] : null) ||
-        colorSwatches.find((element) => clean(element.getAttribute("data-id")) === state.variantId) ||
-        colorSwatches.find((element) => clean(element.getAttribute("data-id")) === state.colorControlId) ||
-        null;
-      if ((state.variantId || state.colorControlId || state.colorIndex) && !swatch) {
-        return { ok: false, reason: "Could not find color swatch for " + (state.stateLabel || state.variantId || state.colorIndex) + "." };
-      }
-      if (swatch) {
-        await clickElement(swatch, 180);
-      }
       const sizeControls = () => {
         const optionBlocks = Array.from(content.querySelectorAll(".options-item, .product-swatch-wrapper"))
           .filter((element) => visible(element));
         const namedBlocks = optionBlocks.filter((element) => {
           const optionName = clean(element.querySelector(".option-name")?.innerText || element.querySelector(".option-name")?.textContent);
-          return /\\bsize\\b/i.test(optionName) || (/\\bsize\\b/i.test(clean(element.innerText || element.textContent)) && element.querySelector(".o-item"));
+          return /^size\\s*:?$/i.test(optionName);
         });
-        const roots = namedBlocks.length ? namedBlocks : optionBlocks.filter((element) => element.querySelector(".o-item"));
+        const roots = namedBlocks;
         const seen = new Set();
         return roots.flatMap((root) => Array.from(root.querySelectorAll(".o-item, button, [role='button'], label, [data-value]")))
           .filter((element) => visible(element))
@@ -7683,6 +7720,17 @@ async function activateShokzComparisonProductVariantState(client, state) {
           return { ok: false, reason: "Could not find size option for " + (state.stateLabel || state.sizeLabel || state.sizeIndex) + "." };
         }
         await clickElement(size.element, 180);
+      }
+      const colorSwatches = swatches();
+      const swatch = (state.colorIndex ? colorSwatches[state.colorIndex - 1] : null) ||
+        colorSwatches.find((element) => clean(element.getAttribute("data-id")) === state.variantId) ||
+        colorSwatches.find((element) => clean(element.getAttribute("data-id")) === state.colorControlId) ||
+        null;
+      if ((state.variantId || state.colorControlId || state.colorIndex) && !swatch) {
+        return { ok: false, reason: "Could not find color swatch for " + (state.stateLabel || state.variantId || state.colorIndex) + "." };
+      }
+      if (swatch) {
+        await clickElement(swatch, 180);
       }
       const activeVariantId = clean(
         content.querySelector(".product-color-swatch-wrapper .swatch.active[data-id]")?.getAttribute("data-id") ||
@@ -7944,6 +7992,8 @@ async function waitForShokzComparisonProductVariantPairState(client, state, opti
           productKey: String(state?.productKey || "").trim().toLowerCase(),
           productLabel: state?.productLabel || "",
           variantId: state?.variantId || "",
+          colorIndex: Number(state?.colorIndex || 0) || null,
+          colorControlId: state?.colorControlId || "",
           sizeLabel: state?.sizeLabel || "",
           sizeKey: state?.sizeKey || "",
           sizeIndex: Number(state?.sizeIndex || 0) || null,
@@ -7973,9 +8023,9 @@ async function waitForShokzComparisonProductVariantPairState(client, state, opti
             .filter((element) => visible(element));
           const namedBlocks = optionBlocks.filter((element) => {
             const optionName = clean(element.querySelector(".option-name")?.innerText || element.querySelector(".option-name")?.textContent);
-            return /\\bsize\\b/i.test(optionName) || (/\\bsize\\b/i.test(clean(element.innerText || element.textContent)) && element.querySelector(".o-item"));
+            return /^size\\s*:?$/i.test(optionName);
           });
-          const roots = namedBlocks.length ? namedBlocks : optionBlocks.filter((element) => element.querySelector(".o-item"));
+          const roots = namedBlocks;
           const seen = new Set();
           return roots.flatMap((root) => Array.from(root.querySelectorAll(".o-item, button, [role='button'], label, [data-value]")))
             .filter((element) => visible(element))
@@ -8027,12 +8077,22 @@ async function waitForShokzComparisonProductVariantPairState(client, state, opti
             );
           const card = cards.find((entry) => handleMatches(activeContent(entry.element)))?.element || null;
           const content = activeContent(card);
-          const activeSwatch = content?.querySelector?.(".product-color-swatch-wrapper .swatch.active[data-id]") || null;
+          const swatches = Array.from(content?.querySelectorAll?.(".product-color-swatch-wrapper .swatch[data-id]") || [])
+            .filter((element) => !element.classList.contains("hidden") && visible(element));
+          const activeSwatch = swatches.find((element) => element.classList.contains("active")) || null;
           const activeImage = content?.querySelector?.(".variant-image.active[data-id], .variant-image.swatch-active[data-id]") || null;
           const activeSwatchId = clean(activeSwatch?.getAttribute?.("data-id"));
           const activeImageId = clean(activeImage?.getAttribute?.("data-id"));
-          const swatchOk = !state.variantId || activeSwatchId === state.variantId;
-          const imageOk = !state.variantId || !activeImage || activeImageId === state.variantId;
+          const activeSwatchIndex = activeSwatch ? swatches.indexOf(activeSwatch) + 1 : null;
+          const swatchIdOk = !state.variantId ||
+            activeSwatchId === state.variantId ||
+            (state.colorControlId && activeSwatchId === state.colorControlId);
+          const swatchOk = state.colorIndex
+            ? activeSwatchIndex === state.colorIndex
+            : swatchIdOk;
+          const imageOk = state.colorIndex
+            ? true
+            : (!state.variantId || !activeImage || activeImageId === state.variantId);
           const desiredSizeKey = keyPart(state.sizeKey || state.sizeLabel);
           const sizes = sizeControls(content);
           const activeSize = sizes.find((item) => item.active) || null;
@@ -8046,6 +8106,7 @@ async function waitForShokzComparisonProductVariantPairState(client, state, opti
             trackIndex,
             found: Boolean(card && content),
             activeSwatchId,
+            activeSwatchIndex,
             activeImageId,
             activeSize: activeSize?.label || "",
             swatchOk,
@@ -8118,11 +8179,23 @@ async function readShokzComparisonProductVariantState(client, definition, state)
         ".item.product-wrapper.product-info-item-" + state.trackIndex + ".compare-col-" + state.trackIndex,
         ".item.product-wrapper.compare-col-" + state.trackIndex
       ];
+      const targetAnchorY = state.productCardAnchorY == null ? NaN : Number(state.productCardAnchorY);
       const cards = Array.from(document.querySelectorAll(selectors.join(", ")))
         .filter((element) => visible(element))
-        .map((element) => ({ element, rect: element.getBoundingClientRect() }))
-        .filter((entry) => entry.rect.top > -80)
-        .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+        .map((element) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            element,
+            rect,
+            absoluteY: Math.max(0, Math.round(window.scrollY + rect.top))
+          };
+        })
+        .filter((entry) => Number.isFinite(targetAnchorY) || entry.rect.top > -80)
+        .sort((a, b) =>
+          (Number.isFinite(targetAnchorY) ? Math.abs(a.absoluteY - targetAnchorY) - Math.abs(b.absoluteY - targetAnchorY) : 0) ||
+          a.rect.top - b.rect.top ||
+          a.rect.left - b.rect.left
+        );
       const card = cards.find((entry) => {
         const active = entry.element.querySelector(".content.active[data-handle]");
         const handle = clean(active?.getAttribute("data-handle"), 100).toLowerCase();
