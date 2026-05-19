@@ -3468,7 +3468,9 @@ function relatedShotPageIndex(shot) {
 function urlFilterOptions() {
   const configured = (state.platforms?.[activePlatform]?.targets || configTargets(state.config))
     .map(displayUrlForTarget);
-  return [...new Set(configured)];
+  const captured = platformSnapshots().map(canonicalDisplayUrlForSnapshot);
+  const changed = platformChanges().map(canonicalDisplayUrlForChange);
+  return [...new Set([...configured, ...captured, ...changed].filter(Boolean))];
 }
 
 function canonicalDisplayUrlForSnapshot(snapshot) {

@@ -70,6 +70,15 @@ export function annotateSnapshotRuntimeMetadata(snapshot, config = null) {
     nextSnapshot.capturePlanId = capturePlanId;
     changed = true;
   }
+  const targetLabel = matchingTargetLabel(config, nextSnapshot.targetId);
+  if (targetLabel && nextSnapshot.targetLabel !== targetLabel) {
+    nextSnapshot.targetLabel = targetLabel;
+    changed = true;
+  }
+  if (targetLabel && nextSnapshot.displayUrl !== targetLabel) {
+    nextSnapshot.displayUrl = targetLabel;
+    changed = true;
+  }
 
   return changed ? nextSnapshot : snapshot;
 }
@@ -242,4 +251,16 @@ export function matchingCapturePlanId(
 function normalizedPlatform(value) {
   const key = String(value || "").trim().toLowerCase();
   return key === "mobile" || key === "pc" ? key : null;
+}
+
+function matchingTargetLabel(config, targetId) {
+  const id = String(targetId || "").trim();
+  if (!id || !Array.isArray(config?.targets)) {
+    return null;
+  }
+  const target = config.targets.find((candidate) => candidate?.id === id);
+  if (!target) {
+    return null;
+  }
+  return String(target.label || target.url || "").trim() || null;
 }

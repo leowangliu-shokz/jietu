@@ -52,6 +52,8 @@ test("buildStatePayload annotates legacy snapshots and changes with platform met
   assert.equal(state.snapshots[0].platform, "mobile");
   assert.equal(state.snapshots[0].deviceProfileId, "mobile-main");
   assert.equal(state.snapshots[0].capturePlanId, "home-mobile");
+  assert.equal(state.snapshots[0].targetLabel, "Example");
+  assert.equal(state.snapshots[0].displayUrl, "Example");
   assert.equal(state.changesSummary.recent[0].location.platform, "pc");
   assert.equal(state.changesSummary.recent[0].location.deviceProfileId, "pc-main");
   assert.equal(state.platforms.mobile.snapshotCount, 1);
