@@ -221,7 +221,8 @@ async function driveCapture(client, url, outputPath, options) {
     options.captureMode === "shokz-products-nav-related" ||
     options.captureMode === "shokz-home-related-section" ||
     options.captureMode === "shokz-collection-related-section" ||
-    options.captureMode === "shokz-comparison-related-section"
+    options.captureMode === "shokz-comparison-related-section" ||
+    options.captureMode === "shokz-landing-related"
   ) {
     stage = "reading page title";
     const titleResult = await readPageTitle(client);
@@ -235,6 +236,8 @@ async function driveCapture(client, url, outputPath, options) {
         ? `capturing Shokz home related section ${options.sectionKey || ""}`.trim()
       : options.captureMode === "shokz-home-related"
         ? "capturing Shokz home related sections"
+      : options.captureMode === "shokz-landing-related"
+        ? "capturing Shokz landing related sections"
         : "capturing Shokz home banners";
     let relatedCapture;
     if (options.captureMode === "shokz-products-nav-related") {
@@ -310,6 +313,8 @@ async function driveCapture(client, url, outputPath, options) {
       };
     } else if (options.captureMode === "shokz-home-related") {
       relatedCapture = await captureShokzHomeRelated(client, outputPath, captureContext);
+    } else if (options.captureMode === "shokz-landing-related") {
+      relatedCapture = await captureShokzLandingRelated(client, outputPath, captureContext);
     } else {
       relatedCapture = await captureShokzHomeBanners(client, outputPath, viewport, captureContext);
     }
@@ -625,7 +630,8 @@ function shouldCleanShokzKnownPopups(url, options = {}) {
 function shouldUseDirectFullPageClipCapture(options = {}) {
   const captureMode = String(options.captureMode || "").trim();
   return captureMode === "shokz-collection-page" ||
-    captureMode === "shokz-comparison-page";
+    captureMode === "shokz-comparison-page" ||
+    captureMode === "shokz-landing-page";
 }
 
 function shouldUseDedicatedViewMoreExpansion(options = {}) {
@@ -777,6 +783,734 @@ async function captureShokzHomeRelated(client, outputPath, captureContext) {
       sections
     }
   };
+}
+
+const shokzLandingRelatedSectionDefinitions = [
+  {
+    key: "landing-hero",
+    sectionLabel: "Hero",
+    title: "Open-Ear Headphone",
+    idPart: "section-pillar-page-banner",
+    occurrence: 0,
+    mode: "section"
+  },
+  {
+    key: "landing-limitations",
+    sectionLabel: "Traditional Limitations",
+    title: "Why Settle",
+    idPart: "section-select-shokz-reason-1",
+    occurrence: 0,
+    mode: "section"
+  },
+  {
+    key: "landing-open-ear-benefits",
+    sectionLabel: "Open-Ear Benefits",
+    title: "What are Open-Ear Headphones",
+    idPart: "section-ear-headphones-introduce",
+    occurrence: 0,
+    mode: "carousel"
+  },
+  {
+    key: "landing-product-selector",
+    sectionLabel: "Product Selector",
+    title: "Find Your Ideal Shokz",
+    idPart: "section-pillar-page-nav",
+    occurrence: 1,
+    mode: "section"
+  },
+  {
+    key: "landing-workday-products",
+    sectionLabel: "Workday Products",
+    title: "Workday Comfort & Effortless Style",
+    idPart: "section-pillar-product-2",
+    occurrence: 0,
+    mode: "carousel"
+  },
+  {
+    key: "landing-healthier-products",
+    sectionLabel: "Healthier Listening Products",
+    title: "Healthier Listening",
+    idPart: "section-pillar-product-1",
+    occurrence: 0,
+    mode: "carousel"
+  },
+  {
+    key: "landing-outdoor-products",
+    sectionLabel: "Outdoor Adventurer Products",
+    title: "Outdoor Adventurer",
+    idPart: "section-pillar-product-3",
+    occurrence: 0,
+    mode: "carousel"
+  },
+  {
+    key: "landing-experts",
+    sectionLabel: "Expert Reviews",
+    title: "Hear from the Expert",
+    idPart: "section-pillar-page-experts-review",
+    occurrence: 0,
+    mode: "carousel"
+  },
+  {
+    key: "landing-why-shokz",
+    sectionLabel: "Why Shokz",
+    title: "Why Choose Shokz",
+    idPart: "section-select-shokz-reason-2",
+    occurrence: 0,
+    mode: "section"
+  },
+  {
+    key: "landing-customer-reviews",
+    sectionLabel: "Customer Reviews",
+    title: "What Our Customers Say",
+    idPart: "section-pillar-page-customer-review",
+    occurrence: 0,
+    mode: "carousel"
+  }
+];
+
+async function captureShokzLandingRelated(client, outputPath, captureContext) {
+  const viewport = viewportForCaptureContext(captureContext);
+  await materializeFullPageContent(client);
+  await scrollTo(client, 0);
+  await sleep(700);
+  await primeLazyImages(client);
+  await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 3, hideOnly: true });
+
+  const plan = await readShokzLandingRelatedPlan(client);
+  if (!plan.ok) {
+    return {
+      width: Number(viewport.width || 0) || 393,
+      height: Number(viewport.height || 0) || 852,
+      captures: [],
+      relatedValidation: {
+        status: "warning",
+        warnings: [{
+          sectionKey: "landing",
+          sectionLabel: "Landing Page",
+          message: plan.reason || "Could not read Shokz landing-page related screenshot plan."
+        }],
+        sections: []
+      }
+    };
+  }
+
+  const captures = [];
+  const warnings = Array.isArray(plan.warnings) ? [...plan.warnings] : [];
+  const targetFilter = captureContext.relatedStateFilter || null;
+  const targetStates = targetFilter
+    ? plan.states.filter((state) => landingRelatedStateMatchesFilter(outputPath, state, targetFilter))
+    : plan.states;
+  if (targetFilter && !targetStates.length) {
+    throw new Error("Could not match the requested landing-page screenshot.");
+  }
+
+  for (const [index, state] of targetStates.entries()) {
+    const activation = await activateShokzLandingRelatedState(client, state);
+    if (!activation.ok) {
+      warnings.push({
+        sectionKey: state.sectionKey,
+        sectionLabel: state.sectionLabel,
+        stateLabel: state.stateLabel,
+        message: activation.reason || `Could not activate ${state.stateLabel}.`
+      });
+      continue;
+    }
+
+    await sleep(state.mode === "carousel" ? 650 : 380);
+    await primeLazyImages(client);
+    await waitForRelatedSectionImages(client, state.sectionKey);
+    await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2, hideOnly: true });
+    await dismissObstructions(client, { rounds: 2 });
+
+    let current = await readShokzLandingRelatedState(client, state);
+    if (!current.ok) {
+      warnings.push({
+        sectionKey: state.sectionKey,
+        sectionLabel: state.sectionLabel,
+        stateLabel: state.stateLabel,
+        message: current.reason || `Could not read ${state.stateLabel}.`
+      });
+      continue;
+    }
+    let clip = normalizeRelatedClip(current.clip, viewport);
+    if (!clip) {
+      warnings.push({
+        sectionKey: state.sectionKey,
+        sectionLabel: state.sectionLabel,
+        stateLabel: state.stateLabel,
+        message: `Could not compute a valid crop for ${state.stateLabel}.`
+      });
+      continue;
+    }
+
+    const screenshotCapture = await captureScreenshotWithValidation(client, () => ({
+      format: "png",
+      fromSurface: true,
+      captureBeyondViewport: true,
+      clip
+    }), {
+      label: `${state.sectionKey} ${state.stateLabel}`,
+      acceptBlankAudit: (blankAudit) => isAcceptableShokzLandingBlankAudit(blankAudit, current),
+      beforeAttempt: async ({ attempt }) => {
+        if (attempt > 1) {
+          const retryActivation = await activateShokzLandingRelatedState(client, state);
+          if (!retryActivation.ok) {
+            throw new Error(retryActivation.reason || `Could not reactivate ${state.stateLabel}.`);
+          }
+          await sleep(state.mode === "carousel" ? 500 : 300);
+          await primeLazyImages(client);
+        }
+        await prepareForScreenshotCapture(client, {
+          rounds: 2,
+          shokzKnownPopups: true,
+          stage: `before Shokz landing ${state.sectionLabel} screenshot capture`
+        });
+        await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2, hideOnly: true });
+        await dismissObstructions(client, { rounds: 2 });
+        await settlePositionedViewport(client, {
+          delayMs: attempt > 1 ? 280 : 180,
+          frames: 2
+        });
+        current = await readShokzLandingRelatedState(client, state);
+        if (!current.ok) {
+          throw new Error(current.reason || `Could not reread ${state.stateLabel}.`);
+        }
+        clip = normalizeRelatedClip(current.clip, viewport);
+        if (!clip) {
+          throw new Error(`Could not compute a valid crop for ${state.stateLabel}.`);
+        }
+      }
+    });
+
+    const buffer = screenshotCapture.buffer;
+    const visualSignature = hashBuffer(buffer);
+    const visualHash = visualHashForBuffer(buffer);
+    const visualAudit = visualAuditForBuffer(buffer, visualHash);
+    const relatedOutput = captureContext.relatedStateOutputPath && targetStates.length === 1
+      ? captureContext.relatedStateOutputPath
+      : relatedOutputPath(outputPath, state.sectionKey, state.fileId || state.stateIndex || index + 1);
+    await fs.writeFile(relatedOutput, buffer);
+
+    const width = Math.round(clip.width);
+    const height = Math.round(clip.height);
+    captures.push({
+      outputPath: relatedOutput,
+      width,
+      height,
+      kind: state.mode === "carousel" ? "carousel" : "section",
+      sectionKey: state.sectionKey,
+      sectionLabel: state.sectionLabel,
+      sectionTitle: current.sectionTitle || state.sectionTitle || state.sectionLabel,
+      stateIndex: state.stateIndex || index + 1,
+      stateCount: state.stateCount || targetStates.filter((item) => item.sectionKey === state.sectionKey).length || 1,
+      stateLabel: current.stateLabel || state.stateLabel,
+      label: current.stateLabel || state.stateLabel,
+      pageIndex: state.pageIndex || null,
+      interactionState: state.mode === "carousel" ? "slide" : "default",
+      logicalSignature: current.logicalSignature || state.logicalSignature || `${state.sectionKey}:${state.fileId || index + 1}`,
+      visualSignature,
+      visualHash,
+      visualAudit,
+      captureValidation: screenshotCapture.captureValidation,
+      clip: {
+        x: Math.round(clip.x),
+        y: Math.round(clip.y),
+        width,
+        height
+      },
+      isDefaultState: Boolean(state.isDefaultState),
+      coverageKey: state.coverageKey || `${state.sectionKey}:${state.fileId || state.stateIndex || index + 1}`,
+      visibleItemCount: current.visibleItemCount || 0,
+      visibleItems: current.visibleItems || [],
+      itemRects: current.itemRects || [],
+      sectionState: {
+        text: current.text || "",
+        textBlocks: current.textBlocks || [],
+        images: current.images || [],
+        activeIndex: state.pageIndex || state.stateIndex || index + 1,
+        pageIndex: state.pageIndex || null,
+        interactionState: state.mode === "carousel" ? "slide" : "default",
+        windowSignature: current.windowSignature || null
+      }
+    });
+  }
+
+  const expectedBySection = new Map();
+  for (const state of targetStates) {
+    expectedBySection.set(state.sectionKey, (expectedBySection.get(state.sectionKey) || 0) + 1);
+  }
+  const savedBySection = new Map();
+  for (const capture of captures) {
+    savedBySection.set(capture.sectionKey, (savedBySection.get(capture.sectionKey) || 0) + 1);
+  }
+  const warningSections = new Set(warnings.map((warning) => warning.sectionKey).filter(Boolean));
+  const planSections = Array.isArray(plan.sections) ? plan.sections : [];
+  const sections = planSections
+    .filter((section) => expectedBySection.has(section.sectionKey))
+    .map((section) => {
+      const savedCount = savedBySection.get(section.sectionKey) || 0;
+      return {
+        sectionKey: section.sectionKey,
+        sectionLabel: section.sectionLabel,
+        expectedCount: expectedBySection.get(section.sectionKey) || section.expectedCount || 0,
+        capturedCount: savedCount,
+        savedCount,
+        status: warningSections.has(section.sectionKey) || savedCount < (expectedBySection.get(section.sectionKey) || 0)
+          ? "warning"
+          : "ok"
+      };
+    });
+
+  return {
+    width: captures.reduce((max, capture) => Math.max(max, capture.width || 0), viewport.width || 393),
+    height: captures.reduce((max, capture) => Math.max(max, capture.height || 0), viewport.height || 852),
+    captures: captures.sort(compareRelatedCaptures),
+    relatedValidation: {
+      status: warnings.length ? "warning" : "ok",
+      warnings,
+      sections
+    }
+  };
+}
+
+function landingRelatedStateMatchesFilter(outputPath, state, filter) {
+  if (!filter) {
+    return true;
+  }
+  const expectedOutput = relatedOutputPath(outputPath, state.sectionKey, state.fileId || state.stateIndex);
+  const tileKey = String(filter.tileKey || "").trim();
+  const values = [
+    state.sectionKey,
+    state.fileId,
+    state.logicalSignature,
+    state.coverageKey,
+    state.stateLabel,
+    state.label,
+    state.sectionLabel,
+    state.pageIndex
+  ].map((value) => String(value || "").trim()).filter(Boolean);
+  return outputMatchesFilter(expectedOutput, filter.sourceFile) ||
+    outputMatchesFilter(expectedOutput, filter.relatedShotFile) ||
+    values.some((value) => tileKey.includes(value) || String(filter.tileLabel || "").includes(value));
+}
+
+function isAcceptableShokzLandingBlankAudit(blankAudit, state) {
+  if (!blankAudit || blankAudit.status === "ok") {
+    return false;
+  }
+  const textBlocks = Array.isArray(state?.textBlocks) ? state.textBlocks : [];
+  const images = Array.isArray(state?.images) ? state.images : [];
+  const visibleItems = Array.isArray(state?.visibleItems) ? state.visibleItems : [];
+  return textBlocks.length >= 1 || images.length >= 1 || visibleItems.length >= 1;
+}
+
+async function readShokzLandingRelatedPlan(client) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const definitions = ${JSON.stringify(shokzLandingRelatedSectionDefinitions)};
+      const clean = (value, max = 260) => String(value || "")
+        .replace(/[\\u00a0\\s]+/g, " ")
+        .trim()
+        .slice(0, max);
+      const keyPart = (value) => clean(value, 120).toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 64) || "state";
+      const rectInfo = (rect) => ({
+        left: Math.round(rect.left),
+        top: Math.round(rect.top),
+        right: Math.round(rect.right),
+        bottom: Math.round(rect.bottom),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height)
+      });
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 2 &&
+          rect.height > 2 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const findRoot = (definition) => {
+        const matches = definition.selector
+          ? Array.from(document.querySelectorAll(definition.selector))
+          : Array.from(document.querySelectorAll("[id]")).filter((element) =>
+            String(element.id || "").includes(definition.idPart)
+          );
+        const visibleMatches = matches
+          .filter(visible)
+          .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+        return visibleMatches[Number(definition.occurrence || 0)] || null;
+      };
+      const imageSourcesForNode = (node) => [
+          node.currentSrc,
+          node.src,
+          node.srcset,
+          node.getAttribute?.("data-src"),
+          node.getAttribute?.("data-srcset"),
+          node.getAttribute?.("data-original"),
+          node.getAttribute?.("data-lazy-src"),
+          node.getAttribute?.("data-lazy-srcset")
+        ]
+        .filter(Boolean)
+        .map((value) => String(value).split(",")[0].trim())
+        .filter(Boolean);
+      const backgroundSources = (element) => {
+        const sources = [];
+        for (const node of [element, ...element.querySelectorAll("*")].slice(0, 180)) {
+          const match = getComputedStyle(node).backgroundImage.match(/url\\(["']?([^"')]+)["']?\\)/);
+          if (match?.[1]) sources.push(match[1]);
+        }
+        return sources;
+      };
+      const textFor = (element, max = 260) => clean([
+        element.innerText,
+        element.textContent,
+        element.getAttribute?.("aria-label"),
+        element.getAttribute?.("title")
+      ].filter(Boolean).join(" "), max);
+      const headingFor = (root, fallback) => {
+        const heading = Array.from(root.querySelectorAll("h1,h2,h3")).find(visible);
+        return clean(heading?.innerText || heading?.textContent, 120) || fallback || "";
+      };
+      const slidesFor = (root) => {
+        const slides = Array.from(root.querySelectorAll(".swiper-slide"))
+          .filter((slide) => !/swiper-slide-duplicate/.test(String(slide.className || "")))
+          .filter((slide) => textFor(slide, 220) || imageSourcesForNode(slide).length || backgroundSources(slide).length);
+        const seen = new Set();
+        return slides
+          .map((slide, index) => {
+            const text = textFor(slide, 220);
+            const images = [
+              ...Array.from(slide.querySelectorAll("img, source")).flatMap(imageSourcesForNode),
+              ...backgroundSources(slide)
+            ].slice(0, 4);
+            const signature = JSON.stringify({ text, images });
+            const realIndexAttr = slide.getAttribute("data-swiper-slide-index");
+            const realIndex = realIndexAttr !== null && Number.isInteger(Number(realIndexAttr)) ? Number(realIndexAttr) : index;
+            const labelNode = Array.from(slide.querySelectorAll("h2,h3,h4,h5,a,button,p")).find((node) => textFor(node, 90));
+            return {
+              element: slide,
+              index,
+              realIndex,
+              signature,
+              label: textFor(labelNode || slide, 80),
+              rect: rectInfo(slide.getBoundingClientRect())
+            };
+          })
+          .filter((slide) => {
+            if (seen.has(slide.signature)) return false;
+            seen.add(slide.signature);
+            return true;
+          });
+      };
+
+      window.__pageShotRelatedSections = window.__pageShotRelatedSections || {};
+      const states = [];
+      const sections = [];
+      const warnings = [];
+      for (const definition of definitions) {
+        const root = findRoot(definition);
+        if (!root) {
+          warnings.push({
+            sectionKey: definition.key,
+            sectionLabel: definition.sectionLabel,
+            message: "Could not find landing section root."
+          });
+          continue;
+        }
+        window.__pageShotRelatedSections[definition.key] = { root };
+        const title = headingFor(root, definition.title || definition.sectionLabel);
+        const slides = definition.mode === "carousel" ? slidesFor(root) : [];
+        const sectionStates = slides.length > 1
+          ? slides.map((slide, index) => ({
+            ...definition,
+            sectionKey: definition.key,
+            sectionTitle: title,
+            stateIndex: states.length + index + 1,
+            stateCount: slides.length,
+            pageIndex: index + 1,
+            pageCount: slides.length,
+            slideIndex: index + 1,
+            realIndex: slide.realIndex,
+            isDefaultState: index === 0,
+            stateLabel: [title, slide.label || "Slide " + (index + 1)].filter(Boolean).join(" - "),
+            label: [title, slide.label || "Slide " + (index + 1)].filter(Boolean).join(" - "),
+            fileId: keyPart(definition.key + "-" + (index + 1) + "-" + (slide.label || "slide")),
+            logicalSignature: definition.key + ":slide:" + (index + 1) + ":" + slide.signature,
+            coverageKey: definition.key + ":slide:" + (index + 1)
+          }))
+          : [{
+            ...definition,
+            sectionKey: definition.key,
+            sectionTitle: title,
+            stateIndex: states.length + 1,
+            stateCount: 1,
+            pageIndex: 1,
+            pageCount: 1,
+            slideIndex: null,
+            realIndex: null,
+            isDefaultState: true,
+            stateLabel: title || definition.sectionLabel,
+            label: title || definition.sectionLabel,
+            fileId: keyPart(definition.key),
+            logicalSignature: definition.key + ":default:" + clean(root.innerText || root.textContent, 360),
+            coverageKey: definition.key + ":default"
+          }];
+        states.push(...sectionStates);
+        sections.push({
+          sectionKey: definition.key,
+          sectionLabel: definition.sectionLabel,
+          expectedCount: sectionStates.length,
+          title,
+          mode: definition.mode
+        });
+      }
+
+      states.forEach((state, index) => {
+        state.stateIndex = index + 1;
+      });
+      return {
+        ok: true,
+        states,
+        sections,
+        warnings
+      };
+    })()`,
+    returnByValue: true
+  }).catch((error) => ({ result: { value: { ok: false, reason: error.message } } }));
+  return result.result?.value || { ok: false, reason: "Could not read landing related plan." };
+}
+
+async function activateShokzLandingRelatedState(client, state) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const state = ${JSON.stringify(state)};
+      const clean = (value) => String(value || "").replace(/[\\u00a0\\s]+/g, " ").trim();
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 2 &&
+          rect.height > 2 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const findRoot = () => {
+        const matches = state.selector
+          ? Array.from(document.querySelectorAll(state.selector))
+          : Array.from(document.querySelectorAll("[id]")).filter((element) =>
+            String(element.id || "").includes(state.idPart)
+          );
+        const visibleMatches = matches
+          .filter(visible)
+          .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+        return visibleMatches[Number(state.occurrence || 0)] || null;
+      };
+      const root = findRoot();
+      if (!root) {
+        return { ok: false, reason: "Could not find landing section root." };
+      }
+      window.__pageShotRelatedSections = window.__pageShotRelatedSections || {};
+      window.__pageShotRelatedSections[state.sectionKey] = { root };
+      root.scrollIntoView({ block: "start", inline: "nearest" });
+      window.scrollBy(0, -8);
+      let activated = state.mode !== "carousel" || !state.slideIndex;
+      if (state.mode === "carousel" && state.slideIndex) {
+        const targetRealIndex = Number.isFinite(Number(state.realIndex)) ? Number(state.realIndex) : Number(state.slideIndex) - 1;
+        const swiperNodes = [root, ...root.querySelectorAll(".swiper,.swiper-container,[class*='swiper']")];
+        for (const node of swiperNodes) {
+          const swiper = node?.swiper;
+          if (!swiper) continue;
+          if (typeof swiper.slideToLoop === "function") {
+            swiper.slideToLoop(targetRealIndex, 0, false);
+            activated = true;
+          } else if (typeof swiper.slideTo === "function") {
+            swiper.slideTo(targetRealIndex, 0, false);
+            activated = true;
+          }
+        }
+        const controls = Array.from(root.querySelectorAll(
+          ".swiper-pagination-bullet,button[aria-label*='slide' i],[role='button'][aria-label*='slide' i]"
+        ));
+        const control = controls.find((element) => {
+          const label = clean(element.getAttribute("aria-label") || element.textContent || "");
+          return new RegExp("slide\\\\s+" + state.slideIndex + "\\\\b", "i").test(label);
+        }) || controls.filter(visible)[Number(state.slideIndex) - 1] || null;
+        if (control) {
+          control.click();
+          activated = true;
+        }
+        const slides = Array.from(root.querySelectorAll(".swiper-slide"))
+          .filter((slide) => !/swiper-slide-duplicate/.test(String(slide.className || "")));
+        const slide = slides.find((item) => Number(item.getAttribute("data-swiper-slide-index")) === targetRealIndex) ||
+          slides[Number(state.slideIndex) - 1] ||
+          null;
+        if (slide) {
+          slide.scrollIntoView({ block: "nearest", inline: "center" });
+          activated = true;
+        }
+      }
+      return { ok: activated };
+    })()`,
+    returnByValue: true
+  }).catch((error) => ({ result: { value: { ok: false, reason: error.message } } }));
+  return result.result?.value || { ok: false, reason: `Could not activate ${state?.stateLabel || "landing state"}.` };
+}
+
+async function readShokzLandingRelatedState(client, state) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const state = ${JSON.stringify(state)};
+      const clean = (value, max = 360) => String(value || "")
+        .replace(/[\\u00a0\\s]+/g, " ")
+        .trim()
+        .slice(0, max);
+      const rectInfo = (rect) => ({
+        left: Math.round(rect.left),
+        top: Math.round(rect.top),
+        right: Math.round(rect.right),
+        bottom: Math.round(rect.bottom),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height)
+      });
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 2 &&
+          rect.height > 2 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const intersects = (rect, rootRect) =>
+        Math.max(0, Math.min(rect.right, rootRect.right) - Math.max(rect.left, rootRect.left)) *
+        Math.max(0, Math.min(rect.bottom, rootRect.bottom) - Math.max(rect.top, rootRect.top));
+      const findRoot = () => {
+        const cached = window.__pageShotRelatedSections?.[state.sectionKey]?.root;
+        if (cached && document.contains(cached)) return cached;
+        const matches = state.selector
+          ? Array.from(document.querySelectorAll(state.selector))
+          : Array.from(document.querySelectorAll("[id]")).filter((element) =>
+            String(element.id || "").includes(state.idPart)
+          );
+        const visibleMatches = matches
+          .filter(visible)
+          .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+        return visibleMatches[Number(state.occurrence || 0)] || null;
+      };
+      const imageSourcesForNode = (node) => [
+          node.currentSrc,
+          node.src,
+          node.srcset,
+          node.getAttribute?.("data-src"),
+          node.getAttribute?.("data-srcset"),
+          node.getAttribute?.("data-original"),
+          node.getAttribute?.("data-lazy-src"),
+          node.getAttribute?.("data-lazy-srcset")
+        ]
+        .filter(Boolean)
+        .map((value) => String(value).split(",")[0].trim())
+        .filter(Boolean);
+      const backgroundSources = (element) => {
+        const sources = [];
+        for (const node of [element, ...element.querySelectorAll("*")].slice(0, 180)) {
+          const match = getComputedStyle(node).backgroundImage.match(/url\\(["']?([^"')]+)["']?\\)/);
+          if (match?.[1]) sources.push(match[1]);
+        }
+        return sources;
+      };
+      const root = findRoot();
+      if (!root) {
+        return { ok: false, reason: "Landing section root is not available." };
+      }
+      window.__pageShotRelatedSections = window.__pageShotRelatedSections || {};
+      window.__pageShotRelatedSections[state.sectionKey] = { root };
+      const rootRect = root.getBoundingClientRect();
+      const clipX = Math.max(0, Math.floor(Math.min(rootRect.left, 0)));
+      const clipY = Math.max(0, Math.floor(window.scrollY + rootRect.top - 4));
+      const clipWidth = Math.max(1, Math.min(window.innerWidth || rootRect.width, Math.ceil(Math.max(rootRect.width, window.innerWidth || 0))));
+      const clipHeight = Math.max(1, Math.ceil(rootRect.height + 8));
+      const textBlocks = Array.from(root.querySelectorAll("h1,h2,h3,h4,h5,p,a,button,li,span,strong"))
+        .filter(visible)
+        .map((element, index) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            index,
+            text: clean(element.innerText || element.textContent || element.getAttribute("aria-label") || "", 240),
+            rect: rectInfo(rect),
+            area: intersects(rect, rootRect)
+          };
+        })
+        .filter((block) => block.text && block.area > 0)
+        .filter((block, index, list) => list.findIndex((item) => item.text === block.text) === index)
+        .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left)
+        .slice(0, 40);
+      const images = [
+        ...Array.from(root.querySelectorAll("img, source")).flatMap((node) =>
+          imageSourcesForNode(node).map((src) => ({
+            src,
+            alt: clean(node.getAttribute?.("alt"), 120),
+            rect: rectInfo((node.closest("picture") || node).getBoundingClientRect())
+          }))
+        ),
+        ...backgroundSources(root).map((src) => ({
+          src,
+          alt: "",
+          rect: rectInfo(rootRect)
+        }))
+      ]
+        .filter((image, index, list) => image.src && list.findIndex((candidate) => candidate.src === image.src) === index)
+        .slice(0, 24);
+      const visibleItems = Array.from(root.querySelectorAll(".swiper-slide, [class*='product-card'], [class*='review'], [class*='item']"))
+        .filter(visible)
+        .map((element, index) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            key: state.sectionKey + ":" + (index + 1),
+            label: clean(element.querySelector("h2,h3,h4,h5,a,button,p")?.innerText || element.innerText || element.textContent, 120),
+            text: clean(element.innerText || element.textContent, 360),
+            rect: rectInfo(rect),
+            area: intersects(rect, rootRect)
+          };
+        })
+        .filter((item) => item.area > 0 && (item.label || item.text))
+        .slice(0, 12);
+      const sectionTitle = clean(root.querySelector("h1,h2,h3")?.innerText || state.sectionTitle || state.sectionLabel, 160);
+      const text = textBlocks.map((block) => block.text).join(" ").slice(0, 3200);
+      return {
+        ok: true,
+        clip: {
+          x: clipX,
+          y: clipY,
+          width: clipWidth,
+          height: clipHeight
+        },
+        text,
+        textBlocks,
+        images,
+        sectionTitle,
+        stateLabel: state.stateLabel,
+        logicalSignature: state.logicalSignature || state.coverageKey || state.sectionKey,
+        visibleItemCount: visibleItems.length,
+        visibleItems,
+        itemRects: visibleItems.map((item) => ({ key: item.key, label: item.label, rect: item.rect })),
+        windowSignature: JSON.stringify({
+          sectionKey: state.sectionKey,
+          pageIndex: state.pageIndex,
+          texts: textBlocks.slice(0, 24).map((block) => block.text),
+          images: images.map((image) => image.src).slice(0, 12)
+        }).slice(0, 2200)
+      };
+    })()`,
+    returnByValue: true
+  }).catch((error) => ({ result: { value: { ok: false, reason: error.message } } }));
+  return result.result?.value || { ok: false, reason: `Could not read ${state?.stateLabel || "landing state"}.` };
 }
 
 async function captureShokzProductsNavigationRelated(client, outputPath, captureContext) {

@@ -773,6 +773,10 @@ function relatedReplacementCaptureMode(snapshot, relatedShot, input) {
     shokzComparisonRelatedSectionDefinitions.some((definition) => definition.key === sectionKey)) {
     return "shokz-comparison-related-section";
   }
+  if (snapshot?.captureMode === "shokz-landing-page" ||
+    sectionKey.startsWith("landing-")) {
+    return "shokz-landing-related";
+  }
   if (sectionKey === "banner") {
     return "shokz-home-banners";
   }
@@ -956,6 +960,9 @@ function relatedCaptureModeForTarget(target, captureConfig) {
   }
   if (captureConfig.captureMode === "shokz-comparison-page") {
     return "shokz-comparison-related-section";
+  }
+  if (captureConfig.captureMode === "shokz-landing-page") {
+    return "shokz-landing-related";
   }
 
   return null;

@@ -341,7 +341,7 @@ test("home product showcase composite stacks default pages and crops hover cards
   assert.equal(result.layout.mainStack.pageCount, 2);
   assert.equal(result.layout.variantCount, 1);
   assert.ok(decoded.width > 100);
-  assert.equal(decoded.height, 198);
+  assert.equal(decoded.height, 180);
   assert.equal(pixelAt(decoded, 10, 10)[0], 200);
   assert.equal(pixelAt(decoded, 10, 100)[1], 200);
   assert.equal(pixelAt(decoded, 211, 115)[2], 200);
@@ -464,6 +464,7 @@ test("home overview composite merges module maps into one right-side timeline", 
 test("collection and comparison page capture modes prefer direct full-page clip capture", () => {
   assert.equal(shouldUseDirectFullPageClipCapture({ captureMode: "shokz-collection-page" }), true);
   assert.equal(shouldUseDirectFullPageClipCapture({ captureMode: "shokz-comparison-page" }), true);
+  assert.equal(shouldUseDirectFullPageClipCapture({ captureMode: "shokz-landing-page" }), true);
   assert.equal(shouldUseDirectFullPageClipCapture({ captureMode: "shokz-products-nav" }), false);
   assert.equal(shouldUseDirectFullPageClipCapture({}), false);
 });

@@ -131,6 +131,16 @@ test("comparison page capture mode routes to isolated related section captures",
   );
 });
 
+test("landing page capture mode routes to landing related captures", () => {
+  assert.equal(
+    relatedCaptureModeForTarget(
+      { id: "shokz-explore-open-ear-headphones" },
+      { platform: "mobile", captureMode: "shokz-landing-page" }
+    ),
+    "shokz-landing-related"
+  );
+});
+
 test("resolveAdHocCaptureExecution can bind a manual URL to the requested mobile profile", () => {
   const config = normalizeConfig({
     targets: [{ id: "home", url: "https://example.com/", label: "Example" }],

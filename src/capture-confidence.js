@@ -211,6 +211,12 @@ function toleratesLowDetailVisualAudit(shot, visualAudit) {
   ) {
     return true;
   }
+  if (
+    /^landing-/.test(String(shot?.sectionKey || "")) &&
+    (textBlocks.length >= 2 || images.length >= 1 || visibleItems.length >= 1)
+  ) {
+    return true;
+  }
   return shot?.sectionKey === "navigation" &&
     shot?.navigationLevel === "secondary" &&
     !/products/i.test(String(shot?.topLevelLabel || shot?.tabLabel || "")) &&

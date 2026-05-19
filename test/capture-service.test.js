@@ -77,4 +77,13 @@ test("resolves replacement capture modes for non-home related screenshots", () =
     ),
     "shokz-comparison-related-section"
   );
+
+  assert.equal(
+    __testOnly.relatedReplacementCaptureMode(
+      { captureMode: "shokz-landing-page" },
+      { sectionKey: "landing-open-ear-benefits" },
+      {}
+    ),
+    "shokz-landing-related"
+  );
 });
