@@ -34,7 +34,7 @@ import {
 export async function captureConfiguredUrls(config = null, options = {}) {
   const activeConfig = normalizeConfig(config || await loadConfig());
   const plans = resolveConfiguredCapturePlans(activeConfig, options);
-  return runResolvedCapturePlans(plans, activeConfig);
+  return runResolvedCapturePlans(plans, activeConfig, options);
 }
 
 export async function captureAllDevices(config = null, options = {}) {
@@ -44,7 +44,7 @@ export async function captureAllDevices(config = null, options = {}) {
 export async function captureOne(inputTarget, config = null, options = {}) {
   const activeConfig = normalizeConfig(config || await loadConfig());
   const execution = resolveAdHocCaptureExecution(inputTarget, activeConfig, options);
-  return runCaptureExecution(execution, activeConfig);
+  return runCaptureExecution(execution, activeConfig, options);
 }
 
 export async function replaceCaptureTile(input, config = null) {
@@ -346,37 +346,37 @@ async function replaceSnapshotImage({ input, snapshots, snapshotIndex, snapshot,
   };
 }
 
-async function runResolvedCapturePlans(plans, config) {
+async function runResolvedCapturePlans(plans, config, options = {}) {
   const results = [];
   for (const execution of plans) {
-    results.push(await runCaptureExecution(execution, config));
+    results.push(await runCaptureExecution(execution, config, options));
   }
   return results;
 }
 
-async function runCaptureExecution(execution, config) {
+async function runCaptureExecution(execution, config, options = {}) {
   const runner = execution.platform === "mobile"
     ? captureMobilePlan
     : capturePcPlan;
-  return runner(execution, config);
+  return runner(execution, config, options);
 }
 
-async function capturePcPlan(execution, config) {
-  return capturePlanExecution({ ...execution, platform: "pc" }, config);
+async function capturePcPlan(execution, config, options = {}) {
+  return capturePlanExecution({ ...execution, platform: "pc" }, config, options);
 }
 
-async function captureMobilePlan(execution, config) {
-  return capturePlanExecution({ ...execution, platform: "mobile" }, config);
+async function captureMobilePlan(execution, config, options = {}) {
+  return capturePlanExecution({ ...execution, platform: "mobile" }, config, options);
 }
 
-async function capturePlanExecution(execution, config) {
+async function capturePlanExecution(execution, config, options = {}) {
   const target = execution.target;
   const normalizedUrl = target.url;
   const capturedAt = new Date();
   const fileInfo = await createSnapshotFilePath(normalizedUrl, capturedAt);
   const devicePreset = execution.devicePreset || findDevicePreset(execution.deviceProfile?.devicePresetId || "");
   const publicDevice = devicePreset ? toPublicDevicePreset(devicePreset) : null;
-  const captureConfig = captureConfigForExecution(config, execution);
+  const captureConfig = captureConfigForExecution(config, execution, options);
   const diagnosticRun = createCaptureDiagnosticRun({
     targetId: target.id,
     targetLabel: target.label || normalizedUrl,
@@ -626,7 +626,7 @@ async function refreshChangeRecords() {
   }
 }
 
-function captureConfigForExecution(config, execution) {
+function captureConfigForExecution(config, execution, options = {}) {
   const targetConfig = {
     ...config,
     platform: execution.platform,
@@ -648,6 +648,18 @@ function captureConfigForExecution(config, execution) {
   const captureMode = execution.captureMode || execution.target.captureMode || null;
   if (captureMode) {
     targetConfig.captureMode = captureMode;
+  }
+  const relatedStateFilter = options.relatedStateFilter || execution.relatedStateFilter || null;
+  if (relatedStateFilter && typeof relatedStateFilter === "object") {
+    targetConfig.relatedStateFilter = relatedStateFilter;
+  }
+  const relatedStateOutputPath = stringOrNull(options.relatedStateOutputPath) || stringOrNull(execution.relatedStateOutputPath);
+  if (relatedStateOutputPath) {
+    targetConfig.relatedStateOutputPath = relatedStateOutputPath;
+  }
+  const sectionKey = stringOrNull(options.sectionKey) || stringOrNull(execution.sectionKey);
+  if (sectionKey) {
+    targetConfig.sectionKey = sectionKey;
   }
   return targetConfig;
 }
@@ -1092,7 +1104,7 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
 }
 
 async function captureShokzHomeRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun) {
-  const descriptors = [
+  const descriptors = relatedDescriptorsForCaptureConfig([
     {
       sectionKey: "banner",
       sectionLabel: "Banner",
@@ -1104,7 +1116,7 @@ async function captureShokzHomeRelatedShotsIsolated(normalizedUrl, baseOutputPat
       captureMode: "shokz-home-related-section",
       sectionCaptureKey: definition.key
     }))
-  ];
+  ], captureConfig);
   const shots = [];
   const warnings = [];
   const sections = [];
@@ -1194,12 +1206,12 @@ async function composeHomeOverviewForRelatedShots(baseOutputPath, relatedShots, 
 }
 
 async function captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun) {
-  const descriptors = shokzCollectionRelatedSectionDefinitions.map((definition) => ({
+  const descriptors = relatedDescriptorsForCaptureConfig(shokzCollectionRelatedSectionDefinitions.map((definition) => ({
     sectionKey: definition.key,
     sectionLabel: definition.sectionLabel,
     captureMode: "shokz-collection-related-section",
     sectionCaptureKey: definition.key
-  }));
+  })), captureConfig);
   const shots = [];
   const warnings = [];
   const sections = [];
@@ -1224,12 +1236,12 @@ async function captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOut
 }
 
 async function captureShokzComparisonRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun) {
-  const descriptors = shokzComparisonRelatedSectionDefinitions.map((definition) => ({
+  const descriptors = relatedDescriptorsForCaptureConfig(shokzComparisonRelatedSectionDefinitions.map((definition) => ({
     sectionKey: definition.key,
     sectionLabel: definition.sectionLabel,
     captureMode: "shokz-comparison-related-section",
     sectionCaptureKey: definition.key
-  }));
+  })), captureConfig);
   const shots = [];
   const warnings = [];
   const sections = [];
@@ -1251,6 +1263,16 @@ async function captureShokzComparisonRelatedShotsIsolated(normalizedUrl, baseOut
       sections
     }
   };
+}
+
+function relatedDescriptorsForCaptureConfig(descriptors, captureConfig = {}) {
+  const requestedSectionKey = stringOrNull(captureConfig.sectionKey) ||
+    stringOrNull(captureConfig.relatedStateFilter?.sectionKey);
+  if (!requestedSectionKey) {
+    return descriptors;
+  }
+  const filtered = descriptors.filter((descriptor) => descriptor.sectionKey === requestedSectionKey);
+  return filtered.length ? filtered : descriptors;
 }
 
 async function captureIsolatedRelatedSection(normalizedUrl, baseOutputPath, captureConfig, descriptor, diagnosticRun) {
@@ -1568,6 +1590,7 @@ export const __testOnly = {
   findRelatedShotForReplacement,
   relatedReplacementCaptureMode,
   replacementFilterForRelatedShot,
+  relatedDescriptorsForCaptureConfig,
   relatedCaptureModeForTarget,
   resolveAdHocCaptureExecution,
   runnerNameForPlatform

@@ -3,7 +3,13 @@ import test from "node:test";
 import { __testOnly } from "../src/capture-service.js";
 import { normalizeConfig, resolveConfiguredCapturePlans } from "../src/store.js";
 
-const { captureConfigForExecution, relatedCaptureModeForTarget, resolveAdHocCaptureExecution, runnerNameForPlatform } = __testOnly;
+const {
+  captureConfigForExecution,
+  relatedCaptureModeForTarget,
+  relatedDescriptorsForCaptureConfig,
+  resolveAdHocCaptureExecution,
+  runnerNameForPlatform
+} = __testOnly;
 
 test("capture plans route to distinct platform runners", () => {
   assert.equal(runnerNameForPlatform("pc"), "capturePcPlan");
@@ -32,6 +38,60 @@ test("captureConfigForExecution builds a mobile viewport and applies plan overri
   assert.equal(captureConfig.viewport.touch, true);
   assert.equal(captureConfig.captureMode, "shokz-products-nav");
   assert.equal(captureConfig.fullPage, false);
+});
+
+test("captureConfigForExecution carries targeted related-state filters", () => {
+  const config = normalizeConfig({
+    targets: [{ id: "comparison", url: "https://example.com/compare", label: "Comparison" }],
+    deviceProfiles: [{ id: "mobile-main", platform: "mobile", devicePresetId: "iphone-15", enabled: true }],
+    capturePlans: [{
+      id: "comparison-mobile",
+      targetId: "comparison",
+      deviceProfileId: "mobile-main",
+      enabled: true,
+      captureMode: "shokz-comparison-page"
+    }]
+  });
+  const execution = resolveConfiguredCapturePlans(config, { planIds: ["comparison-mobile"] })[0];
+
+  const captureConfig = captureConfigForExecution(config, execution, {
+    sectionKey: "comparison-products",
+    relatedStateFilter: {
+      sectionKey: "comparison-products",
+      productKey: "openrunpro2",
+      tileKey: "openrunpro2"
+    }
+  });
+
+  assert.equal(captureConfig.captureMode, "shokz-comparison-page");
+  assert.equal(captureConfig.sectionKey, "comparison-products");
+  assert.deepEqual(captureConfig.relatedStateFilter, {
+    sectionKey: "comparison-products",
+    productKey: "openrunpro2",
+    tileKey: "openrunpro2"
+  });
+});
+
+test("relatedDescriptorsForCaptureConfig narrows isolated related captures by section", () => {
+  const descriptors = [
+    { sectionKey: "comparison-products" },
+    { sectionKey: "comparison-quick-look" }
+  ];
+
+  assert.deepEqual(
+    relatedDescriptorsForCaptureConfig(descriptors, { sectionKey: "comparison-products" }),
+    [{ sectionKey: "comparison-products" }]
+  );
+  assert.deepEqual(
+    relatedDescriptorsForCaptureConfig(descriptors, {
+      relatedStateFilter: { sectionKey: "comparison-quick-look" }
+    }),
+    [{ sectionKey: "comparison-quick-look" }]
+  );
+  assert.deepEqual(
+    relatedDescriptorsForCaptureConfig(descriptors, { sectionKey: "missing-section" }),
+    descriptors
+  );
 });
 
 test("navigation related captures run for both desktop and mobile navigation targets", () => {

@@ -7561,11 +7561,26 @@ async function captureShokzComparisonProductVariantCard(client, definition, stat
 }
 
 async function captureShokzComparisonProductVariantPairCard(client, definition, state, viewport) {
+  const positioned = await positionShokzComparisonProductsSection(client);
+  if (!positioned.ok) {
+    return {
+      ok: false,
+      reason: positioned.reason || `Could not position ${definition.sectionLabel} product cards.`
+    };
+  }
+
   const variantActivation = await activateShokzComparisonProductVariantPairState(client, state);
   if (!variantActivation.ok) {
     return {
       ok: false,
       reason: variantActivation.reason || `Could not activate ${state.stateLabel}.`
+    };
+  }
+  const variantReady = await waitForShokzComparisonProductVariantPairState(client, state);
+  if (!variantReady.ok) {
+    return {
+      ok: false,
+      reason: variantReady.reason || `Could not confirm ${state.stateLabel}.`
     };
   }
 
@@ -7606,9 +7621,17 @@ async function captureShokzComparisonProductVariantPairCard(client, definition, 
       acceptBlankAudit: (blankAudit) => isAcceptableCollectionProductVariantBlankAudit(blankAudit, current),
       beforeAttempt: async ({ attempt }) => {
         if (attempt > 1) {
+          const retryPositioned = await positionShokzComparisonProductsSection(client);
+          if (!retryPositioned.ok) {
+            throw new Error(retryPositioned.reason || `Could not reposition ${definition.sectionLabel} product cards.`);
+          }
           const retryActivation = await activateShokzComparisonProductVariantPairState(client, state);
           if (!retryActivation.ok) {
             throw new Error(retryActivation.reason || `Could not reactivate ${state.stateLabel}.`);
+          }
+          const retryReady = await waitForShokzComparisonProductVariantPairState(client, state);
+          if (!retryReady.ok) {
+            throw new Error(retryReady.reason || `Could not confirm ${state.stateLabel} on retry.`);
           }
           await sleep(360);
           await primeLazyImages(client);
@@ -7671,6 +7694,79 @@ async function activateShokzComparisonProductVariantPairState(client, state) {
     }
   }
   return { ok: true, trackIndexes };
+}
+
+async function waitForShokzComparisonProductVariantPairState(client, state, options = {}) {
+  const timeoutMs = Math.max(400, Math.min(5000, Number(options.timeoutMs) || 2600));
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const result = await client.send("Runtime.evaluate", {
+      expression: `(() => {
+        const state = ${JSON.stringify({
+          productKey: String(state?.productKey || "").trim().toLowerCase(),
+          productLabel: state?.productLabel || "",
+          variantId: state?.variantId || "",
+          trackIndexes: Array.isArray(state?.trackIndexes) && state.trackIndexes.length ? state.trackIndexes : [1, 2],
+          stateLabel: state?.stateLabel || ""
+        })};
+        const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+        const visible = (element) => {
+          if (!element || !(element instanceof Element)) return false;
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 0 &&
+            rect.height > 0 &&
+            style.visibility !== "hidden" &&
+            style.display !== "none" &&
+            Number(style.opacity || 1) > 0.01;
+        };
+        const activeContent = (root) => root?.querySelector?.(".content.active[data-handle]") || null;
+        const handleMatches = (content) => {
+          const handle = clean(content?.getAttribute?.("data-handle")).toLowerCase();
+          return content && (!state.productKey || handle === state.productKey);
+        };
+        const trackIndexes = state.trackIndexes.map((trackIndex) => Number(trackIndex || 0)).filter(Boolean);
+        const checks = trackIndexes.map((trackIndex) => {
+          const cardSelectors = [
+            ".item.product-wrapper.product-info-item-" + trackIndex + ".compare-col-" + trackIndex,
+            ".item.product-wrapper.compare-col-" + trackIndex
+          ];
+          const cards = Array.from(document.querySelectorAll(cardSelectors.join(", ")))
+            .filter((element) => visible(element))
+            .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+            .filter((entry) => entry.rect.top > -80)
+            .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+          const card = cards.find((entry) => handleMatches(activeContent(entry.element)))?.element || null;
+          const content = activeContent(card);
+          const activeSwatch = content?.querySelector?.(".product-color-swatch-wrapper .swatch.active[data-id]") || null;
+          const activeImage = content?.querySelector?.(".variant-image.active[data-id], .variant-image.swatch-active[data-id]") || null;
+          const activeSwatchId = clean(activeSwatch?.getAttribute?.("data-id"));
+          const activeImageId = clean(activeImage?.getAttribute?.("data-id"));
+          const swatchOk = !state.variantId || activeSwatchId === state.variantId;
+          const imageOk = !state.variantId || !activeImage || activeImageId === state.variantId;
+          return {
+            trackIndex,
+            found: Boolean(card && content),
+            activeSwatchId,
+            activeImageId,
+            swatchOk,
+            imageOk
+          };
+        });
+        return {
+          ok: checks.length === trackIndexes.length && checks.every((check) => check.found && check.swatchOk && check.imageOk),
+          checks
+        };
+      })()`,
+      returnByValue: true
+    }).catch(() => null);
+    const value = result?.result?.value || {};
+    if (value.ok) {
+      return { ok: true, checks: value.checks || [] };
+    }
+    await sleep(160);
+  }
+  return { ok: false, reason: `${state?.stateLabel || "Comparison product color"} did not become active in both columns.` };
 }
 
 async function readShokzComparisonProductVariantState(client, definition, state) {
