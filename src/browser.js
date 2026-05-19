@@ -5293,6 +5293,8 @@ function composeShokzCollectionTabComposite({ longCapture, variantCaptures, view
         productIndex: card.capture.state?.productIndex || null,
         variantKey: card.capture.state?.variantKey || null,
         variantLabel: card.capture.state?.variantLabel || null,
+        sizeLabel: card.capture.state?.sizeLabel || null,
+        sizeKey: card.capture.state?.sizeKey || null,
         rect: card.capture.compositeRect,
         sourceClip: card.capture.clip || null
       });
@@ -6358,45 +6360,76 @@ async function captureShokzComparisonProductComposite(client, {
 
   await sleep(280);
   await primeLazyImages(client);
-  const variantPlan = await readShokzComparisonProductVariantPlan(client, definition, {
-    ...pairedProduct,
-    trackIndex: 1
-  });
-  if (!variantPlan.ok || !Array.isArray(variantPlan.states) || !variantPlan.states.length) {
-    warnings.push({
-      sectionKey: definition.key,
-      sectionLabel: definition.sectionLabel,
-      stateLabel: productLabel,
-      message: variantPlan.reason || `Could not read color states for ${productLabel}.`
-    });
-  }
-
+  const productAnchorYs = comparisonProductCardAnchorYs(longCapture.current, productKey);
   const variantCaptures = [];
-  for (const [variantIndex, state] of (variantPlan.states || []).entries()) {
-    const variantCapture = await captureShokzComparisonProductVariantPairCard(client, definition, {
-      ...state,
-      productIndex: pairedProduct.productIndex || productIndex,
-      trackIndexes: [1, 2],
-      stateIndex: variantIndex + 1
-    }, viewport);
-    if (!variantCapture.ok) {
+  let plannedVariantCount = 0;
+  for (const [anchorIndex, anchorY] of productAnchorYs.entries()) {
+    const positioned = await positionShokzComparisonProductAnchor(client, anchorY);
+    if (!positioned.ok) {
       warnings.push({
         sectionKey: definition.key,
         sectionLabel: definition.sectionLabel,
-        stateLabel: state.stateLabel,
-        message: variantCapture.reason || `Could not capture ${state.stateLabel}.`
+        stateLabel: productLabel,
+        message: positioned.reason || `Could not position ${productLabel} product card ${anchorIndex + 1}.`
       });
       continue;
     }
-    variantCaptures.push(variantCapture);
-  }
+    await primeLazyImages(client);
 
-  const productAnchorYs = comparisonProductCardAnchorYs(longCapture.current, productKey);
-  const alignedVariantCaptures = alignComparisonProductVariantCaptures(variantCaptures, {
-    productKey,
-    productLabel,
-    anchorYs: productAnchorYs
-  });
+    const variantPlan = await readShokzComparisonProductVariantPlan(client, definition, {
+      ...pairedProduct,
+      trackIndex: 1,
+      productCardAnchorY: anchorY
+    });
+    if (!variantPlan.ok || !Array.isArray(variantPlan.states) || !variantPlan.states.length) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: productLabel,
+        message: variantPlan.reason || `Could not read color and size states for ${productLabel}.`
+      });
+      continue;
+    }
+    plannedVariantCount = Math.max(plannedVariantCount, variantPlan.states.length);
+
+    for (const [variantIndex, state] of (variantPlan.states || []).entries()) {
+      const groupKey = [
+        "comparison-products",
+        productKey || state.productKey || "product",
+        anchorIndex + 1
+      ].join(":");
+      const variantCapture = await captureShokzComparisonProductVariantPairCard(client, definition, {
+        ...state,
+        productIndex: pairedProduct.productIndex || productIndex,
+        trackIndexes: [1, 2],
+        stateIndex: variantIndex + 1,
+        productCardAnchorIndex: anchorIndex + 1,
+        productCardAnchorY: anchorY,
+        compositeGroupKey: groupKey
+      }, viewport, { anchorY });
+      if (!variantCapture.ok) {
+        warnings.push({
+          sectionKey: definition.key,
+          sectionLabel: definition.sectionLabel,
+          stateLabel: state.stateLabel,
+          message: variantCapture.reason || `Could not capture ${state.stateLabel}.`
+        });
+        continue;
+      }
+      const compositeY = Number(variantCapture.clip?.y);
+      variantCaptures.push({
+        ...variantCapture,
+        compositeY: Number.isFinite(compositeY) ? Math.max(0, Math.round(compositeY)) : anchorY,
+        state: {
+          ...(variantCapture.state || {}),
+          productKey: variantCapture.state?.productKey || productKey,
+          productLabel: variantCapture.state?.productLabel || productLabel,
+          compositeY: Number.isFinite(compositeY) ? Math.max(0, Math.round(compositeY)) : anchorY,
+          compositeGroupKey: groupKey
+        }
+      });
+    }
+  }
   const quickLookDefinition = findShokzComparisonRelatedSectionDefinition("comparison-quick-look");
   const quickLookCaptures = quickLookDefinition
     ? await captureShokzComparisonProductQuickLookCaptures(client, quickLookDefinition, {
@@ -6407,7 +6440,7 @@ async function captureShokzComparisonProductComposite(client, {
     })
     : [];
   const compositeCaptures = [
-    ...alignedVariantCaptures,
+    ...variantCaptures,
     ...quickLookCaptures
   ];
 
@@ -6433,6 +6466,8 @@ async function captureShokzComparisonProductComposite(client, {
     productIndex: item.state.productIndex || pairedProduct.productIndex || productIndex,
     variantKey: item.state.variantKey || null,
     variantLabel: item.state.variantLabel || null,
+    sizeLabel: item.state.sizeLabel || null,
+    sizeKey: item.state.sizeKey || null,
     variantOptions: item.state.variantOptions || [],
     rect: item.compositeRect || null,
     sourceClip: item.clip || null
@@ -6444,7 +6479,7 @@ async function captureShokzComparisonProductComposite(client, {
       productKey,
       productLabel,
       productIndex: pairedProduct.productIndex || productIndex,
-      variantCount: compositeCaptures.length
+      variantCount: plannedVariantCount || variantCaptures.length || compositeCaptures.length
     }]
   });
   const stateLabel = productLabel;
@@ -6582,6 +6617,16 @@ function comparisonProductCardAnchorYs(pageState, productKey) {
 function comparisonQuickLookAnchorY(pageState) {
   const y = Number(pageState?.comparisonAnchors?.quickLookY);
   return Number.isFinite(y) && y >= 0 ? y : null;
+}
+
+async function positionShokzComparisonProductAnchor(client, anchorY) {
+  const targetY = Number(anchorY);
+  if (!Number.isFinite(targetY) || targetY < 0) {
+    return positionShokzComparisonProductsSection(client);
+  }
+  await scrollTo(client, Math.max(0, Math.round(targetY - 128)));
+  await settlePositionedViewport(client, { delayMs: 260, frames: 2 });
+  return { ok: true, scrollY: Math.max(0, Math.round(targetY - 128)) };
 }
 
 function alignComparisonProductVariantCaptures(variantCaptures, { productKey, productLabel, anchorYs }) {
@@ -7302,7 +7347,7 @@ async function readShokzComparisonProductsPageState(client, definition) {
 
 async function readShokzComparisonProductVariantPlan(client, definition, productState) {
   const result = await client.send("Runtime.evaluate", {
-    expression: `(() => {
+    expression: `(async () => {
       const definition = ${JSON.stringify({
         key: definition?.key || "",
         sectionLabel: definition?.sectionLabel || ""
@@ -7311,9 +7356,12 @@ async function readShokzComparisonProductVariantPlan(client, definition, product
         productKey: productState?.productKey || "",
         productLabel: productState?.productLabel || "",
         productIndex: productState?.productIndex || null,
-        trackIndex: Number(productState?.trackIndex || 1) || 1
+        trackIndex: Number(productState?.trackIndex || 1) || 1,
+        productCardAnchorY: Number(productState?.productCardAnchorY || 0) || null
       })};
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
       const clean = (value, max = 180) => String(value || "").replace(/\\s+/g, " ").trim().slice(0, max);
+      const keyPart = (value) => clean(value, 120).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
       const visible = (element) => {
         if (!element || !(element instanceof Element)) return false;
         const rect = element.getBoundingClientRect();
@@ -7325,15 +7373,20 @@ async function readShokzComparisonProductVariantPlan(client, definition, product
           Number(style.opacity || 1) > 0.01;
       };
       const activeCard = () => {
+        const targetAnchorY = productState.productCardAnchorY == null ? NaN : Number(productState.productCardAnchorY);
         const selectors = [
           ".item.product-wrapper.product-info-item-" + productState.trackIndex + ".compare-col-" + productState.trackIndex,
           ".item.product-wrapper.compare-col-" + productState.trackIndex
         ];
         const cards = Array.from(document.querySelectorAll(selectors.join(", ")))
           .filter((element) => visible(element))
-          .map((element) => ({ element, rect: element.getBoundingClientRect() }))
-          .filter((entry) => entry.rect.top > -80)
+          .map((element) => {
+            const rect = element.getBoundingClientRect();
+            return { element, rect, absoluteY: Math.max(0, Math.round(window.scrollY + rect.top)) };
+          })
+          .filter((entry) => Number.isFinite(targetAnchorY) || entry.rect.top > -80)
           .sort((a, b) =>
+            (Number.isFinite(targetAnchorY) ? Math.abs(a.absoluteY - targetAnchorY) - Math.abs(b.absoluteY - targetAnchorY) : 0) ||
             Math.abs(a.rect.left - (productState.trackIndex === 2 ? window.innerWidth / 2 : 0)) -
             Math.abs(b.rect.left - (productState.trackIndex === 2 ? window.innerWidth / 2 : 0)) ||
             a.rect.top - b.rect.top
@@ -7349,45 +7402,151 @@ async function readShokzComparisonProductVariantPlan(client, definition, product
       if (!card || !content) {
         return { ok: false, reason: "Could not find active product card for " + (productState.productLabel || productState.productKey || "product") + "." };
       }
+      const clickElement = async (element, delayMs = 140) => {
+        if (!element) return;
+        element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+        await wait(delayMs);
+      };
       const productKey = clean(content.getAttribute("data-handle"), 100).toLowerCase() || productState.productKey;
       const productLabel = productState.productLabel || clean(
         document.querySelector(".item.product-name .item-inner-" + productState.trackIndex + " .content.active .swatch-active")?.innerText ||
         productKey.replace(/[-_]+/g, " "),
         100
       );
-      const swatches = Array.from(content.querySelectorAll(".product-color-swatch-wrapper .swatch[data-id]"))
+      const readColorSwatches = () => Array.from(content.querySelectorAll(".product-color-swatch-wrapper .swatch[data-id]"))
         .filter((element) => !element.classList.contains("hidden") && visible(element))
         .map((element, index) => ({
           element,
           variantId: clean(element.getAttribute("data-id"), 100),
-          variantIndex: index + 1,
+          colorIndex: index + 1,
           active: element.classList.contains("active")
         }))
-        .filter((item, index, list) => item.variantId && list.findIndex((candidate) => candidate.variantId === item.variantId) === index);
-      const activeImage = content.querySelector(".variant-image.active[data-id]") || null;
-      const states = (swatches.length ? swatches : [{
-        variantId: clean(activeImage?.getAttribute("data-id"), 100) || productKey + "-default",
-        variantIndex: 1,
-        active: true
-      }]).map((swatch) => {
-        const variantLabel = "Color: Color " + swatch.variantIndex;
-        const variantKey = [productKey, swatch.variantId || swatch.variantIndex].filter(Boolean).join("-");
-        return {
+        .filter((item, index, list) => item.variantId && list.findIndex((candidate) => candidate.colorIndex === item.colorIndex) === index);
+      const readSizeOptions = () => {
+        const optionBlocks = Array.from(content.querySelectorAll(".options-item, .product-swatch-wrapper"))
+          .filter((element) => visible(element));
+        const namedBlocks = optionBlocks.filter((element) => {
+          const optionName = clean(element.querySelector(".option-name")?.innerText || element.querySelector(".option-name")?.textContent, 80);
+          return /\\bsize\\b/i.test(optionName) || (/\\bsize\\b/i.test(clean(element.innerText || element.textContent, 240)) && element.querySelector(".o-item"));
+        });
+        const roots = namedBlocks.length ? namedBlocks : optionBlocks.filter((element) => element.querySelector(".o-item"));
+        const controls = roots.flatMap((root) => Array.from(root.querySelectorAll(".o-item, button, [role='button'], label, [data-value]")));
+        const seen = new Set();
+        return controls
+          .filter((element) => visible(element))
+          .map((element, index) => {
+            const label = clean(
+              element.innerText ||
+              element.textContent ||
+              element.getAttribute("aria-label") ||
+              element.getAttribute("title") ||
+              element.getAttribute("data-value") ||
+              element.getAttribute("value"),
+              80
+            );
+            const sizeKey = keyPart(label) || "size-" + (index + 1);
+            const classText = String(element.className || "");
+            const disabled = element.matches("[disabled], [aria-disabled='true']") || /\\b(disabled|soldout|sold-out|unavailable)\\b/i.test(classText);
+            return {
+              element,
+              sizeLabel: label,
+              sizeKey,
+              sizeIndex: index + 1,
+              active: element.classList.contains("active") ||
+                element.classList.contains("selected") ||
+                element.matches(":checked, [aria-checked='true'], [aria-selected='true']"),
+              disabled
+            };
+          })
+          .filter((item) => item.sizeLabel && !item.disabled)
+          .filter((item) => {
+            const dedupeKey = item.sizeKey || item.sizeLabel;
+            if (seen.has(dedupeKey)) return false;
+            seen.add(dedupeKey);
+            return true;
+          });
+      };
+      const activeVariantId = () => clean(
+        content.querySelector(".product-color-swatch-wrapper .swatch.active[data-id]")?.getAttribute("data-id") ||
+        content.querySelector(".variant-image.active[data-id], .variant-image.swatch-active[data-id]")?.getAttribute("data-id") ||
+        content.querySelector(".prices.active[data-id]")?.getAttribute("data-id"),
+        100
+      );
+      const initialSwatches = readColorSwatches();
+      const colorSlots = initialSwatches.length
+        ? initialSwatches.map((swatch) => ({
+          colorIndex: swatch.colorIndex,
+          colorControlId: swatch.variantId
+        }))
+        : [{
+          colorIndex: 1,
+          colorControlId: activeVariantId() || productKey + "-default"
+        }];
+      const states = [];
+      const seenStates = new Set();
+      for (const color of colorSlots) {
+        const swatches = readColorSwatches();
+        const swatch = swatches[color.colorIndex - 1] ||
+          swatches.find((item) => item.variantId === color.colorControlId) ||
+          null;
+        if (swatch?.element) {
+          await clickElement(swatch.element, 180);
+        }
+        const initialSizes = readSizeOptions();
+        const sizeSlots = initialSizes.length ? initialSizes : [{
+          sizeLabel: "",
+          sizeKey: "default",
+          sizeIndex: 1,
+          active: true,
+          isDefault: true
+        }];
+        for (const sizeSlot of sizeSlots) {
+          const currentSizes = readSizeOptions();
+          const size = currentSizes.find((item) => item.sizeKey === sizeSlot.sizeKey) ||
+            currentSizes[sizeSlot.sizeIndex - 1] ||
+            sizeSlot;
+          if (!size.isDefault && size.element) {
+            await clickElement(size.element, 180);
+          }
+          const resolvedVariantId = activeVariantId() || color.colorControlId || [productKey, "color", color.colorIndex].join("-");
+          const colorLabel = "Color: Color " + color.colorIndex;
+          const sizeLabel = size.sizeLabel ? "Size: " + size.sizeLabel : "";
+          const variantLabel = [colorLabel, sizeLabel].filter(Boolean).join(" / ");
+          const variantKey = [
+            productKey,
+            "color",
+            color.colorIndex,
+            size.sizeLabel ? "size-" + size.sizeKey : "",
+            resolvedVariantId
+          ].filter(Boolean).join("-");
+          const stateDedupeKey = [color.colorIndex, size.sizeKey || "default", resolvedVariantId].join("|");
+          if (seenStates.has(stateDedupeKey)) continue;
+          seenStates.add(stateDedupeKey);
+          states.push({
           sectionKey: definition.key,
           productKey,
           productLabel,
           productIndex: productState.productIndex,
           variantKey,
           variantLabel,
-          variantId: swatch.variantId || "",
-          variantIndex: swatch.variantIndex,
-          variantOptions: [{ name: "Color", value: variantLabel, controlId: swatch.variantId || "" }],
+            variantId: resolvedVariantId,
+            variantIndex: states.length + 1,
+            colorIndex: color.colorIndex,
+            colorControlId: color.colorControlId || "",
+            sizeLabel: size.sizeLabel || "",
+            sizeKey: size.sizeLabel ? size.sizeKey : "",
+            sizeIndex: size.sizeLabel ? size.sizeIndex : null,
+            variantOptions: [
+              { name: "Color", value: colorLabel, controlId: color.colorControlId || "", index: color.colorIndex },
+              ...(size.sizeLabel ? [{ name: "Size", value: size.sizeLabel, controlId: size.sizeKey || "", index: size.sizeIndex }] : [])
+            ],
           trackIndex: productState.trackIndex,
-          stateLabel: [productLabel, variantLabel].filter(Boolean).join(" / "),
-          fileId: [productKey, "color", swatch.variantIndex].filter(Boolean).join("-"),
+            stateLabel: [productLabel, variantLabel].filter(Boolean).join(" / "),
+            fileId: [productKey, "color", color.colorIndex, size.sizeLabel ? "size-" + size.sizeKey : ""].filter(Boolean).join("-"),
           logicalSignature: [definition.key, productKey, variantKey].filter(Boolean).join("|")
-        };
-      });
+          });
+        }
+      }
       return {
         ok: true,
         states,
@@ -7395,6 +7554,7 @@ async function readShokzComparisonProductVariantPlan(client, definition, product
         productLabel
       };
     })()`,
+    awaitPromise: true,
     returnByValue: true
   }).catch(() => null);
   return result?.result?.value || { ok: false, reason: `Could not read variants for ${productState?.productLabel || "comparison product"}.` };
@@ -7410,15 +7570,23 @@ async function activateShokzComparisonProductVariantState(client, state) {
     return ready;
   }
   const result = await client.send("Runtime.evaluate", {
-    expression: `(() => {
+    expression: `(async () => {
       const state = ${JSON.stringify({
         productKey: state?.productKey || "",
         productLabel: state?.productLabel || "",
         variantId: state?.variantId || "",
+        colorIndex: Number(state?.colorIndex || 0) || null,
+        colorControlId: state?.colorControlId || "",
+        sizeLabel: state?.sizeLabel || "",
+        sizeKey: state?.sizeKey || "",
+        sizeIndex: Number(state?.sizeIndex || 0) || null,
+        productCardAnchorY: Number(state?.productCardAnchorY || 0) || null,
         trackIndex: Number(state?.trackIndex || 1) || 1,
         stateLabel: state?.stateLabel || ""
       })};
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
       const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+      const keyPart = (value) => clean(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
       const visible = (element) => {
         if (!element || !(element instanceof Element)) return false;
         const rect = element.getBoundingClientRect();
@@ -7433,11 +7601,18 @@ async function activateShokzComparisonProductVariantState(client, state) {
         ".item.product-wrapper.product-info-item-" + state.trackIndex + ".compare-col-" + state.trackIndex,
         ".item.product-wrapper.compare-col-" + state.trackIndex
       ];
+      const targetAnchorY = state.productCardAnchorY == null ? NaN : Number(state.productCardAnchorY);
       const cards = Array.from(document.querySelectorAll(selectors.join(", ")))
         .filter((element) => visible(element))
-        .map((element) => ({ element, rect: element.getBoundingClientRect() }))
-        .filter((entry) => entry.rect.top > -80)
-        .sort((a, b) => a.rect.top - b.rect.top);
+        .map((element) => {
+          const rect = element.getBoundingClientRect();
+          return { element, rect, absoluteY: Math.max(0, Math.round(window.scrollY + rect.top)) };
+        })
+        .filter((entry) => Number.isFinite(targetAnchorY) || entry.rect.top > -80)
+        .sort((a, b) =>
+          (Number.isFinite(targetAnchorY) ? Math.abs(a.absoluteY - targetAnchorY) - Math.abs(b.absoluteY - targetAnchorY) : 0) ||
+          a.rect.top - b.rect.top
+        );
       const card = cards.find((entry) => {
         const active = entry.element.querySelector(".content.active[data-handle]");
         const handle = clean(active?.getAttribute("data-handle")).toLowerCase();
@@ -7447,17 +7622,76 @@ async function activateShokzComparisonProductVariantState(client, state) {
       if (!content) {
         return { ok: false, reason: "Could not find active card for " + (state.productLabel || state.productKey || "product") + "." };
       }
-      if (!state.variantId) {
-        return { ok: true, mode: "default" };
+      const swatches = () => Array.from(content.querySelectorAll(".product-color-swatch-wrapper .swatch[data-id]"))
+        .filter((element) => !element.classList.contains("hidden") && visible(element));
+      const clickElement = async (element, delayMs = 140) => {
+        if (!element) return;
+        element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+        await wait(delayMs);
+      };
+      const colorSwatches = swatches();
+      const swatch = (state.colorIndex ? colorSwatches[state.colorIndex - 1] : null) ||
+        colorSwatches.find((element) => clean(element.getAttribute("data-id")) === state.variantId) ||
+        colorSwatches.find((element) => clean(element.getAttribute("data-id")) === state.colorControlId) ||
+        null;
+      if ((state.variantId || state.colorControlId || state.colorIndex) && !swatch) {
+        return { ok: false, reason: "Could not find color swatch for " + (state.stateLabel || state.variantId || state.colorIndex) + "." };
       }
-      const swatch = Array.from(content.querySelectorAll(".product-color-swatch-wrapper .swatch[data-id]"))
-        .find((element) => clean(element.getAttribute("data-id")) === state.variantId) || null;
-      if (!swatch) {
-        return { ok: false, reason: "Could not find color swatch for " + (state.stateLabel || state.variantId) + "." };
+      if (swatch) {
+        await clickElement(swatch, 180);
       }
-      swatch.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-      return { ok: true, variantId: state.variantId };
+      const sizeControls = () => {
+        const optionBlocks = Array.from(content.querySelectorAll(".options-item, .product-swatch-wrapper"))
+          .filter((element) => visible(element));
+        const namedBlocks = optionBlocks.filter((element) => {
+          const optionName = clean(element.querySelector(".option-name")?.innerText || element.querySelector(".option-name")?.textContent);
+          return /\\bsize\\b/i.test(optionName) || (/\\bsize\\b/i.test(clean(element.innerText || element.textContent)) && element.querySelector(".o-item"));
+        });
+        const roots = namedBlocks.length ? namedBlocks : optionBlocks.filter((element) => element.querySelector(".o-item"));
+        const seen = new Set();
+        return roots.flatMap((root) => Array.from(root.querySelectorAll(".o-item, button, [role='button'], label, [data-value]")))
+          .filter((element) => visible(element))
+          .map((element, index) => {
+            const label = clean(
+              element.innerText ||
+              element.textContent ||
+              element.getAttribute("aria-label") ||
+              element.getAttribute("title") ||
+              element.getAttribute("data-value") ||
+              element.getAttribute("value")
+            );
+            const sizeKey = keyPart(label) || "size-" + (index + 1);
+            const classText = String(element.className || "");
+            const disabled = element.matches("[disabled], [aria-disabled='true']") || /\\b(disabled|soldout|sold-out|unavailable)\\b/i.test(classText);
+            return { element, label, sizeKey, index: index + 1, disabled };
+          })
+          .filter((item) => item.label && !item.disabled)
+          .filter((item) => {
+            const key = item.sizeKey || item.label;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+      };
+      const desiredSizeKey = keyPart(state.sizeKey || state.sizeLabel);
+      if (desiredSizeKey || state.sizeIndex) {
+        const sizes = sizeControls();
+        const size = sizes.find((item) => desiredSizeKey && item.sizeKey === desiredSizeKey) ||
+          (state.sizeIndex ? sizes[state.sizeIndex - 1] : null) ||
+          null;
+        if (!size) {
+          return { ok: false, reason: "Could not find size option for " + (state.stateLabel || state.sizeLabel || state.sizeIndex) + "." };
+        }
+        await clickElement(size.element, 180);
+      }
+      const activeVariantId = clean(
+        content.querySelector(".product-color-swatch-wrapper .swatch.active[data-id]")?.getAttribute("data-id") ||
+        content.querySelector(".variant-image.active[data-id], .variant-image.swatch-active[data-id]")?.getAttribute("data-id") ||
+        content.querySelector(".prices.active[data-id]")?.getAttribute("data-id")
+      );
+      return { ok: true, variantId: activeVariantId || state.variantId || "", colorIndex: state.colorIndex, sizeLabel: state.sizeLabel || "" };
     })()`,
+    awaitPromise: true,
     returnByValue: true
   }).catch(() => null);
   if (result?.result?.value?.ok) {
@@ -7560,8 +7794,10 @@ async function captureShokzComparisonProductVariantCard(client, definition, stat
   }
 }
 
-async function captureShokzComparisonProductVariantPairCard(client, definition, state, viewport) {
-  const positioned = await positionShokzComparisonProductsSection(client);
+async function captureShokzComparisonProductVariantPairCard(client, definition, state, viewport, options = {}) {
+  const positioned = Number.isFinite(Number(options.anchorY))
+    ? await positionShokzComparisonProductAnchor(client, Number(options.anchorY))
+    : await positionShokzComparisonProductsSection(client);
   if (!positioned.ok) {
     return {
       ok: false,
@@ -7621,7 +7857,9 @@ async function captureShokzComparisonProductVariantPairCard(client, definition, 
       acceptBlankAudit: (blankAudit) => isAcceptableCollectionProductVariantBlankAudit(blankAudit, current),
       beforeAttempt: async ({ attempt }) => {
         if (attempt > 1) {
-          const retryPositioned = await positionShokzComparisonProductsSection(client);
+          const retryPositioned = Number.isFinite(Number(options.anchorY))
+            ? await positionShokzComparisonProductAnchor(client, Number(options.anchorY))
+            : await positionShokzComparisonProductsSection(client);
           if (!retryPositioned.ok) {
             throw new Error(retryPositioned.reason || `Could not reposition ${definition.sectionLabel} product cards.`);
           }
@@ -7706,10 +7944,15 @@ async function waitForShokzComparisonProductVariantPairState(client, state, opti
           productKey: String(state?.productKey || "").trim().toLowerCase(),
           productLabel: state?.productLabel || "",
           variantId: state?.variantId || "",
+          sizeLabel: state?.sizeLabel || "",
+          sizeKey: state?.sizeKey || "",
+          sizeIndex: Number(state?.sizeIndex || 0) || null,
+          productCardAnchorY: Number(state?.productCardAnchorY || 0) || null,
           trackIndexes: Array.isArray(state?.trackIndexes) && state.trackIndexes.length ? state.trackIndexes : [1, 2],
           stateLabel: state?.stateLabel || ""
         })};
         const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+        const keyPart = (value) => clean(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
         const visible = (element) => {
           if (!element || !(element instanceof Element)) return false;
           const rect = element.getBoundingClientRect();
@@ -7725,6 +7968,45 @@ async function waitForShokzComparisonProductVariantPairState(client, state, opti
           const handle = clean(content?.getAttribute?.("data-handle")).toLowerCase();
           return content && (!state.productKey || handle === state.productKey);
         };
+        const sizeControls = (content) => {
+          const optionBlocks = Array.from(content?.querySelectorAll?.(".options-item, .product-swatch-wrapper") || [])
+            .filter((element) => visible(element));
+          const namedBlocks = optionBlocks.filter((element) => {
+            const optionName = clean(element.querySelector(".option-name")?.innerText || element.querySelector(".option-name")?.textContent);
+            return /\\bsize\\b/i.test(optionName) || (/\\bsize\\b/i.test(clean(element.innerText || element.textContent)) && element.querySelector(".o-item"));
+          });
+          const roots = namedBlocks.length ? namedBlocks : optionBlocks.filter((element) => element.querySelector(".o-item"));
+          const seen = new Set();
+          return roots.flatMap((root) => Array.from(root.querySelectorAll(".o-item, button, [role='button'], label, [data-value]")))
+            .filter((element) => visible(element))
+            .map((element, index) => {
+              const label = clean(
+                element.innerText ||
+                element.textContent ||
+                element.getAttribute("aria-label") ||
+                element.getAttribute("title") ||
+                element.getAttribute("data-value") ||
+                element.getAttribute("value")
+              );
+              const sizeKey = keyPart(label) || "size-" + (index + 1);
+              return {
+                label,
+                sizeKey,
+                index: index + 1,
+                active: element.classList.contains("active") ||
+                  element.classList.contains("selected") ||
+                  element.matches(":checked, [aria-checked='true'], [aria-selected='true']")
+              };
+            })
+            .filter((item) => item.label)
+            .filter((item) => {
+              const key = item.sizeKey || item.label;
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            });
+        };
+        const targetAnchorY = state.productCardAnchorY == null ? NaN : Number(state.productCardAnchorY);
         const trackIndexes = state.trackIndexes.map((trackIndex) => Number(trackIndex || 0)).filter(Boolean);
         const checks = trackIndexes.map((trackIndex) => {
           const cardSelectors = [
@@ -7733,9 +8015,16 @@ async function waitForShokzComparisonProductVariantPairState(client, state, opti
           ];
           const cards = Array.from(document.querySelectorAll(cardSelectors.join(", ")))
             .filter((element) => visible(element))
-            .map((element) => ({ element, rect: element.getBoundingClientRect() }))
-            .filter((entry) => entry.rect.top > -80)
-            .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+            .map((element) => {
+              const rect = element.getBoundingClientRect();
+              return { element, rect, absoluteY: Math.max(0, Math.round(window.scrollY + rect.top)) };
+            })
+            .filter((entry) => Number.isFinite(targetAnchorY) || entry.rect.top > -80)
+            .sort((a, b) =>
+              (Number.isFinite(targetAnchorY) ? Math.abs(a.absoluteY - targetAnchorY) - Math.abs(b.absoluteY - targetAnchorY) : 0) ||
+              a.rect.top - b.rect.top ||
+              a.rect.left - b.rect.left
+            );
           const card = cards.find((entry) => handleMatches(activeContent(entry.element)))?.element || null;
           const content = activeContent(card);
           const activeSwatch = content?.querySelector?.(".product-color-swatch-wrapper .swatch.active[data-id]") || null;
@@ -7744,17 +8033,28 @@ async function waitForShokzComparisonProductVariantPairState(client, state, opti
           const activeImageId = clean(activeImage?.getAttribute?.("data-id"));
           const swatchOk = !state.variantId || activeSwatchId === state.variantId;
           const imageOk = !state.variantId || !activeImage || activeImageId === state.variantId;
+          const desiredSizeKey = keyPart(state.sizeKey || state.sizeLabel);
+          const sizes = sizeControls(content);
+          const activeSize = sizes.find((item) => item.active) || null;
+          const sizeOk = !desiredSizeKey && !state.sizeIndex
+            ? true
+            : Boolean(activeSize && (
+              (desiredSizeKey && activeSize.sizeKey === desiredSizeKey) ||
+              (state.sizeIndex && activeSize.index === state.sizeIndex)
+            ));
           return {
             trackIndex,
             found: Boolean(card && content),
             activeSwatchId,
             activeImageId,
+            activeSize: activeSize?.label || "",
             swatchOk,
-            imageOk
+            imageOk,
+            sizeOk
           };
         });
         return {
-          ok: checks.length === trackIndexes.length && checks.every((check) => check.found && check.swatchOk && check.imageOk),
+          ok: checks.length === trackIndexes.length && checks.every((check) => check.found && check.swatchOk && check.imageOk && check.sizeOk),
           checks
         };
       })()`,
@@ -7784,6 +8084,10 @@ async function readShokzComparisonProductVariantState(client, definition, state)
         variantKey: state?.variantKey || "",
         variantLabel: state?.variantLabel || "",
         variantId: state?.variantId || "",
+        sizeLabel: state?.sizeLabel || "",
+        sizeKey: state?.sizeKey || "",
+        sizeIndex: Number(state?.sizeIndex || 0) || null,
+        productCardAnchorY: Number(state?.productCardAnchorY || 0) || null,
         variantOptions: Array.isArray(state?.variantOptions) ? state.variantOptions : [],
         logicalSignature: state?.logicalSignature || "",
         stateLabel: state?.stateLabel || "",
@@ -7923,6 +8227,9 @@ async function readShokzComparisonProductVariantPairState(client, definition, st
         variantKey: state?.variantKey || "",
         variantLabel: state?.variantLabel || "",
         variantId: state?.variantId || "",
+        sizeLabel: state?.sizeLabel || "",
+        sizeKey: state?.sizeKey || "",
+        sizeIndex: Number(state?.sizeIndex || 0) || null,
         variantOptions: Array.isArray(state?.variantOptions) ? state.variantOptions : [],
         logicalSignature: state?.logicalSignature || "",
         stateLabel: state?.stateLabel || "",
@@ -7957,27 +8264,45 @@ async function readShokzComparisonProductVariantPairState(client, definition, st
       const trackIndexes = state.trackIndexes
         .map((trackIndex) => Number(trackIndex || 0))
         .filter(Boolean);
+      const targetAnchorY = state.productCardAnchorY == null ? NaN : Number(state.productCardAnchorY);
       const trackEntries = trackIndexes.map((trackIndex) => {
         const selectorCandidates = Array.from(document.querySelectorAll(
           ".item.product-name .item-inner-" + trackIndex + ", .item.product-name .compare-col-" + trackIndex
         ))
           .filter((element) => visible(element))
-          .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+          .map((element) => {
+            const rect = element.getBoundingClientRect();
+            return { element, rect, absoluteY: Math.max(0, Math.round(window.scrollY + rect.top)) };
+          })
           .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
-        const selector = selectorCandidates.find((entry) => handleMatches(activeContent(entry.element)))?.element ||
-          selectorCandidates[0]?.element ||
-          null;
         const cardSelectors = [
           ".item.product-wrapper.product-info-item-" + trackIndex + ".compare-col-" + trackIndex,
           ".item.product-wrapper.compare-col-" + trackIndex
         ];
         const cards = Array.from(document.querySelectorAll(cardSelectors.join(", ")))
           .filter((element) => visible(element))
-          .map((element) => ({ element, rect: element.getBoundingClientRect() }))
-          .filter((entry) => entry.rect.top > -80)
-          .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+          .map((element) => {
+            const rect = element.getBoundingClientRect();
+            return { element, rect, absoluteY: Math.max(0, Math.round(window.scrollY + rect.top)) };
+          })
+          .filter((entry) => Number.isFinite(targetAnchorY) || entry.rect.top > -80)
+          .sort((a, b) =>
+            (Number.isFinite(targetAnchorY) ? Math.abs(a.absoluteY - targetAnchorY) - Math.abs(b.absoluteY - targetAnchorY) : 0) ||
+            a.rect.top - b.rect.top ||
+            a.rect.left - b.rect.left
+          );
         const card = cards.find((entry) => handleMatches(activeContent(entry.element)))?.element || null;
         const content = activeContent(card);
+        const cardRect = card?.getBoundingClientRect?.() || null;
+        const cardAbsoluteY = cardRect ? Math.max(0, Math.round(window.scrollY + cardRect.top)) : null;
+        const selector = selectorCandidates.find((entry) =>
+          handleMatches(activeContent(entry.element)) &&
+          cardAbsoluteY != null &&
+          Math.abs(entry.absoluteY - cardAbsoluteY) <= 220
+        )?.element ||
+          (!Number.isFinite(targetAnchorY)
+            ? selectorCandidates.find((entry) => handleMatches(activeContent(entry.element)))?.element || selectorCandidates[0]?.element
+            : null);
         return { trackIndex, selector, card, content };
       });
       const completeTracks = trackEntries.filter((entry) => entry.card && entry.content);
@@ -8056,6 +8381,7 @@ async function readShokzComparisonProductVariantPairState(client, definition, st
         const content = entry.content;
         const cardRect = entry.card.getBoundingClientRect();
         const activeSwatch = content.querySelector(".product-color-swatch-wrapper .swatch.active[data-id]") || null;
+        const activeSize = content.querySelector(".options-item .o-item.active, .product-swatch-wrapper .o-item.active") || null;
         return {
           key: [state.productKey, entry.trackIndex].filter(Boolean).join(":"),
           label: state.productLabel,
@@ -8065,6 +8391,8 @@ async function readShokzComparisonProductVariantPairState(client, definition, st
           variantLabel: state.variantLabel,
           variantOptions: state.variantOptions,
           variantId: clean(activeSwatch?.getAttribute("data-id"), 100) || state.variantId,
+          sizeLabel: clean(activeSize?.innerText || activeSize?.textContent, 80) || state.sizeLabel,
+          sizeKey: state.sizeKey || null,
           text: clean(entry.card.innerText || entry.card.textContent, 500),
           rect: rectInfo(cardRect)
         };
