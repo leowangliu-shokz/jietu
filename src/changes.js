@@ -97,13 +97,110 @@ export function flattenComparableItems(snapshots) {
     items.push(createComparableItem(snapshot, null));
 
     for (const [index, shot] of (snapshot.relatedShots || []).entries()) {
-      if (!shot?.file || (shot.isDefaultState && (shot.sectionKey === "banner" || shot.kind === "banner"))) {
+      if (!shot?.file) {
         continue;
       }
-      items.push(createComparableItem(snapshot, shot, index));
+      if (!(shot.isDefaultState && (shot.sectionKey === "banner" || shot.kind === "banner"))) {
+        items.push(createComparableItem(snapshot, shot, index));
+      }
+      for (const [variantIndex, variant] of comparableHomeBannerCompositeVariants(shot).entries()) {
+        items.push(createComparableItem(snapshot, variant, `${index}:variant:${variantIndex}`));
+      }
     }
   }
   return items.filter(Boolean);
+}
+
+function comparableHomeBannerCompositeVariants(shot) {
+  const composite = shot?.composite || shot?.sectionState?.composite || null;
+  if (!composite || composite.sourceKind !== "home-banner" || shot.sectionKey !== "banner") {
+    return [];
+  }
+  const variants = Array.isArray(composite.variants) ? composite.variants : [];
+  return variants
+    .map((variant, index) => homeBannerVariantComparableSource(shot, composite, variant, index, variants.length))
+    .filter(Boolean);
+}
+
+function homeBannerVariantComparableSource(shot, composite, variant, index, variantCount) {
+  const file = String(variant?.sourceFile || "").trim();
+  if (!file) {
+    return null;
+  }
+  const parsed = parseCompositeVariantKey(variant?.key);
+  const bannerIndex = bannerIndexFromCompositeVariant(variant, parsed, index);
+  const label = String(variant?.label || `Banner ${bannerIndex}`).trim();
+  const signature = String(parsed.signature || variant?.key || label || `banner-${bannerIndex}`).trim();
+  const bannerState = {
+    text: String(parsed.text || "").trim(),
+    textBlocks: Array.isArray(parsed.textBlocks) ? parsed.textBlocks : [],
+    images: stringList(parsed.images),
+    backgrounds: stringList(parsed.backgrounds),
+    compositeVariantKey: variant?.key || null
+  };
+
+  return {
+    ...shot,
+    kind: "banner",
+    sectionKey: "banner",
+    sectionLabel: shot.sectionLabel || "Banner",
+    sectionTitle: shot.sectionTitle || "Banner",
+    label,
+    stateLabel: label,
+    file,
+    imageUrl: variant?.sourceImageUrl || publicSnapshotUrl(file),
+    width: numberOrNull(variant?.sourceClip?.width || variant?.rect?.width) || shot.width || null,
+    height: numberOrNull(variant?.sourceClip?.height || variant?.rect?.height) || shot.height || null,
+    stateIndex: bannerIndex,
+    stateCount: numberOrNull(composite.variantCount) || variantCount,
+    bannerIndex,
+    bannerCount: numberOrNull(composite.variantCount) || variantCount,
+    bannerSignature: signature,
+    logicalSignature: signature,
+    visualSignature: null,
+    visualHash: null,
+    clip: variant?.sourceClip || null,
+    bannerClip: variant?.sourceClip || null,
+    sectionState: null,
+    bannerState,
+    sourceCompositeFile: shot.file || null,
+    isDefaultState: false
+  };
+}
+
+function parseCompositeVariantKey(key) {
+  const text = String(key || "").trim();
+  if (!text || !text.startsWith("{")) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function bannerIndexFromCompositeVariant(variant, parsed, index) {
+  const labelMatch = String(variant?.label || "").match(/(\d+)/);
+  if (labelMatch) {
+    return Number(labelMatch[1]);
+  }
+  const realIndex = Number(parsed.realIndex);
+  if (Number.isFinite(realIndex)) {
+    return realIndex + 1;
+  }
+  const ordinal = Number(parsed.ordinal);
+  if (Number.isFinite(ordinal)) {
+    return ordinal + 1;
+  }
+  return index + 1;
+}
+
+function stringList(value) {
+  return (Array.isArray(value) ? value : [])
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
 }
 
 export function comparisonKeyForItem(item) {
@@ -665,7 +762,7 @@ function itemMatchesMonitorScope(item, scope) {
 }
 
 function isHomeBannerItem(item) {
-  if (!item || item.sectionKey !== "banner" || !Number.isFinite(Number(item.bannerIndex))) {
+  if (!item || item.sectionKey !== "banner" || !(Number(item.bannerIndex || 0) > 0)) {
     return false;
   }
 

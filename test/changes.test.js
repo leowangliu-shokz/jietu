@@ -411,6 +411,50 @@ test("home banner monitor emits P1 table fields for copy and image changes", asy
   assert.equal(changes[0].newStyle.capturedAt, "2026-05-03T09:00:00.000Z");
 });
 
+test("home banner monitor compares banner variants from homepage composites", async () => {
+  const archiveRoot = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-home-banner-composite-"));
+  const beforeFile = "2026-05-03/shokz-com/banner-composite-1-before.png";
+  const afterFile = "2026-05-03/shokz-com/banner-composite-1-after.png";
+
+  await writeArchiveImage(archiveRoot, beforeFile, 100, 50, solidImage(100, 50, [255, 255, 255, 255]));
+  const afterImage = solidImage(100, 50, [255, 255, 255, 255]);
+  fillRect(afterImage, 100, 20, 12, 72, 28, [20, 60, 180, 255]);
+  await writeArchiveImage(archiveRoot, afterFile, 100, 50, afterImage);
+
+  const changes = await compareSnapshots([
+    {
+      ...snapshot("snap-1", "2026-05-03T08:00:00.000Z", [
+        homeBannerCompositeShot(beforeFile, "OpenRun Pro 2 Shop Now", "https://cdn.example.com/openrun-pro-2.webp")
+      ]),
+      url: "https://shokz.com/",
+      targetId: "shokz-home",
+      targetLabel: "Shokz Home",
+      displayUrl: "Shokz Home",
+      platform: "mobile",
+      devicePresetId: "iphone-15"
+    },
+    {
+      ...snapshot("snap-2", "2026-05-03T09:00:00.000Z", [
+        homeBannerCompositeShot(afterFile, "OpenFit Pro Shop Now", "https://cdn.example.com/openfit-pro.webp")
+      ]),
+      url: "https://shokz.com/",
+      targetId: "shokz-home",
+      targetLabel: "Shokz Home",
+      displayUrl: "Shokz Home",
+      platform: "mobile",
+      devicePresetId: "iphone-15"
+    }
+  ], { archiveRoot, monitorScope: "home-banner", writeDiffImages: false });
+
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].location.bannerIndex, 1);
+  assert.equal(changes[0].from.file, beforeFile);
+  assert.equal(changes[0].to.file, afterFile);
+  assert.match(changes[0].textChange.beforeFragment, /OpenRun Pro 2/);
+  assert.match(changes[0].textChange.afterFragment, /OpenFit Pro/);
+  assert.ok(changes[0].visualChange.signals.some((signal) => signal.type === "image"));
+});
+
 test("home banner monitor ignores other homepage sections for now", async () => {
   const changes = await compareSnapshots([
     {
@@ -787,6 +831,46 @@ function bannerShot(file, overrides = {}) {
     stateCount: 3,
     bannerState: bannerState(),
     ...overrides
+  };
+}
+
+function homeBannerCompositeShot(sourceFile, text, image) {
+  const composite = {
+    sourceKind: "home-banner",
+    variantCount: 1,
+    variants: [{
+      key: JSON.stringify({
+        ordinal: 0,
+        realIndex: "0",
+        text,
+        images: [image],
+        backgrounds: []
+      }),
+      label: "Slide 1",
+      sourceFile,
+      sourceImageUrl: `/archive/${sourceFile}`,
+      sourceClip: { x: 0, y: 0, width: 100, height: 50 },
+      rect: { x: 0, y: 0, width: 100, height: 50 }
+    }]
+  };
+  return {
+    kind: "collection-tab-composite",
+    sectionKey: "banner",
+    sectionLabel: "Banner",
+    sectionTitle: "Banner",
+    label: "Banner Composite",
+    stateLabel: "Banner Composite",
+    file: sourceFile.replace(/\.png$/i, "-map.png"),
+    imageUrl: `/archive/${sourceFile.replace(/\.png$/i, "-map.png")}`,
+    width: 100,
+    height: 50,
+    stateIndex: 1,
+    stateCount: 1,
+    composite,
+    sectionState: {
+      text,
+      composite
+    }
   };
 }
 

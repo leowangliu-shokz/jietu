@@ -17672,6 +17672,7 @@ async function captureStitchedScreenshot(client, outputPath, options) {
 
   for (let index = 0; index < positions.length; index += 1) {
     const y = positions[index];
+    const nextY = positions[index + 1] ?? null;
     const segmentHeight = Math.min(viewportHeight, height - y);
     let captureY = y;
     let screenshotCapture;
@@ -17692,9 +17693,9 @@ async function captureStitchedScreenshot(client, outputPath, options) {
         };
       }, {
         label: `full-page segment ${index + 1}/${positions.length}`,
-        acceptBlankAudit: isLastSegment
-          ? (blankAudit) => isAcceptableTrailingSegmentBlankAudit(blankAudit, segmentHeight)
-          : null,
+        acceptBlankAudit: (blankAudit) => isLastSegment
+          ? isAcceptableTrailingSegmentBlankAudit(blankAudit, segmentHeight)
+          : isAcceptableOverlappedTrailingSegmentBlankAudit(blankAudit, segmentHeight, nextY === null ? null : nextY - y),
         beforeAttempt: async ({ attempt }) => {
           if (index > 0 && options.hideFixedElementsAfterFirstSegment) {
             await hideFixedElements(client);
@@ -17773,11 +17774,20 @@ function isAcceptableTrailingSegmentBlankAudit(blankAudit, segmentHeight) {
     Number(blankAudit.longestNearWhiteBandEnd) >= Math.max(0, segmentHeight - 1);
 }
 
+function isAcceptableOverlappedTrailingSegmentBlankAudit(blankAudit, segmentHeight, coveredFromY) {
+  if (!isAcceptableTrailingSegmentBlankAudit(blankAudit, segmentHeight)) {
+    return false;
+  }
+  const coveredStart = Math.max(0, Math.floor(Number(coveredFromY)));
+  return coveredStart > 0 && Number(blankAudit.longestNearWhiteBandStart) >= coveredStart;
+}
+
 export const __testOnly = {
   captureStitchedScreenshot,
   freezePageMotion,
   restorePageMotion,
   isAcceptableTrailingSegmentBlankAudit,
+  isAcceptableOverlappedTrailingSegmentBlankAudit,
   isViewMoreLabel,
   composeShokzCollectionTabComposite,
   composeShokzHomeModuleComposite,

@@ -11,6 +11,7 @@ const {
   freezePageMotion,
   restorePageMotion,
   isAcceptableTrailingSegmentBlankAudit,
+  isAcceptableOverlappedTrailingSegmentBlankAudit,
   isViewMoreLabel,
   composeShokzCollectionTabComposite,
   composeShokzHomeModuleComposite,
@@ -204,6 +205,27 @@ test("accepts a trailing near-white band on the last stitched segment", () => {
       longestNearWhiteBandStart: 0,
       longestNearWhiteBandEnd: 99
     }, 100),
+    false
+  );
+});
+
+test("accepts a trailing near-white band fully covered by the next stitched segment", () => {
+  assert.equal(
+    isAcceptableOverlappedTrailingSegmentBlankAudit({
+      status: "blank",
+      fullImageNearWhite: false,
+      longestNearWhiteBandStart: 62,
+      longestNearWhiteBandEnd: 99
+    }, 100, 60),
+    true
+  );
+  assert.equal(
+    isAcceptableOverlappedTrailingSegmentBlankAudit({
+      status: "blank",
+      fullImageNearWhite: false,
+      longestNearWhiteBandStart: 52,
+      longestNearWhiteBandEnd: 99
+    }, 100, 60),
     false
   );
 });
