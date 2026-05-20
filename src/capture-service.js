@@ -8,7 +8,8 @@ import {
 } from "./browser.js";
 import { assessRelatedShotConfidence, assessSnapshotConfidence } from "./capture-confidence.js";
 import { createCaptureDiagnosticRun, finalizeCaptureDiagnostic, recordCaptureDiagnostic } from "./capture-diagnostics.js";
-import { rebuildChanges } from "./changes.js";
+import { loadChanges, rebuildChanges } from "./changes.js";
+import { notifyChangeRecords } from "./change-notifier.js";
 import { findDevicePreset, toPublicDevicePreset } from "./device-presets.js";
 import { archiveDir } from "./paths.js";
 import {
@@ -619,8 +620,14 @@ function resolveAdHocDeviceProfile(config, options = {}) {
 
 async function refreshChangeRecords() {
   try {
+    const previousChanges = await loadChanges();
     const changes = await rebuildChanges();
-    return { ok: true, count: changes.length };
+    const notification = await notifyChangeRecords(changes, { previousChanges }).catch((error) => ({
+      ok: false,
+      enabled: true,
+      error: error.message
+    }));
+    return { ok: true, count: changes.length, notification };
   } catch (error) {
     return { ok: false, error: error.message };
   }

@@ -9,4 +9,5 @@ export const publicDir = path.join(rootDir, "public");
 export const configPath = path.join(dataDir, "config.json");
 export const snapshotsPath = path.join(dataDir, "snapshots.json");
 export const changesPath = path.join(dataDir, "changes.json");
+export const changeNotificationsPath = path.join(dataDir, "change-notifications.json");
 export const captureIssuesPath = path.join(dataDir, "capture-issues.json");
