@@ -3,6 +3,7 @@ import http from "node:http";
 import path from "node:path";
 import { captureAllDevices, captureConfiguredUrls, captureOne, browserStatus, replaceCaptureTile } from "./capture-service.js";
 import { loadCaptureIssues, markCaptureTileIssue, resolveCaptureTileIssue } from "./capture-issues.js";
+import { loadCaptureRuns } from "./capture-runs.js";
 import { loadChanges } from "./changes.js";
 import { archiveDir, publicDir } from "./paths.js";
 import { safeJoin } from "./path-safety.js";
@@ -20,7 +21,8 @@ let captureState = {
   running: false,
   startedAt: null,
   lastFinishedAt: null,
-  lastResults: []
+  lastResults: [],
+  lastRun: null
 };
 let scheduleTimer = null;
 let nextRunAt = null;
@@ -161,7 +163,8 @@ async function runCapture(options = {}) {
           planIds: options.planIds
         });
     captureState.lastResults = results;
-    return { ok: true, results, state: await buildState() };
+    captureState.lastRun = results.captureRun || null;
+    return { ok: true, results, run: results.captureRun || null, state: await buildState() };
   } finally {
     captureState.running = false;
     captureState.lastFinishedAt = new Date().toISOString();
@@ -251,11 +254,12 @@ function scheduleNext() {
 }
 
 async function buildState() {
-  const [changes, snapshots, browser, captureIssues] = await Promise.all([
+  const [changes, snapshots, browser, captureIssues, captureRuns] = await Promise.all([
     loadChanges(),
     loadSnapshots(),
     browserStatus(),
-    loadCaptureIssues()
+    loadCaptureIssues(),
+    loadCaptureRuns()
   ]);
   return buildStatePayload({
     config,
@@ -265,6 +269,7 @@ async function buildState() {
     snapshots,
     changes,
     captureIssues,
+    captureRuns,
     permissions: {
       canDeleteSnapshots: snapshotDeleteEnabled,
       canBatchDeleteSnapshots: snapshotDeleteEnabled

@@ -8,6 +8,8 @@ const {
   relatedCaptureModeForTarget,
   relatedDescriptorsForCaptureConfig,
   resolveAdHocCaptureExecution,
+  captureConcurrency,
+  createCaptureRunRecord,
   runnerNameForPlatform
 } = __testOnly;
 
@@ -162,4 +164,29 @@ test("resolveAdHocCaptureExecution can bind a manual URL to the requested mobile
   assert.equal(execution.deviceProfile.id, "mobile-main");
   assert.equal(execution.target.url, "https://example.com/pricing");
   assert.equal(execution.id, "adhoc-home-mobile-url-1");
+});
+
+test("capture run records preserve plan item metadata for batch status", () => {
+  const config = normalizeConfig({
+    targets: [{ id: "home", url: "https://example.com/", label: "Example" }],
+    deviceProfiles: [{ id: "pc-main", platform: "pc", devicePresetId: "pc-hd", enabled: true }],
+    capturePlans: [{ id: "home-pc", targetId: "home", deviceProfileId: "pc-main", enabled: true }]
+  });
+  const execution = resolveConfiguredCapturePlans(config, { planIds: ["home-pc"] })[0];
+
+  const run = createCaptureRunRecord([execution], { runId: "run-test" });
+
+  assert.equal(run.id, "run-test");
+  assert.equal(run.totalCount, 1);
+  assert.equal(run.items[0].status, "pending");
+  assert.equal(run.items[0].targetId, "home");
+  assert.equal(run.items[0].deviceProfileId, "pc-main");
+  assert.equal(run.items[0].capturePlanId, "home-pc");
+});
+
+test("capture concurrency is bounded and defaults to the conservative serial runner", () => {
+  assert.equal(captureConcurrency({}, {}), 1);
+  assert.equal(captureConcurrency({ captureConcurrency: 3 }, {}), 3);
+  assert.equal(captureConcurrency({ captureConcurrency: 20 }, {}), 8);
+  assert.equal(captureConcurrency({ captureConcurrency: 3 }, { maxConcurrency: 2 }), 2);
 });

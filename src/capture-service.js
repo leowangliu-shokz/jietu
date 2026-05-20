@@ -8,6 +8,7 @@ import {
 } from "./browser.js";
 import { assessRelatedShotConfidence, assessSnapshotConfidence } from "./capture-confidence.js";
 import { createCaptureDiagnosticRun, finalizeCaptureDiagnostic, recordCaptureDiagnostic } from "./capture-diagnostics.js";
+import { appendCaptureRun } from "./capture-runs.js";
 import { loadChanges, rebuildChanges } from "./changes.js";
 import { notifyChangeRecords } from "./change-notifier.js";
 import { findDevicePreset, toPublicDevicePreset } from "./device-presets.js";
@@ -19,7 +20,7 @@ import {
   shokzRelatedSectionOrder
 } from "./shokz-capture-specs.js";
 import {
-  appendSnapshot,
+  appendSnapshots,
   createSnapshotFilePath,
   findConfigDeviceProfile,
   loadConfig,
@@ -348,11 +349,132 @@ async function replaceSnapshotImage({ input, snapshots, snapshotIndex, snapshot,
 }
 
 async function runResolvedCapturePlans(plans, config, options = {}) {
-  const results = [];
-  for (const execution of plans) {
-    results.push(await runCaptureExecution(execution, config, options));
+  const run = createCaptureRunRecord(plans, options);
+  const results = new Array(plans.length);
+  const concurrency = captureConcurrency(config, options);
+  run.concurrency = concurrency;
+  let nextIndex = 0;
+
+  async function runWorker() {
+    while (nextIndex < plans.length) {
+      const planIndex = nextIndex;
+      nextIndex += 1;
+      const execution = plans[planIndex];
+      const item = run.items[planIndex];
+      item.status = "running";
+      item.startedAt = new Date().toISOString();
+      const startedAt = Date.now();
+      const result = await runCaptureExecution(execution, config, {
+        ...options,
+        captureBatchIndex: planIndex,
+        deferSnapshotSave: true,
+        deferChangeRefresh: true
+      });
+      item.finishedAt = new Date().toISOString();
+      item.durationMs = Date.now() - startedAt;
+      item.ok = Boolean(result?.ok);
+      item.status = result?.ok ? "succeeded" : "failed";
+      item.error = result?.ok ? null : result?.error || "Capture failed.";
+      item.snapshotIds = captureResultSnapshots(result).map((snapshot) => snapshot.id).filter(Boolean);
+      results[planIndex] = {
+        ...result,
+        runId: run.id,
+        runItemId: item.id,
+        runIndex: planIndex + 1,
+        runTotal: plans.length
+      };
+    }
   }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(1, plans.length)) }, runWorker));
+
+  const snapshots = results.flatMap(captureResultSnapshots);
+  if (snapshots.length) {
+    await appendSnapshots(snapshots);
+  }
+  const changeRefresh = options.deferChangeRefresh
+    ? { ok: true, deferred: true }
+    : await refreshChangeRecords();
+  const finishedAt = new Date();
+  run.finishedAt = finishedAt.toISOString();
+  run.durationMs = finishedAt.getTime() - new Date(run.startedAt).getTime();
+  run.successCount = results.filter((result) => result?.ok).length;
+  run.failureCount = results.filter((result) => result && !result.ok).length;
+  run.status = run.failureCount > 0
+    ? run.successCount > 0 ? "partial" : "failed"
+    : "succeeded";
+  run.changeRefresh = changeRefresh;
+  for (const result of results) {
+    if (result?.ok) {
+      result.changeRefresh = changeRefresh;
+    }
+  }
+  await appendCaptureRun(run).catch(() => null);
+  Object.defineProperty(results, "captureRun", { value: run, enumerable: false });
+  Object.defineProperty(results, "changeRefresh", { value: changeRefresh, enumerable: false });
   return results;
+}
+
+function createCaptureRunRecord(plans, options = {}) {
+  const startedAt = new Date();
+  const id = options.runId || `run-${startedAt.toISOString().replace(/[:.]/g, "-")}-${Math.random().toString(36).slice(2, 8)}`;
+  return {
+    id,
+    status: "running",
+    startedAt: startedAt.toISOString(),
+    finishedAt: null,
+    durationMs: null,
+    totalCount: plans.length,
+    successCount: 0,
+    failureCount: 0,
+    skippedCount: 0,
+    concurrency: 1,
+    changeRefresh: null,
+    items: plans.map((plan, index) => captureRunItemForPlan(plan, id, index))
+  };
+}
+
+function captureRunItemForPlan(plan, runId, index) {
+  return {
+    id: `${runId}-item-${index + 1}`,
+    status: "pending",
+    ok: null,
+    targetId: plan.targetId || plan.target?.id || null,
+    targetLabel: plan.target?.label || null,
+    url: plan.target?.url || null,
+    platform: plan.platform || null,
+    deviceProfileId: plan.deviceProfileId || plan.deviceProfile?.id || null,
+    devicePresetId: plan.devicePreset?.id || plan.deviceProfile?.devicePresetId || null,
+    capturePlanId: plan.id || null,
+    startedAt: null,
+    finishedAt: null,
+    durationMs: null,
+    snapshotIds: [],
+    error: null
+  };
+}
+
+function captureConcurrency(config, options = {}) {
+  const value = options.maxConcurrency ??
+    options.concurrency ??
+    config.captureConcurrency ??
+    process.env.CAPTURE_CONCURRENCY ??
+    1;
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return 1;
+  }
+  return Math.min(8, Math.max(1, Math.trunc(number)));
+}
+
+function captureResultSnapshots(result) {
+  if (!result?.ok) {
+    return [];
+  }
+  if (Array.isArray(result.snapshots) && result.snapshots.length) {
+    return result.snapshots;
+  }
+  return result.snapshot ? [result.snapshot] : [];
 }
 
 async function runCaptureExecution(execution, config, options = {}) {
@@ -373,7 +495,7 @@ async function captureMobilePlan(execution, config, options = {}) {
 async function capturePlanExecution(execution, config, options = {}) {
   const target = execution.target;
   const normalizedUrl = target.url;
-  const capturedAt = new Date();
+  const capturedAt = new Date(Date.now() + Math.max(0, Number(options.captureBatchIndex || 0)));
   const fileInfo = await createSnapshotFilePath(normalizedUrl, capturedAt);
   const devicePreset = execution.devicePreset || findDevicePreset(execution.deviceProfile?.devicePresetId || "");
   const publicDevice = devicePreset ? toPublicDevicePreset(devicePreset) : null;
@@ -430,7 +552,7 @@ async function capturePlanExecution(execution, config, options = {}) {
         visualAudit,
         urlCheck: capture.urlCheck || null
       });
-      const snapshot = await appendSnapshot({
+      snapshots.push({
         id: `${stamp}-${fileInfo.siteSlug}-${itemTargetId}-${execution.id || publicDevice?.id || "device"}`,
         url: normalizedUrl,
         targetId: itemTargetId,
@@ -470,12 +592,16 @@ async function capturePlanExecution(execution, config, options = {}) {
         relatedValidation: !item.bannerIndex ? relatedCapture.validation : null,
         relatedShots: !item.bannerIndex && relatedShots.length ? relatedShots : null
       });
-      snapshots.push(snapshot);
     }
 
-    const changeRefresh = await refreshChangeRecords();
+    if (!options.deferSnapshotSave) {
+      await appendSnapshots(snapshots);
+    }
+    const changeRefresh = options.deferChangeRefresh
+      ? { ok: true, deferred: true }
+      : await refreshChangeRecords();
     recordCaptureDiagnostic(diagnosticRun, {
-      type: "snapshot-write",
+      type: options.deferSnapshotSave ? "snapshot-prepared" : "snapshot-write",
       ok: true,
       snapshotCount: snapshots.length,
       relatedShotCount: relatedShots.length,
@@ -1607,6 +1733,8 @@ export const __testOnly = {
   relatedDescriptorsForCaptureConfig,
   relatedCaptureModeForTarget,
   resolveAdHocCaptureExecution,
+  createCaptureRunRecord,
+  captureConcurrency,
   runnerNameForPlatform
 };
 

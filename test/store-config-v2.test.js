@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeConfig, resolveConfiguredCapturePlans } from "../src/store.js";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { appendSnapshots, normalizeConfig, readSnapshots, resolveConfiguredCapturePlans } from "../src/store.js";
 
 test("normalizeConfig migrates legacy config into v2 targets, device profiles, and plans", () => {
   const config = normalizeConfig({
@@ -80,4 +83,23 @@ test("resolveConfiguredCapturePlans filters the execution matrix by platform and
   assert.deepEqual(mobilePlans.map((plan) => plan.id), ["home-mobile"]);
   assert.ok(pcPlans.every((plan) => plan.platform === "pc"));
   assert.ok(mobilePlans.every((plan) => plan.platform === "mobile"));
+});
+
+test("appendSnapshots writes a batch with one index update", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "jietu-snapshots-"));
+  const filePath = path.join(tempDir, "snapshots.json");
+
+  await appendSnapshots([
+    { id: "snap-1", capturedAt: "2026-05-20T08:00:00.000Z", file: "a.png" },
+    { id: "snap-2", capturedAt: "2026-05-20T08:00:01.000Z", file: "b.png" }
+  ], filePath);
+  await appendSnapshots([
+    { id: "snap-3", capturedAt: "2026-05-20T09:00:00.000Z", file: "c.png" }
+  ], filePath);
+
+  const snapshots = await readSnapshots(filePath);
+  assert.deepEqual(
+    snapshots.map((snapshot) => snapshot.id),
+    ["snap-3", "snap-2", "snap-1"]
+  );
 });

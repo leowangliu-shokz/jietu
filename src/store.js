@@ -34,7 +34,8 @@ const defaultConfigScalars = {
   lazyLoadScroll: true,
   scrollStepMs: 350,
   hideFixedElementsAfterFirstSegment: true,
-  maxFullPageHeight: 16000
+  maxFullPageHeight: 16000,
+  captureConcurrency: 1
 };
 
 const defaultConfig = createDefaultConfig();
@@ -72,10 +73,20 @@ export async function readSnapshots(filePath = snapshotsPath) {
 }
 
 export async function appendSnapshot(snapshot) {
-  const snapshots = await readSnapshots();
-  snapshots.unshift(snapshot);
-  await saveSnapshots(snapshots);
-  return snapshot;
+  const [savedSnapshot] = await appendSnapshots([snapshot]);
+  return savedSnapshot;
+}
+
+export async function appendSnapshots(nextSnapshots, filePath = snapshotsPath) {
+  const incoming = Array.isArray(nextSnapshots)
+    ? nextSnapshots.filter((snapshot) => snapshot && typeof snapshot === "object")
+    : [];
+  if (!incoming.length) {
+    return [];
+  }
+  const snapshots = await readSnapshots(filePath);
+  await saveSnapshots([...incoming, ...snapshots], filePath);
+  return incoming;
 }
 
 export async function saveSnapshots(snapshots, filePath = snapshotsPath) {
@@ -135,7 +146,8 @@ export function normalizeConfig(input = {}) {
     hideFixedElementsAfterFirstSegment: Boolean(
       input.hideFixedElementsAfterFirstSegment ?? defaultConfigScalars.hideFixedElementsAfterFirstSegment
     ),
-    maxFullPageHeight: clampNumber(input.maxFullPageHeight, 1000, 60000, defaultConfigScalars.maxFullPageHeight)
+    maxFullPageHeight: clampNumber(input.maxFullPageHeight, 1000, 60000, defaultConfigScalars.maxFullPageHeight),
+    captureConcurrency: clampNumber(input.captureConcurrency, 1, 8, defaultConfigScalars.captureConcurrency)
   };
 }
 

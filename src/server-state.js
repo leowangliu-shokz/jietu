@@ -20,6 +20,7 @@ export function buildStatePayload({
   snapshots,
   changes,
   captureIssues,
+  captureRuns,
   permissions
 }) {
   const publicDevicePresets = devicePresets.map(toPublicDevicePreset);
@@ -34,6 +35,7 @@ export function buildStatePayload({
     devicePresets: publicDevicePresets,
     snapshots: publicSnapshots,
     captureIssues: Array.isArray(captureIssues) ? captureIssues : [],
+    captureRuns: Array.isArray(captureRuns) ? captureRuns : [],
     permissions,
     platforms: buildPlatformViews({
       config,

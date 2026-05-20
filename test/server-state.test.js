@@ -44,6 +44,17 @@ test("buildStatePayload annotates legacy snapshots and changes with platform met
         to: { capturedAt: "2026-05-12T09:00:00.000Z" }
       }
     ],
+    captureRuns: [
+      {
+        id: "run-1",
+        status: "succeeded",
+        startedAt: "2026-05-12T09:00:00.000Z",
+        totalCount: 1,
+        successCount: 1,
+        failureCount: 0,
+        items: []
+      }
+    ],
     permissions: {
       canDeleteSnapshots: true
     }
@@ -56,6 +67,7 @@ test("buildStatePayload annotates legacy snapshots and changes with platform met
   assert.equal(state.snapshots[0].displayUrl, "Example");
   assert.equal(state.changesSummary.recent[0].location.platform, "pc");
   assert.equal(state.changesSummary.recent[0].location.deviceProfileId, "pc-main");
+  assert.equal(state.captureRuns[0].id, "run-1");
   assert.equal(state.platforms.mobile.snapshotCount, 1);
   assert.equal(state.platforms.pc.changeCount, 1);
 });
