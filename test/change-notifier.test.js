@@ -68,6 +68,7 @@ test("bootstraps existing changes without sending historical notifications", asy
   const result = await notifyChangeRecords([change("existing")], {
     webhook: "https://oapi.dingtalk.com/robot/send?access_token=token",
     statePath,
+    bootstrap: "skip",
     fetchImpl: async () => {
       calls += 1;
       return okResponse();

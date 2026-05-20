@@ -26,7 +26,7 @@ export function resolveChangeNotificationConfig(env = process.env, overrides = {
     scope: stringOrNull(overrides.scope ?? env.CHANGE_NOTIFY_SCOPE) || defaultScope,
     minLevel: normalizeChangeLevel(overrides.minLevel ?? env.CHANGE_NOTIFY_MIN_LEVEL) || defaultMinLevel,
     maxItems: clampInteger(overrides.maxItems ?? env.CHANGE_NOTIFY_MAX_ITEMS, 1, 20, 10),
-    bootstrap: stringOrNull(overrides.bootstrap ?? env.CHANGE_NOTIFY_BOOTSTRAP) || "skip",
+    bootstrap: stringOrNull(overrides.bootstrap ?? env.CHANGE_NOTIFY_BOOTSTRAP) || "send",
     statePath: overrides.statePath || changeNotificationsPath,
     fetchImpl: overrides.fetchImpl || globalThis.fetch
   };
