@@ -353,7 +353,8 @@ select:focus {
 
 .timeline-filters select,
 .timeline-filters .date-range-filter,
-.timeline-filters .multi-filter {
+.timeline-filters .multi-filter,
+.timeline-filters .change-device-preset {
   width: 100%;
 }
 
@@ -421,6 +422,26 @@ select:focus {
 }
 
 .multi-filter-button span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.change-device-preset {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f3f7f6;
+  color: var(--accent-dark);
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.change-device-preset span {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;

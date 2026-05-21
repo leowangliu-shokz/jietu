@@ -20,10 +20,8 @@ const elements = {
   dateEndFilter: document.querySelector("#dateEndFilter"),
   dateClearFilter: document.querySelector("#dateClearFilter"),
   urlFilter: document.querySelector("#urlFilter"),
-  changesDeviceFilter: document.querySelector("#changesDeviceFilter"),
-  changesDeviceFilterButton: document.querySelector("#changesDeviceFilterButton"),
-  changesDeviceFilterLabel: document.querySelector("#changesDeviceFilterLabel"),
-  changesDeviceFilterMenu: document.querySelector("#changesDeviceFilterMenu"),
+  changesDevicePreset: document.querySelector("#changesDevicePreset"),
+  changesDevicePresetLabel: document.querySelector("#changesDevicePresetLabel"),
   changesDateStartFilter: document.querySelector("#changesDateStartFilter"),
   changesDateEndFilter: document.querySelector("#changesDateEndFilter"),
   changesDateClearFilter: document.querySelector("#changesDateClearFilter"),
@@ -106,6 +104,10 @@ let imagePreviewNavigationState = createImagePreviewNavigationState();
 let warningPreviewReturnFocus = null;
 let warningPreviewPreviousOverflow = "";
 const changesPageSize = 10;
+const changeCompareDevicePresetIds = {
+  pc: "pc-hd",
+  mobile: "iphone-15"
+};
 const imagePreviewDefaultMinScale = 0.25;
 const imagePreviewMaxScale = 5;
 const imagePreviewButtonScaleStep = 1.25;
@@ -171,9 +173,6 @@ elements.changesDateEndFilter.addEventListener("change", () => {
   renderChangesSummary({ resetPage: true });
 });
 elements.changesDateClearFilter.addEventListener("click", clearChangesDateFilter);
-elements.changesDeviceFilterButton.addEventListener("click", toggleChangesDeviceFilterMenu);
-elements.changesDeviceFilterMenu.addEventListener("change", handleChangesDeviceFilterChange);
-elements.changesDeviceFilterMenu.addEventListener("click", handleChangesDeviceFilterClick);
 elements.changesPrevPage.addEventListener("click", () => changeChangesPage(-1));
 elements.changesNextPage.addEventListener("click", () => changeChangesPage(1));
 elements.bulkSelectVisible.addEventListener("click", handleBulkSelectVisibleClick);
@@ -310,7 +309,6 @@ function syncActivePlatformFilterInputs() {
 
 function closePlatformMenus() {
   setDeviceFilterMenuOpen(false);
-  setChangesDeviceFilterMenuOpen(false);
 }
 
 function activeTabForPlatform(platform = activePlatform) {
@@ -330,9 +328,6 @@ function setActiveTab(tabName, options = {}) {
   const activeTab = activeTabForPlatform();
   if (activeTab !== "archive") {
     setDeviceFilterMenuOpen(false);
-  }
-  if (activeTab !== "changes") {
-    setChangesDeviceFilterMenuOpen(false);
   }
 
   if (options.render !== false) {
@@ -416,7 +411,7 @@ function render(options = {}) {
   renderFilterOptions();
   renderChangesFilterOptions();
   renderDeviceFilterOptions();
-  renderChangesDeviceFilterOptions();
+  renderChangesDevicePreset();
   renderArchiveStatus();
   renderChangesSummary();
   renderGallery({ preserveScroll: options.preserveScroll !== false });
@@ -512,15 +507,23 @@ function renderDeviceFilterOptions() {
   });
 }
 
-function renderChangesDeviceFilterOptions() {
-  renderDeviceFilterOptionsFor({
-    devices: uniqueDevicesFromChanges(),
-    selectedFilters: activeChangesFilters(),
-    menu: elements.changesDeviceFilterMenu,
-    label: elements.changesDeviceFilterLabel,
-    button: elements.changesDeviceFilterButton,
-    allLabel: "全部截图设备"
-  });
+function renderChangesDevicePreset() {
+  const devicePresetId = changeCompareDevicePresetIds[activePlatform] || "";
+  const device = deviceInfoForPreset(devicePresetId, devicePresetId);
+  const platformName = platformLabel(activePlatform);
+  const text = devicePresetId
+    ? `${platformName}固定对比：${device.name}（${devicePresetId}）`
+    : `${platformName}固定对比：未配置`;
+  elements.changesDevicePresetLabel.textContent = text;
+  elements.changesDevicePreset.title = changeComparePresetTitle();
+}
+
+function changeComparePresetTitle() {
+  return ["pc", "mobile"].map((platform) => {
+    const devicePresetId = changeCompareDevicePresetIds[platform] || "";
+    const device = deviceInfoForPreset(devicePresetId, devicePresetId);
+    return `${platformLabel(platform)}：${device.name}（${devicePresetId}）`;
+  }).join("；");
 }
 
 function renderDeviceFilterOptionsFor({ devices, selectedFilters, menu, label, button, allLabel }) {
@@ -572,10 +575,6 @@ function toggleDeviceFilterMenu() {
   toggleDeviceFilterMenuFor(elements.deviceFilter, elements.deviceFilterButton);
 }
 
-function toggleChangesDeviceFilterMenu() {
-  toggleDeviceFilterMenuFor(elements.changesDeviceFilter, elements.changesDeviceFilterButton);
-}
-
 function toggleDeviceFilterMenuFor(filter, button) {
   const isOpen = filter.dataset.open === "true";
   setDeviceFilterMenuOpenFor(filter, button, !isOpen);
@@ -583,10 +582,6 @@ function toggleDeviceFilterMenuFor(filter, button) {
 
 function setDeviceFilterMenuOpen(isOpen) {
   setDeviceFilterMenuOpenFor(elements.deviceFilter, elements.deviceFilterButton, isOpen);
-}
-
-function setChangesDeviceFilterMenuOpen(isOpen) {
-  setDeviceFilterMenuOpenFor(elements.changesDeviceFilter, elements.changesDeviceFilterButton, isOpen);
 }
 
 function setDeviceFilterMenuOpenFor(filter, button, isOpen) {
@@ -598,15 +593,11 @@ function closeDeviceFilterOnOutsideClick(event) {
   if (!elements.deviceFilter.contains(event.target)) {
     setDeviceFilterMenuOpen(false);
   }
-  if (!elements.changesDeviceFilter.contains(event.target)) {
-    setChangesDeviceFilterMenuOpen(false);
-  }
 }
 
 function closeDeviceFilterOnEscape(event) {
   if (event.key === "Escape") {
     setDeviceFilterMenuOpen(false);
-    setChangesDeviceFilterMenuOpen(false);
   }
 }
 
@@ -1934,14 +1925,6 @@ function handleDeviceFilterClick(event) {
   });
 }
 
-function handleChangesDeviceFilterClick(event) {
-  handleDeviceFilterClickFor(event, {
-    selectedFilters: activeChangesFilters(),
-    renderOptions: renderChangesDeviceFilterOptions,
-    renderResults: () => renderChangesSummary({ resetPage: true })
-  });
-}
-
 function handleDeviceFilterClickFor(event, { selectedFilters, renderOptions, renderResults }) {
   const action = event.target.closest("[data-filter-action]")?.dataset.filterAction;
   if (action !== "clear") {
@@ -1958,15 +1941,6 @@ function handleDeviceFilterChange(event) {
     devices: uniqueDevicesFromSnapshots,
     renderOptions: renderDeviceFilterOptions,
     renderResults: () => renderGallery({ preserveScroll: false })
-  });
-}
-
-function handleChangesDeviceFilterChange(event) {
-  handleDeviceFilterChangeFor(event, {
-    selectedFilters: activeChangesFilters(),
-    devices: uniqueDevicesFromChanges,
-    renderOptions: renderChangesDeviceFilterOptions,
-    renderResults: () => renderChangesSummary({ resetPage: true })
   });
 }
 
@@ -2255,10 +2229,6 @@ function matchesDeviceFilters(snapshot) {
   return matchesDeviceFilterSet(deviceInfoForSnapshot(snapshot), activeArchiveFilters());
 }
 
-function matchesChangesDeviceFilters(change) {
-  return matchesDeviceFilterSet(deviceInfoForChange(change), activeChangesFilters());
-}
-
 function matchesDeviceFilterSet(device, selectedFilters) {
   if (selectedFilters.devices.size === 0) {
     return true;
@@ -2403,8 +2373,7 @@ function matchesChangeFilters(change) {
   const selectedUrl = activeChangesFilters().url;
   const matchesUrl = selectedUrl ? canonicalDisplayUrlForChange(change) === selectedUrl : true;
   const matchesTime = matchesChangesTimeFilter(change);
-  const matchesDevice = matchesChangesDeviceFilters(change);
-  return matchesUrl && matchesTime && matchesDevice;
+  return matchesUrl && matchesTime;
 }
 
 function renderChangeTableRow(change) {
@@ -3571,20 +3540,6 @@ function deviceInfoForSnapshot(snapshot) {
   };
 }
 
-function deviceInfoForChange(change) {
-  const location = change.location || {};
-  if (location.devicePresetId) {
-    return deviceInfoForPreset(location.devicePresetId, location.deviceName);
-  }
-
-  const name = location.deviceName || "未知设备";
-  return {
-    id: location.deviceName || "unknown-device",
-    name,
-    group: location.platform === "mobile" ? "mobile" : "pc"
-  };
-}
-
 function deviceInfoForPreset(devicePresetId, fallbackName) {
   const byId = (state?.devicePresets || []).find((preset) => preset.id === devicePresetId);
   return {
@@ -3598,15 +3553,6 @@ function uniqueDevicesFromSnapshots() {
   const devices = new Map();
   for (const snapshot of platformSnapshots()) {
     const device = deviceInfoForSnapshot(snapshot);
-    devices.set(device.id, device);
-  }
-  return [...devices.values()].sort(compareDevices);
-}
-
-function uniqueDevicesFromChanges() {
-  const devices = new Map();
-  for (const change of platformChanges()) {
-    const device = deviceInfoForChange(change);
     devices.set(device.id, device);
   }
   return [...devices.values()].sort(compareDevices);
