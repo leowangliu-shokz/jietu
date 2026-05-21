@@ -114,7 +114,7 @@ export function notificationEligibleChanges(changes, config = {}) {
 
 export function buildDingTalkMarkdownMessage(changes, options = {}) {
   const keyword = stringOrNull(options.keyword);
-  const title = `${keyword ? `${keyword} ` : ""}jietu 首页 Banner 变更`;
+  const title = `${keyword ? `${keyword} ` : ""}乐乐来播报了！`;
   const lines = [
     `### ${title}`,
     "",

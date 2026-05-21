@@ -55,6 +55,7 @@ test("builds DingTalk markdown message with keyword and mentions", () => {
   });
 
   assert.equal(body.msgtype, "markdown");
+  assert.match(body.markdown.text, /乐乐来播报了！/);
   assert.match(body.markdown.text, /监控报警/);
   assert.match(body.markdown.text, /banner区-banner1/);
   assert.deepEqual(body.at.atMobiles, ["13800000000"]);
