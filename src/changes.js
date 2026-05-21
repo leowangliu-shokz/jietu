@@ -31,6 +31,10 @@ const defaultVisualJudgmentOptions = {
 };
 
 export const defaultChangeMonitorScope = "home-banner";
+export const defaultChangeCompareDeviceIds = Object.freeze({
+  pc: "pc-hd",
+  mobile: "iphone-15"
+});
 
 export async function loadChanges(filePath = changesPath) {
   try {
@@ -51,9 +55,14 @@ export async function saveChanges(changes, filePath = changesPath) {
 
 export async function rebuildChanges(options = {}) {
   const snapshots = options.snapshots || await loadSnapshots();
+  const monitorScope = options.monitorScope || defaultChangeMonitorScope;
+  const compareDeviceIds = Object.hasOwn(options, "compareDeviceIds")
+    ? options.compareDeviceIds
+    : defaultCompareDeviceIdsForMonitorScope(monitorScope);
   const changes = await compareSnapshots(snapshots, {
-    monitorScope: defaultChangeMonitorScope,
-    ...options
+    ...options,
+    monitorScope,
+    compareDeviceIds
   });
   await saveChanges(changes, options.changesFilePath || changesPath);
   return changes;
@@ -62,8 +71,10 @@ export async function rebuildChanges(options = {}) {
 export async function compareSnapshots(snapshots, options = {}) {
   const archiveRoot = options.archiveRoot || archiveDir;
   const monitorScope = options.monitorScope || "all";
+  const compareDeviceIds = normalizeCompareDeviceIds(options.compareDeviceIds);
   const items = flattenComparableItems(snapshots)
     .filter((item) => itemMatchesMonitorScope(item, monitorScope))
+    .filter((item) => itemMatchesCompareDeviceIds(item, compareDeviceIds))
     .sort((a, b) =>
       timestamp(a.capturedAt) - timestamp(b.capturedAt) ||
       String(a.itemId).localeCompare(String(b.itemId))
@@ -85,6 +96,10 @@ export async function compareSnapshots(snapshots, options = {}) {
   }
 
   return changes.sort((a, b) => String(b.to.capturedAt).localeCompare(String(a.to.capturedAt)));
+}
+
+export function defaultCompareDeviceIdsForMonitorScope(monitorScope) {
+  return monitorScope === defaultChangeMonitorScope ? defaultChangeCompareDeviceIds : null;
 }
 
 export function flattenComparableItems(snapshots) {
@@ -759,6 +774,39 @@ function itemMatchesMonitorScope(item, scope) {
     return isHomeBannerItem(item);
   }
   return false;
+}
+
+function normalizeCompareDeviceIds(value) {
+  if (!value || value === "all") {
+    return null;
+  }
+  if (typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const pc = cleanDeviceId(value.pc || value.desktop);
+  const mobile = cleanDeviceId(value.mobile);
+  return pc || mobile ? { pc, mobile } : null;
+}
+
+function cleanDeviceId(value) {
+  return String(value || "").trim() || null;
+}
+
+function itemMatchesCompareDeviceIds(item, compareDeviceIds) {
+  if (!compareDeviceIds) {
+    return true;
+  }
+
+  const platform = item.platform || platformForSnapshot(item);
+  const expectedDeviceId = compareDeviceIds[platform];
+  if (!expectedDeviceId) {
+    return true;
+  }
+
+  return [item.deviceId, item.deviceProfileId]
+    .map((value) => String(value || "").trim())
+    .includes(expectedDeviceId);
 }
 
 function isHomeBannerItem(item) {

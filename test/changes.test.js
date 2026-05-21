@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { compareSnapshots, diffPngImages, judgeHumanVisibleChange } from "../src/changes.js";
+import { compareSnapshots, diffPngImages, judgeHumanVisibleChange, rebuildChanges } from "../src/changes.js";
 import { encodePng } from "../src/png.js";
 
 test("matches the same section position when tab copy changes", async () => {
@@ -453,6 +453,45 @@ test("home banner monitor compares banner variants from homepage composites", as
   assert.match(changes[0].textChange.beforeFragment, /OpenRun Pro 2/);
   assert.match(changes[0].textChange.afterFragment, /OpenFit Pro/);
   assert.ok(changes[0].visualChange.signals.some((signal) => signal.type === "image"));
+});
+
+test("default change summary compares only fixed pc and mobile device presets", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-change-devices-"));
+  const changesFilePath = path.join(dataDir, "changes.json");
+  const makeBanner = (id, capturedAt, platform, deviceProfileId, devicePresetId, text) => ({
+    ...homeBannerSnapshot(id, capturedAt, `${id}.png`, 1, {
+      text,
+      images: [`https://cdn.example.com/${devicePresetId}.webp`]
+    }),
+    platform,
+    deviceProfileId,
+    devicePresetId
+  });
+
+  const changes = await rebuildChanges({
+    snapshots: [
+      makeBanner("pc-hd-before", "2026-05-03T08:00:00.000Z", "pc", "pc-default", "pc-hd", "PC HD old"),
+      makeBanner("pc-hd-after", "2026-05-03T09:00:00.000Z", "pc", "pc-default", "pc-hd", "PC HD new"),
+      makeBanner("pc-laptop-before", "2026-05-03T08:00:00.000Z", "pc", "pc-laptop", "pc-laptop", "PC laptop old"),
+      makeBanner("pc-laptop-after", "2026-05-03T09:00:00.000Z", "pc", "pc-laptop", "pc-laptop", "PC laptop new"),
+      makeBanner("iphone-before", "2026-05-03T08:00:00.000Z", "mobile", "mobile-default", "iphone-15", "iPhone 15 old"),
+      makeBanner("iphone-after", "2026-05-03T09:00:00.000Z", "mobile", "mobile-default", "iphone-15", "iPhone 15 new"),
+      makeBanner("se-before", "2026-05-03T08:00:00.000Z", "mobile", "iphone-se", "iphone-se", "iPhone SE old"),
+      makeBanner("se-after", "2026-05-03T09:00:00.000Z", "mobile", "iphone-se", "iphone-se", "iPhone SE new")
+    ],
+    changesFilePath,
+    writeDiffImages: false
+  });
+
+  assert.equal(changes.length, 2);
+  assert.deepEqual(
+    changes.map((change) => change.location.devicePresetId).sort(),
+    ["iphone-15", "pc-hd"]
+  );
+  assert.deepEqual(
+    JSON.parse(await fs.readFile(changesFilePath, "utf8")).map((change) => change.location.devicePresetId).sort(),
+    ["iphone-15", "pc-hd"]
+  );
 });
 
 test("home banner monitor ignores other homepage sections for now", async () => {

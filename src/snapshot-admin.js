@@ -1,6 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { compareSnapshots, defaultChangeMonitorScope, saveChanges } from "./changes.js";
+import {
+  compareSnapshots,
+  defaultChangeMonitorScope,
+  defaultCompareDeviceIdsForMonitorScope,
+  saveChanges
+} from "./changes.js";
 import { archiveDir, changesPath, snapshotsPath } from "./paths.js";
 import { readSnapshots, saveSnapshots } from "./store.js";
 
@@ -94,9 +99,14 @@ export async function deleteSnapshotsArchive(snapshotIds, options = {}) {
 
   let changes;
   try {
+    const monitorScope = options.monitorScope || defaultChangeMonitorScope;
+    const compareDeviceIds = Object.hasOwn(options, "compareDeviceIds")
+      ? options.compareDeviceIds
+      : defaultCompareDeviceIdsForMonitorScope(monitorScope);
     changes = await compareSnapshots(remainingSnapshots, {
       ...options,
-      monitorScope: options.monitorScope || defaultChangeMonitorScope,
+      monitorScope,
+      compareDeviceIds,
       archiveRoot
     });
     await saveChanges(changes, changesFilePath);
