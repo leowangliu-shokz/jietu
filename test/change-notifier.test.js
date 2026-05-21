@@ -118,6 +118,32 @@ test("bootstraps existing changes without sending historical notifications", asy
   assert.deepEqual(state.notifiedIds, ["existing"]);
 });
 
+test("records eligible changes without sending when requested", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "jietu-notifier-"));
+  const statePath = path.join(tempDir, "change-notifications.json");
+  let calls = 0;
+
+  const result = await notifyChangeRecords([
+    change("old", { changeLocation: bannerOneLocation }),
+    change("new", { changeLocation: bannerTwoLocation, location: { sectionKey: "banner", bannerIndex: 2 } })
+  ], {
+    webhook: "https://oapi.dingtalk.com/robot/send?access_token=token",
+    statePath,
+    sendNotifications: false,
+    fetchImpl: async () => {
+      calls += 1;
+      return okResponse();
+    }
+  });
+
+  const state = JSON.parse(await fs.readFile(statePath, "utf8"));
+  assert.equal(result.recordOnly, true);
+  assert.equal(result.sentCount, 0);
+  assert.equal(result.recordedCount, 2);
+  assert.equal(calls, 0);
+  assert.deepEqual(state.notifiedIds, ["old", "new"]);
+});
+
 test("sends only changes not present in the previous change set", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "jietu-notifier-"));
   const statePath = path.join(tempDir, "change-notifications.json");

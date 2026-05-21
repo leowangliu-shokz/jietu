@@ -222,7 +222,7 @@ export async function replaceHomeOverviewTile(input, config = null) {
   };
   snapshots[snapshotIndex] = updatedSnapshot;
   await saveSnapshots(snapshots);
-  const changeRefresh = await refreshChangeRecords();
+  const changeRefresh = await refreshChangeRecords({ sendNotifications: false });
 
   return {
     ok: true,
@@ -289,7 +289,7 @@ async function replaceRelatedShotTile({ input, snapshots, snapshotIndex, snapsho
   };
   snapshots[snapshotIndex] = updatedSnapshot;
   await saveSnapshots(snapshots);
-  const changeRefresh = await refreshChangeRecords();
+  const changeRefresh = await refreshChangeRecords({ sendNotifications: false });
   const preview = nextRelatedShots.find((shot) => shot.file === replacementShot.file) || replacementShot;
 
   return {
@@ -336,7 +336,7 @@ async function replaceSnapshotImage({ input, snapshots, snapshotIndex, snapshot,
   });
   snapshots[snapshotIndex] = updatedSnapshot;
   await saveSnapshots(snapshots);
-  const changeRefresh = await refreshChangeRecords();
+  const changeRefresh = await refreshChangeRecords({ sendNotifications: false });
 
   return {
     ok: true,
@@ -744,11 +744,14 @@ function resolveAdHocDeviceProfile(config, options = {}) {
   });
 }
 
-async function refreshChangeRecords() {
+async function refreshChangeRecords(options = {}) {
   try {
     const previousChanges = await loadChanges();
     const changes = await rebuildChanges();
-    const notification = await notifyChangeRecords(changes, { previousChanges }).catch((error) => ({
+    const notification = await notifyChangeRecords(changes, {
+      previousChanges,
+      sendNotifications: options.sendNotifications
+    }).catch((error) => ({
       ok: false,
       enabled: true,
       error: error.message

@@ -47,6 +47,26 @@ export function resolveChangeNotificationConfig(env = process.env, overrides = {
 
 export async function notifyChangeRecords(changes, options = {}) {
   const config = resolveChangeNotificationConfig(options.env || process.env, options);
+  const state = await loadNotificationState(config.statePath);
+  const matchingChanges = notificationEligibleChanges(changes, config);
+  const previousChangeIds = changeIdSet(options.previousChanges || options.previousChangeIds || []);
+  const notifiedIds = new Set(state.notifiedIds || []);
+  const bootstrapMode = String(config.bootstrap || "skip").toLowerCase();
+  const recordOnly = Boolean(options.recordOnly || options.sendNotifications === false);
+
+  if (recordOnly) {
+    const nextState = updateNotificationState(state, matchingChanges, options.now || new Date());
+    await saveNotificationState(nextState, config.statePath);
+    return {
+      ok: true,
+      enabled: config.enabled,
+      recordOnly: true,
+      sentCount: 0,
+      eligibleCount: matchingChanges.length,
+      recordedCount: matchingChanges.length
+    };
+  }
+
   if (!config.enabled) {
     return { ok: true, enabled: false, reason: "not-configured" };
   }
@@ -56,12 +76,6 @@ export async function notifyChangeRecords(changes, options = {}) {
   if (typeof config.fetchImpl !== "function") {
     return { ok: false, enabled: true, reason: "fetch-unavailable" };
   }
-
-  const state = await loadNotificationState(config.statePath);
-  const matchingChanges = notificationEligibleChanges(changes, config);
-  const previousChangeIds = changeIdSet(options.previousChanges || options.previousChangeIds || []);
-  const notifiedIds = new Set(state.notifiedIds || []);
-  const bootstrapMode = String(config.bootstrap || "skip").toLowerCase();
 
   if (!state.initializedAt && previousChangeIds.size === 0 && bootstrapMode !== "send") {
     const nextState = updateNotificationState(state, matchingChanges, options.now || new Date());
