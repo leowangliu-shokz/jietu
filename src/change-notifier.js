@@ -11,6 +11,19 @@ const levelRank = new Map([
   ["P1", 1],
   ["P2", 2]
 ]);
+const copy = {
+  defaultTitle: "\u4e50\u4e50\u6765\u64ad\u62a5\u4e86\uff01",
+  foundPrefix: "\u53d1\u73b0",
+  homeBannerChangeSuffix: "\u6761\u9996\u9875 banner \u53d8\u66f4\u3002",
+  listSeparator: "\u3001",
+  fallbackChangeType: "\u53d8\u66f4",
+  reasonLabel: "\u539f\u56e0",
+  omittedPrefix: "\u8fd8\u6709",
+  omittedSuffix: "\u6761\u540c\u6279\u53d8\u66f4\u672a\u5728\u672c\u6761\u6d88\u606f\u5c55\u5f00\uff0c\u8bf7\u6253\u5f00 jietu \u53d8\u66f4\u6c47\u603b\u67e5\u770b\u3002",
+  bannerLocationPrefix: "banner\u533a-banner",
+  homeBannerFallback: "\u9996\u9875 banner",
+  unknownTime: "\u672a\u77e5\u65f6\u95f4"
+};
 
 export function resolveChangeNotificationConfig(env = process.env, overrides = {}) {
   const webhook = stringOrNull(overrides.webhook ?? env.DINGTALK_WEBHOOK ?? env.CHANGE_NOTIFY_DINGTALK_WEBHOOK);
@@ -114,11 +127,11 @@ export function notificationEligibleChanges(changes, config = {}) {
 
 export function buildDingTalkMarkdownMessage(changes, options = {}) {
   const keyword = stringOrNull(options.keyword);
-  const title = `${keyword ? `${keyword} ` : ""}乐乐来播报了！`;
+  const title = `${keyword ? `${keyword} ` : ""}${copy.defaultTitle}`;
   const lines = [
     `### ${title}`,
     "",
-    `发现 ${changes.length} 条首页 banner 变更。`,
+    `${copy.foundPrefix} ${changes.length} ${copy.homeBannerChangeSuffix}`,
     ""
   ];
 
@@ -126,19 +139,19 @@ export function buildDingTalkMarkdownMessage(changes, options = {}) {
     const level = normalizeChangeLevel(change.changeLevel) || defaultMinLevel;
     const location = change.changeLocation || changeLocationLabel(change);
     const types = Array.isArray(change.changeTypes) && change.changeTypes.length
-      ? change.changeTypes.join("、")
-      : change.changeType || "变更";
+      ? change.changeTypes.join(copy.listSeparator)
+      : change.changeType || copy.fallbackChangeType;
     const fromTime = shortDateTime(change.occurredBetween?.from || change.from?.capturedAt);
     const toTime = shortDateTime(change.occurredBetween?.to || change.to?.capturedAt || change.createdAt);
-    lines.push(`- **${level}** ${location}：${types}（${fromTime} -> ${toTime}）`);
+    lines.push(`- **${level}** ${location}\uff1a${types}\uff08${fromTime} -> ${toTime}\uff09`);
     if (change.changeLevelReason) {
-      lines.push(`  - 原因：${change.changeLevelReason}`);
+      lines.push(`  - ${copy.reasonLabel}\uff1a${change.changeLevelReason}`);
     }
   }
 
   if (Number(options.omittedCount || 0) > 0) {
     lines.push("");
-    lines.push(`还有 ${Number(options.omittedCount)} 条同批变更未在本条消息展开，请打开 jietu 变更汇总查看。`);
+    lines.push(`${copy.omittedPrefix} ${Number(options.omittedCount)} ${copy.omittedSuffix}`);
   }
 
   return {
@@ -152,6 +165,73 @@ export function buildDingTalkMarkdownMessage(changes, options = {}) {
       isAtAll: Boolean(options.atAll)
     }
   };
+}
+
+export function buildDingTalkBroadcastMessage(options = {}) {
+  const title = stringOrNull(options.title) || copy.defaultTitle;
+  const text = stringOrNull(options.text);
+  if (!text) {
+    throw new Error("DingTalk broadcast text is required.");
+  }
+
+  const lines = [
+    `### ${title}`,
+    "",
+    text
+  ];
+  const imageUrl = stringOrNull(options.imageUrl);
+  if (imageUrl) {
+    lines.push("", `![${title}](${imageUrl})`);
+  }
+
+  return {
+    msgtype: "markdown",
+    markdown: {
+      title,
+      text: lines.join("\n")
+    },
+    at: {
+      atMobiles: Array.isArray(options.atMobiles) ? options.atMobiles : [],
+      isAtAll: Boolean(options.atAll)
+    }
+  };
+}
+
+export async function sendDingTalkMessage(body, options = {}) {
+  const config = resolveChangeNotificationConfig(options.env || process.env, options);
+  if (!config.enabled) {
+    return { ok: true, enabled: false, reason: "not-configured" };
+  }
+  if (!config.webhook) {
+    return { ok: false, enabled: true, reason: "missing-webhook" };
+  }
+  if (typeof config.fetchImpl !== "function") {
+    return { ok: false, enabled: true, reason: "fetch-unavailable" };
+  }
+
+  const response = await postDingTalkMessage(config, body);
+  return {
+    ok: true,
+    enabled: true,
+    channel: config.channel,
+    response
+  };
+}
+
+export function assertReadableDingTalkMessage(body) {
+  const fields = [
+    body?.markdown?.title,
+    body?.markdown?.text,
+    body?.text?.content
+  ].map((value) => String(value || "")).filter(Boolean);
+  const badField = fields.find(hasSuspiciousReplacementQuestionMarks);
+  if (badField) {
+    throw new Error(
+      "DingTalk message appears to contain replacement question marks. " +
+      "Use UTF-8 source text or base64 input before sending."
+    );
+  }
+  return body;
 }
 
 export function buildDingTalkWebhookUrl(webhook, secret, timestamp = Date.now()) {
@@ -168,6 +248,7 @@ export function buildDingTalkWebhookUrl(webhook, secret, timestamp = Date.now())
 }
 
 async function postDingTalkMessage(config, body) {
+  assertReadableDingTalkMessage(body);
   const url = buildDingTalkWebhookUrl(config.webhook, config.secret);
   const response = await config.fetchImpl(url, {
     method: "POST",
@@ -240,9 +321,9 @@ function isHomeBannerChange(change) {
 function changeLocationLabel(change) {
   const index = Number(change.location?.bannerIndex || change.location?.stateIndex || 0);
   if (index > 0) {
-    return `banner区-banner${index}`;
+    return `${copy.bannerLocationPrefix}${index}`;
   }
-  return change.location?.sectionLabel || change.location?.label || "首页 banner";
+  return change.location?.sectionLabel || change.location?.label || copy.homeBannerFallback;
 }
 
 function normalizeChangeLevel(value) {
@@ -252,7 +333,7 @@ function normalizeChangeLevel(value) {
 
 function shortDateTime(value) {
   if (!value) {
-    return "未知时间";
+    return copy.unknownTime;
   }
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
@@ -300,4 +381,8 @@ function parseJsonOrNull(text) {
   } catch {
     return null;
   }
+}
+
+function hasSuspiciousReplacementQuestionMarks(text) {
+  return /\?{4,}/.test(String(text || ""));
 }
