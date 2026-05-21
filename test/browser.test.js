@@ -18,6 +18,7 @@ const {
   composeShokzHomeOverviewComposite,
   composeShokzHomeTopbarComposite,
   composeShokzHomeProductShowcaseComposite,
+  shokzLandingRelatedSectionDefinitionsForPath,
   shouldUseDedicatedViewMoreExpansion,
   shouldUseDirectFullPageClipCapture
 } = __testOnly;
@@ -489,6 +490,15 @@ test("collection and comparison page capture modes prefer direct full-page clip 
   assert.equal(shouldUseDirectFullPageClipCapture({ captureMode: "shokz-landing-page" }), true);
   assert.equal(shouldUseDirectFullPageClipCapture({ captureMode: "shokz-products-nav" }), false);
   assert.equal(shouldUseDirectFullPageClipCapture({}), false);
+});
+
+test("sports landing page uses the sports PP related-section plan", () => {
+  const sportsDefinitions = shokzLandingRelatedSectionDefinitionsForPath("/pages/explore-sports-headphones");
+  const openEarDefinitions = shokzLandingRelatedSectionDefinitionsForPath("/pages/explore-open-ear-headphones");
+
+  assert.ok(sportsDefinitions.some((definition) => definition.key === "landing-sports-scenes"));
+  assert.ok(sportsDefinitions.some((definition) => definition.idPart === "section-sports-headphones-product-1"));
+  assert.equal(openEarDefinitions.some((definition) => definition.key === "landing-sports-scenes"), false);
 });
 
 test("only comparison page capture mode uses dedicated view more expansion", () => {

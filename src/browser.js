@@ -785,7 +785,7 @@ async function captureShokzHomeRelated(client, outputPath, captureContext) {
   };
 }
 
-const shokzLandingRelatedSectionDefinitions = [
+const shokzOpenEarLandingRelatedSectionDefinitions = [
   {
     key: "landing-hero",
     sectionLabel: "Hero",
@@ -867,6 +867,81 @@ const shokzLandingRelatedSectionDefinitions = [
     mode: "carousel"
   }
 ];
+
+const shokzSportsHeadphonesLandingRelatedSectionDefinitions = [
+  {
+    key: "landing-sports-hero",
+    sectionLabel: "Sports Hero",
+    title: "Open-Ear Headphones. Made for Every Sport.",
+    idPart: "section-sports-headphones-banner",
+    occurrence: 0,
+    mode: "section"
+  },
+  {
+    key: "landing-sports-scenes",
+    sectionLabel: "Sports Scenes",
+    title: "Engineered for Movement",
+    idPart: "section-sport-swiper",
+    occurrence: 0,
+    mode: "carousel"
+  },
+  {
+    key: "landing-sports-product-nav",
+    sectionLabel: "Sports Product Nav",
+    title: "Explore the Lineup",
+    idPart: "section-sports-headphones-nav",
+    occurrence: 0,
+    mode: "section"
+  },
+  {
+    key: "landing-sports-running-cycling",
+    sectionLabel: "Running & Cycling Products",
+    title: "Running & Cycling",
+    idPart: "section-sports-headphones-product-1",
+    occurrence: 0,
+    mode: "section"
+  },
+  {
+    key: "landing-sports-workouts-fitness",
+    sectionLabel: "Workouts & Fitness Products",
+    title: "Workouts & Fitness",
+    idPart: "section-sports-headphones-product-2",
+    occurrence: 0,
+    mode: "section"
+  },
+  {
+    key: "landing-sports-swimming",
+    sectionLabel: "Swimming Products",
+    title: "Swimming",
+    idPart: "section-sports-headphones-product-3",
+    occurrence: 0,
+    mode: "section"
+  },
+  {
+    key: "landing-sports-athletes",
+    sectionLabel: "Sports Athlete Reviews",
+    title: "Trusted by Athletes",
+    idPart: "section_sports_headphones_athletes",
+    occurrence: 0,
+    mode: "carousel"
+  },
+  {
+    key: "landing-sports-footer",
+    sectionLabel: "Sports Footer CTA",
+    title: "Find the Right SHOKZ for You",
+    idPart: "section-sports-headphones-footer",
+    occurrence: 0,
+    mode: "section"
+  }
+];
+
+function shokzLandingRelatedSectionDefinitionsForPath(pathname = "") {
+  const normalizedPath = String(pathname || "").toLowerCase();
+  if (normalizedPath.includes("/pages/explore-sports-headphones")) {
+    return shokzSportsHeadphonesLandingRelatedSectionDefinitions;
+  }
+  return shokzOpenEarLandingRelatedSectionDefinitions;
+}
 
 async function captureShokzLandingRelated(client, outputPath, captureContext) {
   const viewport = viewportForCaptureContext(captureContext);
@@ -1126,7 +1201,13 @@ function isAcceptableShokzLandingBlankAudit(blankAudit, state) {
 async function readShokzLandingRelatedPlan(client) {
   const result = await client.send("Runtime.evaluate", {
     expression: `(() => {
-      const definitions = ${JSON.stringify(shokzLandingRelatedSectionDefinitions)};
+      const definitionSets = ${JSON.stringify({
+        openEar: shokzOpenEarLandingRelatedSectionDefinitions,
+        sportsHeadphones: shokzSportsHeadphonesLandingRelatedSectionDefinitions
+      })};
+      const definitions = String(location.pathname || "").toLowerCase().includes("/pages/explore-sports-headphones")
+        ? definitionSets.sportsHeadphones
+        : definitionSets.openEar;
       const clean = (value, max = 260) => String(value || "")
         .replace(/[\\u00a0\\s]+/g, " ")
         .trim()
@@ -17794,6 +17875,7 @@ export const __testOnly = {
   composeShokzHomeOverviewComposite,
   composeShokzHomeTopbarComposite,
   composeShokzHomeProductShowcaseComposite,
+  shokzLandingRelatedSectionDefinitionsForPath,
   shouldUseDedicatedViewMoreExpansion,
   shouldUseDirectFullPageClipCapture
 };

@@ -27,6 +27,11 @@
       "id": "shokz-explore-open-ear-headphones",
       "url": "https://shokz.com/pages/explore-open-ear-headphones",
       "label": "PP页"
+    },
+    {
+      "id": "shokz-explore-sports-headphones",
+      "url": "https://shokz.com/pages/explore-sports-headphones",
+      "label": "运动PP页"
     }
   ],
   "deviceProfiles": [
@@ -97,6 +102,13 @@
     {
       "id": "plan-shokz-explore-open-ear-headphones-mobile-default",
       "targetId": "shokz-explore-open-ear-headphones",
+      "deviceProfileId": "mobile-default",
+      "enabled": true,
+      "captureMode": "shokz-landing-page"
+    },
+    {
+      "id": "plan-shokz-explore-sports-headphones-mobile-default",
+      "targetId": "shokz-explore-sports-headphones",
       "deviceProfileId": "mobile-default",
       "enabled": true,
       "captureMode": "shokz-landing-page"
