@@ -5369,7 +5369,7 @@ function combinedRelatedCaptureImages(captures) {
 }
 
 async function captureShokzCollectionRelatedSection(client, outputPath, captureContext, definition) {
-  if (definition?.key === "collection-tabs") {
+  if (definition?.key === "collection-tabs" && isMobileCaptureContext(captureContext)) {
     return captureShokzCollectionProductVariantSection(client, outputPath, captureContext, definition);
   }
 
@@ -6793,6 +6793,9 @@ function isAcceptableCollectionProductVariantBlankAudit(blankAudit, state) {
 
 async function captureShokzComparisonRelatedSection(client, outputPath, captureContext, definition) {
   if (definition?.mode === "product-map" || definition?.key === "comparison-products") {
+    if (!isMobileCaptureContext(captureContext)) {
+      return captureShokzComparisonProductLongStateSection(client, outputPath, captureContext, definition);
+    }
     return captureShokzComparisonProductMapSection(client, outputPath, captureContext, definition);
   }
 
@@ -7008,6 +7011,197 @@ async function captureShokzComparisonRelatedSection(client, outputPath, captureC
     captures,
     warnings,
     expectedCount: targetStates.length,
+    capturedCount: captures.length
+  };
+}
+
+async function captureShokzComparisonProductLongStateSection(client, outputPath, captureContext, definition) {
+  const viewport = viewportForCaptureContext(captureContext);
+  const positioned = await positionShokzComparisonProductsSection(client);
+  if (!positioned.ok) {
+    return {
+      width: Number(viewport.width || 0) || 393,
+      height: Number(viewport.height || 0) || 852,
+      captures: [],
+      warnings: [{
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        message: positioned.reason || `Could not position ${definition.sectionLabel}.`
+      }],
+      expectedCount: 0,
+      capturedCount: 0
+    };
+  }
+
+  await sleep(550);
+  await primeLazyImages(client);
+  const plan = await readShokzComparisonProductMapPlan(client, definition, captureContext);
+  const warnings = Array.isArray(plan.warnings) ? [...plan.warnings] : [];
+  if (!plan.ok || !Array.isArray(plan.products) || !plan.products.length) {
+    return {
+      width: Number(viewport.width || 0) || 393,
+      height: Number(viewport.height || 0) || 852,
+      captures: [],
+      warnings: [{
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        message: plan.reason || `Could not read ${definition.sectionLabel} products.`
+      }, ...warnings],
+      expectedCount: 0,
+      capturedCount: 0
+    };
+  }
+
+  const targetFilter = captureContext.relatedStateFilter || null;
+  if (targetFilter && !comparisonProductMapMatchesFilter(outputPath, definition, plan, targetFilter)) {
+    throw new Error(`Could not match the requested ${definition.sectionLabel} product map.`);
+  }
+  const productMatchesTargetFilter = (product) => comparisonProductMatchesFilter(definition, product, targetFilter);
+  const targetProducts = targetFilter
+    ? plan.products.filter(productMatchesTargetFilter)
+    : plan.products;
+  if (targetFilter && !targetProducts.length) {
+    throw new Error(`Could not match the requested ${definition.sectionLabel} product screenshot.`);
+  }
+
+  const captures = [];
+  for (const [index, product] of targetProducts.entries()) {
+    const productIndex = product.stateIndex || product.productIndex || index + 1;
+    const productLabel = product.productLabel || product.stateLabel || product.productKey || `Product ${productIndex}`;
+    const productKey = product.productKey || product.fileId || safeFilePart(productLabel);
+    const pairedProduct = {
+      ...product,
+      productKey,
+      productLabel,
+      stateLabel: productLabel,
+      fileId: product.fileId || productKey,
+      logicalSignature: product.logicalSignature || [definition.key, productKey].join("|")
+    };
+
+    let longCapture = null;
+    try {
+      longCapture = await captureShokzComparisonProductsLongScreenshot(client, definition, {
+        primaryProduct: pairedProduct,
+        secondaryProduct: pairedProduct
+      }, captureContext);
+    } catch (error) {
+      warnings.push({
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        stateLabel: productLabel,
+        message: error.message
+      });
+      continue;
+    }
+
+    const relatedOutput = captureContext.relatedStateOutputPath && targetProducts.length === 1
+      ? captureContext.relatedStateOutputPath
+      : relatedOutputPath(outputPath, definition.key, pairedProduct.fileId || productKey || productIndex);
+    await fs.writeFile(relatedOutput, longCapture.buffer);
+
+    const visualSignature = hashBuffer(longCapture.buffer);
+    const visualHash = visualHashForBuffer(longCapture.buffer);
+    const visualAudit = visualAuditForBuffer(longCapture.buffer, visualHash);
+    const visibleProducts = collectionProductsFromVariantCaptures([], {
+      visibleProducts: [{
+        key: productKey,
+        label: productLabel,
+        productKey,
+        productLabel,
+        productIndex,
+        variantCount: 0
+      }]
+    });
+    const visibleItems = Array.isArray(longCapture.current?.visibleItems) && longCapture.current.visibleItems.length
+      ? longCapture.current.visibleItems
+      : visibleProducts;
+
+    captures.push({
+      outputPath: relatedOutput,
+      width: longCapture.width,
+      height: longCapture.height,
+      kind: "section",
+      sectionKey: definition.key,
+      sectionLabel: definition.sectionLabel,
+      sectionTitle: definition.title,
+      stateIndex: productIndex,
+      stateCount: targetProducts.length,
+      stateLabel: productLabel,
+      label: productLabel,
+      tabLabel: productLabel,
+      tabIndex: productIndex,
+      pageIndex: null,
+      interactionState: "default",
+      categoryKey: productKey,
+      categoryLabel: productLabel,
+      productKey,
+      productLabel,
+      productIndex,
+      variantKey: null,
+      variantLabel: "PC selected product long page",
+      variantOptions: null,
+      logicalSignature: [definition.key, productKey, "pc-selected-product"].join("|"),
+      visualSignature,
+      visualHash,
+      visualAudit,
+      captureValidation: longCapture.captureValidation,
+      clip: longCapture.clip,
+      scrollInfo: {
+        height: longCapture.height,
+        viewportWidth: Number(viewport.width || 0) || 393,
+        viewportHeight: Number(viewport.height || 0) || 852,
+        reachableHeight: Number(longCapture.scrollInfo?.reachableHeight || 0) || longCapture.height,
+        scrolls: Number(longCapture.scrollInfo?.scrolls || 0) || null
+      },
+      isDefaultState: productIndex === 1,
+      coverageKey: relatedCoverageKeyForState({
+        sectionKey: definition.key,
+        stateIndex: productIndex,
+        fileId: pairedProduct.fileId || productKey,
+        stateLabel: productLabel
+      }),
+      productCount: 1,
+      visibleProductCount: visibleProducts.length || 1,
+      visibleProducts,
+      itemCount: visibleItems.length || null,
+      visibleItemCount: visibleItems.length || null,
+      visibleItems,
+      itemRects: Array.isArray(longCapture.current?.itemRects) ? longCapture.current.itemRects : null,
+      windowSignature: JSON.stringify({
+        product: productKey,
+        visibleItems: visibleItems.map((item) => item.key || item.label || item.productKey || item.productLabel)
+      }).slice(0, 1800),
+      sectionState: {
+        text: longCapture.current?.text || "",
+        textBlocks: longCapture.current?.textBlocks || [],
+        images: longCapture.current?.images || [],
+        activeIndex: productIndex,
+        tabLabel: productLabel,
+        tabIndex: productIndex,
+        interactionState: "default",
+        categoryKey: productKey,
+        categoryLabel: productLabel,
+        productKey,
+        productLabel,
+        productCount: 1,
+        visibleProductCount: visibleProducts.length || 1,
+        visibleProducts,
+        visibleItemCount: visibleItems.length || null,
+        visibleItems,
+        itemRects: Array.isArray(longCapture.current?.itemRects) ? longCapture.current.itemRects : null,
+        windowSignature: longCapture.current?.windowSignature || null
+      }
+    });
+  }
+
+  warnings.push(...relatedSectionCoverageWarnings(definition, targetProducts, captures));
+
+  return {
+    width: captures.reduce((max, capture) => Math.max(max, Number(capture.width || 0)), Number(viewport.width || 0) || 393),
+    height: captures.reduce((max, capture) => Math.max(max, Number(capture.height || 0)), Number(viewport.height || 0) || 852),
+    captures,
+    warnings,
+    expectedCount: targetProducts.length,
     capturedCount: captures.length
   };
 }

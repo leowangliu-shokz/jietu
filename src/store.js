@@ -232,6 +232,12 @@ export function normalizeCapturePlan(input, index = 0, targets = [], deviceProfi
       plan.captureMode = captureMode;
     }
   }
+  if (Object.hasOwn(input, "relatedCaptureMode")) {
+    const relatedCaptureMode = stringOrDefault(input.relatedCaptureMode, "");
+    if (relatedCaptureMode) {
+      plan.relatedCaptureMode = relatedCaptureMode;
+    }
+  }
   if (Object.hasOwn(input, "fullPage")) {
     plan.fullPage = Boolean(input.fullPage);
   }

@@ -74,6 +74,30 @@ test("captureConfigForExecution carries targeted related-state filters", () => {
   });
 });
 
+test("relatedCaptureMode routes related captures without changing the main capture mode", () => {
+  const config = normalizeConfig({
+    targets: [{ id: "collection", url: "https://example.com/collection", label: "Collection" }],
+    deviceProfiles: [{ id: "pc-main", platform: "pc", devicePresetId: "pc-hd", enabled: true }],
+    capturePlans: [{
+      id: "collection-pc",
+      targetId: "collection",
+      deviceProfileId: "pc-main",
+      enabled: true,
+      relatedCaptureMode: "shokz-collection-page"
+    }]
+  });
+  const execution = resolveConfiguredCapturePlans(config, { planIds: ["collection-pc"] })[0];
+
+  const captureConfig = captureConfigForExecution(config, execution);
+
+  assert.equal(captureConfig.captureMode, undefined);
+  assert.equal(captureConfig.relatedCaptureMode, "shokz-collection-page");
+  assert.equal(
+    relatedCaptureModeForTarget(execution.target, captureConfig),
+    "shokz-collection-related-section"
+  );
+});
+
 test("relatedDescriptorsForCaptureConfig narrows isolated related captures by section", () => {
   const descriptors = [
     { sectionKey: "comparison-products" },

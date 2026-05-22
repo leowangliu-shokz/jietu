@@ -785,6 +785,10 @@ function captureConfigForExecution(config, execution, options = {}) {
   if (captureMode) {
     targetConfig.captureMode = captureMode;
   }
+  const relatedCaptureMode = execution.relatedCaptureMode || execution.target.relatedCaptureMode || null;
+  if (relatedCaptureMode) {
+    targetConfig.relatedCaptureMode = relatedCaptureMode;
+  }
   const relatedStateFilter = options.relatedStateFilter || execution.relatedStateFilter || null;
   if (relatedStateFilter && typeof relatedStateFilter === "object") {
     targetConfig.relatedStateFilter = relatedStateFilter;
@@ -1088,16 +1092,17 @@ function relatedValidationWithWarnings(validation, warnings = []) {
 }
 
 function relatedCaptureModeForTarget(target, captureConfig) {
-  if (target.id === "shokz-products-nav" || captureConfig.captureMode === "shokz-products-nav") {
+  const relatedSourceMode = captureConfig.relatedCaptureMode || captureConfig.captureMode || null;
+  if (target.id === "shokz-products-nav" || relatedSourceMode === "shokz-products-nav") {
     return "shokz-products-nav-related";
   }
-  if (captureConfig.captureMode === "shokz-collection-page") {
+  if (relatedSourceMode === "shokz-collection-page") {
     return "shokz-collection-related-section";
   }
-  if (captureConfig.captureMode === "shokz-comparison-page") {
+  if (relatedSourceMode === "shokz-comparison-page") {
     return "shokz-comparison-related-section";
   }
-  if (captureConfig.captureMode === "shokz-landing-page") {
+  if (relatedSourceMode === "shokz-landing-page") {
     return "shokz-landing-related";
   }
 
@@ -1105,13 +1110,14 @@ function relatedCaptureModeForTarget(target, captureConfig) {
 }
 
 async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPath, captureConfig, diagnosticRun = null) {
-  if (target.id === "shokz-home" && !captureConfig.captureMode) {
+  const relatedSourceMode = captureConfig.relatedCaptureMode || captureConfig.captureMode || null;
+  if (target.id === "shokz-home" && !relatedSourceMode) {
     return captureShokzHomeRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun);
   }
-  if (captureConfig.captureMode === "shokz-collection-page") {
+  if (relatedSourceMode === "shokz-collection-page") {
     return captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun);
   }
-  if (captureConfig.captureMode === "shokz-comparison-page") {
+  if (relatedSourceMode === "shokz-comparison-page") {
     return captureShokzComparisonRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun);
   }
 

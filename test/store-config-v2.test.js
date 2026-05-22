@@ -40,7 +40,13 @@ test("normalizeConfig keeps explicit v2 plans and drops invalid duplicates", () 
     capturePlans: [
       { id: "home-pc", targetId: "home", deviceProfileId: "pc-main", enabled: true },
       { id: "home-pc-duplicate", targetId: "home", deviceProfileId: "pc-main", enabled: true },
-      { id: "docs-mobile", targetId: "docs", deviceProfileId: "mobile-main", enabled: false },
+      {
+        id: "docs-mobile",
+        targetId: "docs",
+        deviceProfileId: "mobile-main",
+        enabled: false,
+        relatedCaptureMode: "shokz-collection-page"
+      },
       { id: "invalid", targetId: "missing", deviceProfileId: "mobile-main", enabled: true }
     ]
   });
@@ -57,6 +63,7 @@ test("normalizeConfig keeps explicit v2 plans and drops invalid duplicates", () 
     config.capturePlans.map((plan) => plan.id),
     ["home-pc", "docs-mobile"]
   );
+  assert.equal(config.capturePlans[1].relatedCaptureMode, "shokz-collection-page");
 });
 
 test("resolveConfiguredCapturePlans filters the execution matrix by platform and preset", () => {

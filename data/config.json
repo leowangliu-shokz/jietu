@@ -77,7 +77,8 @@
       "id": "plan-shokz-headphones-accessories-pc-default",
       "targetId": "shokz-headphones-accessories",
       "deviceProfileId": "pc-default",
-      "enabled": true
+      "enabled": true,
+      "relatedCaptureMode": "shokz-collection-page"
     },
     {
       "id": "plan-shokz-headphones-accessories-mobile-default",
@@ -90,7 +91,8 @@
       "id": "plan-shokz-product-comparison-pc-default",
       "targetId": "shokz-product-comparison",
       "deviceProfileId": "pc-default",
-      "enabled": true
+      "enabled": true,
+      "relatedCaptureMode": "shokz-comparison-page"
     },
     {
       "id": "plan-shokz-product-comparison-mobile-default",
@@ -103,7 +105,8 @@
       "id": "plan-shokz-explore-open-ear-headphones-pc-default",
       "targetId": "shokz-explore-open-ear-headphones",
       "deviceProfileId": "pc-default",
-      "enabled": true
+      "enabled": true,
+      "relatedCaptureMode": "shokz-landing-page"
     },
     {
       "id": "plan-shokz-explore-open-ear-headphones-mobile-default",
@@ -116,7 +119,8 @@
       "id": "plan-shokz-explore-sports-headphones-pc-default",
       "targetId": "shokz-explore-sports-headphones",
       "deviceProfileId": "pc-default",
-      "enabled": true
+      "enabled": true,
+      "relatedCaptureMode": "shokz-landing-page"
     },
     {
       "id": "plan-shokz-explore-sports-headphones-mobile-default",
