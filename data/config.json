@@ -100,11 +100,23 @@
       "captureMode": "shokz-comparison-page"
     },
     {
+      "id": "plan-shokz-explore-open-ear-headphones-pc-default",
+      "targetId": "shokz-explore-open-ear-headphones",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
       "id": "plan-shokz-explore-open-ear-headphones-mobile-default",
       "targetId": "shokz-explore-open-ear-headphones",
       "deviceProfileId": "mobile-default",
       "enabled": true,
       "captureMode": "shokz-landing-page"
+    },
+    {
+      "id": "plan-shokz-explore-sports-headphones-pc-default",
+      "targetId": "shokz-explore-sports-headphones",
+      "deviceProfileId": "pc-default",
+      "enabled": true
     },
     {
       "id": "plan-shokz-explore-sports-headphones-mobile-default",
