@@ -523,6 +523,8 @@ select:focus {
 }
 
 .changes-list {
+  display: grid;
+  gap: 12px;
   padding: 0 18px 12px;
 }
 
@@ -539,6 +541,10 @@ select:focus {
   border-collapse: collapse;
   table-layout: fixed;
   font-size: 13px;
+}
+
+.seo-table {
+  min-width: 980px;
 }
 
 .changes-table th,

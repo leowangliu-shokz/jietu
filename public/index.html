@@ -61,6 +61,18 @@
             >
               变更汇总
             </button>
+            <button
+              id="tabSeo"
+              class="tab"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="seoPanel"
+              data-tab="seo"
+              tabindex="-1"
+            >
+              SEO
+            </button>
           </nav>
         </div>
         <div class="actions">
@@ -190,6 +202,46 @@
               <button id="changesNextPage" type="button">下一页</button>
             </nav>
             <p id="changesEmpty" class="empty">暂无变更记录。</p>
+          </section>
+        </section>
+
+        <section
+          id="seoPanel"
+          class="tab-panel"
+          role="tabpanel"
+          aria-labelledby="tabSeo"
+          data-tab-panel="seo"
+          hidden
+        >
+          <section class="status-grid changes-status" aria-label="SEO status">
+            <div class="stat">
+              <span>SEO snapshots</span>
+              <strong id="seoCount">0</strong>
+            </div>
+            <div class="stat">
+              <span>SEO changes</span>
+              <strong id="seoChangeCount">0</strong>
+            </div>
+            <div class="stat">
+              <span>Latest SEO check</span>
+              <strong id="latestSeoTime">-</strong>
+            </div>
+          </section>
+
+          <section class="changes-panel seo-panel" aria-label="SEO snapshots and changes">
+            <div class="timeline-head">
+              <div>
+                <h2>SEO Snapshot</h2>
+                <p>Title, meta, headings, navigation, table headers, keywords, and structured data.</p>
+              </div>
+              <div class="timeline-filters">
+                <select id="seoUrlFilter" aria-label="Filter SEO by URL">
+                  <option value="">All URLs</option>
+                </select>
+              </div>
+            </div>
+            <div id="seoList" class="changes-list seo-list"></div>
+            <p id="seoEmpty" class="empty">No SEO snapshots yet.</p>
           </section>
         </section>
       </section>

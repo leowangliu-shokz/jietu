@@ -11,6 +11,9 @@ const elements = {
   browserState: document.querySelector("#browserState"),
   captureState: document.querySelector("#captureState"),
   changeCount: document.querySelector("#changeCount"),
+  seoCount: document.querySelector("#seoCount"),
+  seoChangeCount: document.querySelector("#seoChangeCount"),
+  latestSeoTime: document.querySelector("#latestSeoTime"),
   latestShotTime: document.querySelector("#latestShotTime"),
   deviceFilter: document.querySelector("#deviceFilter"),
   deviceFilterButton: document.querySelector("#deviceFilterButton"),
@@ -26,6 +29,7 @@ const elements = {
   changesDateEndFilter: document.querySelector("#changesDateEndFilter"),
   changesDateClearFilter: document.querySelector("#changesDateClearFilter"),
   changesUrlFilter: document.querySelector("#changesUrlFilter"),
+  seoUrlFilter: document.querySelector("#seoUrlFilter"),
   bulkActions: document.querySelector("#bulkActions"),
   bulkSelectionCount: document.querySelector("#bulkSelectionCount"),
   bulkSelectVisible: document.querySelector("#bulkSelectVisible"),
@@ -40,6 +44,8 @@ const elements = {
   changesPrevPage: document.querySelector("#changesPrevPage"),
   changesNextPage: document.querySelector("#changesNextPage"),
   changesEmpty: document.querySelector("#changesEmpty"),
+  seoList: document.querySelector("#seoList"),
+  seoEmpty: document.querySelector("#seoEmpty"),
   imagePreview: document.querySelector("#imagePreview"),
   imagePreviewViewport: document.querySelector("#imagePreviewViewport"),
   imagePreviewLongView: document.querySelector("#imagePreviewLongView"),
@@ -96,6 +102,7 @@ const relatedSectionTitles = {
 
 let state = null;
 let changes = [];
+let seoState = { snapshots: [], changes: [] };
 let activePlatform = "pc";
 let imagePreviewReturnFocus = null;
 let imagePreviewPreviousOverflow = "";
@@ -123,6 +130,7 @@ const activeTabByPlatform = {
 };
 const archiveFiltersByPlatform = createPlatformFilterMap();
 const changesFiltersByPlatform = createPlatformFilterMap();
+const seoFiltersByPlatform = createPlatformFilterMap();
 const selectedSnapshotIds = new Set();
 const pendingSnapshotDeletes = new Set();
 let visibleGallerySnapshotIds = new Set();
@@ -175,6 +183,10 @@ elements.changesDateEndFilter.addEventListener("change", () => {
 elements.changesDateClearFilter.addEventListener("click", clearChangesDateFilter);
 elements.changesPrevPage.addEventListener("click", () => changeChangesPage(-1));
 elements.changesNextPage.addEventListener("click", () => changeChangesPage(1));
+elements.seoUrlFilter.addEventListener("change", () => {
+  activeSeoFilters().url = elements.seoUrlFilter.value;
+  renderSeoSummary();
+});
 elements.bulkSelectVisible.addEventListener("click", handleBulkSelectVisibleClick);
 elements.bulkClearSelection.addEventListener("click", handleBulkClearSelectionClick);
 elements.bulkDeleteSelected.addEventListener("click", () => void handleBulkDeleteSelectedClick());
@@ -227,6 +239,10 @@ function activeArchiveFilters() {
 
 function activeChangesFilters() {
   return changesFiltersByPlatform[activePlatform];
+}
+
+function activeSeoFilters() {
+  return seoFiltersByPlatform[activePlatform];
 }
 
 function setActivePlatform(platform, options = {}) {
@@ -299,12 +315,14 @@ function handlePlatformTabKeydown(event) {
 function syncActivePlatformFilterInputs() {
   const archiveFilters = activeArchiveFilters();
   const changeFilters = activeChangesFilters();
+  const seoFilters = activeSeoFilters();
   elements.urlFilter.value = archiveFilters.url;
   elements.dateStartFilter.value = archiveFilters.dateStart;
   elements.dateEndFilter.value = archiveFilters.dateEnd;
   elements.changesUrlFilter.value = changeFilters.url;
   elements.changesDateStartFilter.value = changeFilters.dateStart;
   elements.changesDateEndFilter.value = changeFilters.dateEnd;
+  elements.seoUrlFilter.value = seoFilters.url;
 }
 
 function closePlatformMenus() {
@@ -312,13 +330,12 @@ function closePlatformMenus() {
 }
 
 function activeTabForPlatform(platform = activePlatform) {
-  return activeTabByPlatform[resolveActivePlatformValue(platform)] === "changes"
-    ? "changes"
-    : "archive";
+  const activeTab = activeTabByPlatform[resolveActivePlatformValue(platform)];
+  return ["archive", "changes", "seo"].includes(activeTab) ? activeTab : "archive";
 }
 
 function resolveActiveTabValue(tabName) {
-  return tabName === "changes" ? "changes" : "archive";
+  return ["changes", "seo"].includes(tabName) ? tabName : "archive";
 }
 
 function setActiveTab(tabName, options = {}) {
@@ -378,13 +395,21 @@ function handleTabKeydown(event) {
 }
 
 async function refreshState(options = {}) {
-  const [stateResponse, changesResponse] = await Promise.all([
+  const [stateResponse, changesResponse, seoResponse] = await Promise.all([
     fetch("/api/state"),
-    fetch("/api/changes")
+    fetch("/api/changes"),
+    fetch("/api/seo")
   ]);
   state = await stateResponse.json();
   const loadedChanges = await changesResponse.json();
   changes = Array.isArray(loadedChanges) ? loadedChanges : [];
+  const loadedSeoState = await seoResponse.json();
+  seoState = loadedSeoState && typeof loadedSeoState === "object"
+    ? {
+      snapshots: Array.isArray(loadedSeoState.snapshots) ? loadedSeoState.snapshots : [],
+      changes: Array.isArray(loadedSeoState.changes) ? loadedSeoState.changes : []
+    }
+    : { snapshots: [], changes: [] };
   setActivePlatform(resolveAvailablePlatform(state, activePlatform), { render: false });
   render(options);
 }
@@ -394,6 +419,11 @@ function render(options = {}) {
   elements.platformState.textContent = platformView?.label || platformLabel(activePlatform);
   elements.shotCount.textContent = platformSnapshots().length;
   elements.changeCount.textContent = platformChanges().length;
+  elements.seoCount.textContent = platformSeoSnapshots().length;
+  elements.seoChangeCount.textContent = platformSeoChanges().length;
+  elements.latestSeoTime.textContent = latestSeoCapturedAt()
+    ? formatDate(latestSeoCapturedAt())
+    : "-";
   elements.captureState.textContent = state.capture.running ? "截图中" : "空闲";
   elements.browserState.textContent = state.browser.ok ? browserName(state.browser.path) : "未找到";
   elements.scheduleState.textContent = "整点（所有设备）";
@@ -410,10 +440,12 @@ function render(options = {}) {
   syncActivePlatformFilterInputs();
   renderFilterOptions();
   renderChangesFilterOptions();
+  renderSeoFilterOptions();
   renderDeviceFilterOptions();
   renderChangesDevicePreset();
   renderArchiveStatus();
   renderChangesSummary();
+  renderSeoSummary();
   renderGallery({ preserveScroll: options.preserveScroll !== false });
 }
 
@@ -426,6 +458,18 @@ function platformSnapshots() {
 function platformChanges() {
   return changes.filter((change) =>
     platformForChange(change, state?.devicePresets || []) === activePlatform
+  );
+}
+
+function platformSeoSnapshots() {
+  return (seoState?.snapshots || []).filter((snapshot) =>
+    (snapshot.platform || platformForSnapshot(snapshot, state?.devicePresets || [])) === activePlatform
+  );
+}
+
+function platformSeoChanges() {
+  return (seoState?.changes || []).filter((change) =>
+    (change.location?.platform || change.to?.platform || change.from?.platform || "pc") === activePlatform
   );
 }
 
@@ -476,12 +520,21 @@ function latestSnapshotCapturedAt() {
   return Number.isFinite(latest) ? new Date(latest).toISOString() : null;
 }
 
+function latestSeoCapturedAt() {
+  const latest = Math.max(...platformSeoSnapshots().map((snapshot) => timestamp(snapshot.capturedAt)));
+  return Number.isFinite(latest) ? new Date(latest).toISOString() : null;
+}
+
 function renderFilterOptions() {
   renderUrlFilterOptions(elements.urlFilter, urlFilterOptions(), activeArchiveFilters().url);
 }
 
 function renderChangesFilterOptions() {
   renderUrlFilterOptions(elements.changesUrlFilter, urlFilterOptions(), activeChangesFilters().url);
+}
+
+function renderSeoFilterOptions() {
+  renderUrlFilterOptions(elements.seoUrlFilter, seoUrlFilterOptions(), activeSeoFilters().url);
 }
 
 function renderUrlFilterOptions(select, urls, currentValue = "") {
@@ -2369,6 +2422,130 @@ function changeChangesPage(delta) {
   renderChangesSummary();
 }
 
+function renderSeoSummary() {
+  const snapshots = latestSeoSnapshotsByKey(platformSeoSnapshots().filter(matchesSeoFilters)).slice(0, 20);
+  const changes = platformSeoChanges().filter(matchesSeoChangeFilters).slice(0, 20);
+  elements.seoList.innerHTML = "";
+  elements.seoEmpty.classList.toggle("visible", snapshots.length === 0 && changes.length === 0);
+
+  if (snapshots.length) {
+    const snapshotTable = document.createElement("div");
+    snapshotTable.className = "changes-table-wrap seo-table-wrap";
+    snapshotTable.innerHTML = `
+      <table class="changes-table seo-table">
+        <thead>
+          <tr>
+            <th scope="col">URL</th>
+            <th scope="col">Title</th>
+            <th scope="col">Meta description</th>
+            <th scope="col">H1 / Headers</th>
+            <th scope="col">Checked</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${snapshots.map(renderSeoSnapshotRow).join("")}
+        </tbody>
+      </table>
+    `;
+    elements.seoList.append(snapshotTable);
+  }
+
+  if (changes.length) {
+    const changeTable = document.createElement("div");
+    changeTable.className = "changes-table-wrap seo-table-wrap";
+    changeTable.innerHTML = `
+      <table class="changes-table seo-table">
+        <thead>
+          <tr>
+            <th scope="col">Level</th>
+            <th scope="col">Field</th>
+            <th scope="col">URL</th>
+            <th scope="col">Before</th>
+            <th scope="col">After</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${changes.flatMap(renderSeoChangeRows).join("")}
+        </tbody>
+      </table>
+    `;
+    elements.seoList.append(changeTable);
+  }
+}
+
+function renderSeoSnapshotRow(snapshot) {
+  const h1 = Array.isArray(snapshot.h1) && snapshot.h1.length ? snapshot.h1.join(" | ") : "";
+  const headings = Array.isArray(snapshot.headings)
+    ? snapshot.headings.slice(0, 5).map((heading) => `${heading.level || ""} ${heading.text || ""}`.trim()).join(" | ")
+    : "";
+  const headerText = h1 || headings || "-";
+  return `
+    <tr>
+      <td>${escapeHtml(truncateDisplayText(canonicalDisplayUrlForSeoSnapshot(snapshot), 120))}</td>
+      <td>${escapeHtml(truncateDisplayText(snapshot.title || "", 160))}</td>
+      <td>${escapeHtml(truncateDisplayText(snapshot.metaDescription || "", 180))}</td>
+      <td>${escapeHtml(truncateDisplayText(headerText, 180))}</td>
+      <td>${escapeHtml(formatOptionalDate(snapshot.capturedAt))}</td>
+    </tr>
+  `;
+}
+
+function renderSeoChangeRows(change) {
+  const fields = Array.isArray(change.fields) && change.fields.length
+    ? change.fields
+    : change.seoChange?.fields || [];
+  const rows = fields.slice(0, 6).map((field) => `
+    <tr>
+      <td>
+        <span class="change-level change-level-${escapeHtml((field.level || change.changeLevel || "P2").toLowerCase())}">
+          ${escapeHtml(field.level || change.changeLevel || "P2")}
+        </span>
+      </td>
+      <td>${escapeHtml(field.label || field.field || "SEO field")}</td>
+      <td>${escapeHtml(truncateDisplayText(canonicalDisplayUrlForSeoChange(change), 120))}</td>
+      <td>${escapeHtml(truncateDisplayText(field.before || "(empty)", 180))}</td>
+      <td>${escapeHtml(truncateDisplayText(field.after || "(empty)", 180))}</td>
+    </tr>
+  `);
+  return rows.length ? rows : [`
+    <tr>
+      <td><span class="change-level change-level-${escapeHtml((change.changeLevel || "P2").toLowerCase())}">${escapeHtml(change.changeLevel || "P2")}</span></td>
+      <td>SEO</td>
+      <td>${escapeHtml(truncateDisplayText(canonicalDisplayUrlForSeoChange(change), 120))}</td>
+      <td>${escapeHtml(truncateDisplayText(change.from?.title || "", 180))}</td>
+      <td>${escapeHtml(truncateDisplayText(change.to?.title || "", 180))}</td>
+    </tr>
+  `];
+}
+
+function latestSeoSnapshotsByKey(snapshots) {
+  const seen = new Set();
+  return [...snapshots]
+    .sort((a, b) => timestamp(b.capturedAt) - timestamp(a.capturedAt))
+    .filter((snapshot) => {
+      const key = [
+        snapshot.platform || activePlatform,
+        snapshot.targetId || "",
+        canonicalDisplayUrlForSeoSnapshot(snapshot)
+      ].join("::");
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+}
+
+function matchesSeoFilters(snapshot) {
+  const selectedUrl = activeSeoFilters().url;
+  return selectedUrl ? canonicalDisplayUrlForSeoSnapshot(snapshot) === selectedUrl : true;
+}
+
+function matchesSeoChangeFilters(change) {
+  const selectedUrl = activeSeoFilters().url;
+  return selectedUrl ? canonicalDisplayUrlForSeoChange(change) === selectedUrl : true;
+}
+
 function matchesChangeFilters(change) {
   const selectedUrl = activeChangesFilters().url;
   const matchesUrl = selectedUrl ? canonicalDisplayUrlForChange(change) === selectedUrl : true;
@@ -3442,6 +3619,12 @@ function urlFilterOptions() {
   return [...new Set([...configured, ...captured, ...changed].filter(Boolean))];
 }
 
+function seoUrlFilterOptions() {
+  const snapshots = platformSeoSnapshots().map(canonicalDisplayUrlForSeoSnapshot);
+  const changed = platformSeoChanges().map(canonicalDisplayUrlForSeoChange);
+  return [...new Set([...snapshots, ...changed].filter(Boolean))];
+}
+
 function canonicalDisplayUrlForSnapshot(snapshot) {
   if (isProductsNavSnapshot(snapshot)) {
     return navDisplayUrl();
@@ -3459,6 +3642,15 @@ function canonicalDisplayUrlForChange(change) {
     url: location.url,
     displayUrl: location.displayUrl || location.targetLabel || location.url
   });
+}
+
+function canonicalDisplayUrlForSeoSnapshot(snapshot) {
+  return snapshot.displayUrl || snapshot.targetLabel || snapshot.finalUrl || snapshot.url || "SEO target";
+}
+
+function canonicalDisplayUrlForSeoChange(change) {
+  const location = change.location || {};
+  return location.displayUrl || location.targetLabel || location.finalUrl || location.url || "SEO target";
 }
 
 function isHomeSnapshot(snapshot) {

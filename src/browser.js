@@ -390,6 +390,8 @@ async function driveCapture(client, url, outputPath, options) {
 
   stage = "reading page title";
   const titleResult = await readPageTitle(client);
+  stage = "reading seo snapshot";
+  const seoSnapshot = await readSeoSnapshot(client);
 
   stage = "measuring page";
   const metrics = await client.send("Page.getLayoutMetrics");
@@ -582,6 +584,7 @@ async function driveCapture(client, url, outputPath, options) {
     finalUrl,
     urlCheck,
     title: titleResult,
+    seoSnapshot,
     width: clipWidth,
     height: captureHeight,
     fullPageHeight: pageHeight,
@@ -603,6 +606,138 @@ async function readPageTitle(client) {
     returnByValue: true
   }).catch(() => ({ result: { value: "" } }));
   return titleResult.result?.value || "";
+}
+
+async function readSeoSnapshot(client) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const clean = (value, max = 500) => String(value || "").replace(/\\s+/g, " ").trim().slice(0, max);
+      const dedupe = (values, max = 80) => {
+        const seen = new Set();
+        const list = [];
+        for (const value of values) {
+          const text = clean(value);
+          const key = text.toLowerCase();
+          if (text && !seen.has(key)) {
+            seen.add(key);
+            list.push(text);
+          }
+          if (list.length >= max) break;
+        }
+        return list;
+      };
+      const metaContent = (selector) => clean(document.querySelector(selector)?.getAttribute("content"), 1200);
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return rect.width > 1 &&
+          rect.height > 1 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const textOf = (element, max = 240) => clean(
+        element?.innerText ||
+        element?.textContent ||
+        element?.getAttribute?.("aria-label") ||
+        element?.getAttribute?.("title") ||
+        "",
+        max
+      );
+      const headings = Array.from(document.querySelectorAll("h1,h2,h3"))
+        .filter(visible)
+        .map((element) => ({
+          level: element.tagName.toLowerCase(),
+          text: textOf(element, 260)
+        }))
+        .filter((heading) => heading.text)
+        .slice(0, 80);
+      const navItems = dedupe(
+        Array.from(document.querySelectorAll("header nav a, header nav button, nav a, nav button, header a, header button"))
+          .filter(visible)
+          .map((element) => textOf(element, 180)),
+        100
+      );
+      const tableHeaders = dedupe(
+        Array.from(document.querySelectorAll("th, [role='columnheader']"))
+          .filter(visible)
+          .map((element) => textOf(element, 180)),
+        100
+      );
+      const links = Array.from(document.querySelectorAll("a[href]"))
+        .map((link) => {
+          try {
+            return new URL(link.getAttribute("href"), location.href);
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean);
+      const images = Array.from(document.querySelectorAll("img"));
+      const jsonLdTypes = dedupe(
+        Array.from(document.querySelectorAll("script[type*='ld+json' i]"))
+          .flatMap((script) => {
+            try {
+              const parsed = JSON.parse(script.textContent || "null");
+              const nodes = Array.isArray(parsed) ? parsed : [parsed, ...(Array.isArray(parsed?.["@graph"]) ? parsed["@graph"] : [])];
+              return nodes.map((node) => node?.["@type"]).flat().filter(Boolean);
+            } catch {
+              return [];
+            }
+          })
+          .map((value) => Array.isArray(value) ? value.join("/") : value),
+        40
+      );
+      const metaKeywords = metaContent("meta[name='keywords' i]");
+      return {
+        title: clean(document.title, 500),
+        meta: {
+          description: metaContent("meta[name='description' i]"),
+          keywords: metaKeywords,
+          robots: metaContent("meta[name='robots' i]"),
+          googlebot: metaContent("meta[name='googlebot' i]"),
+          viewport: metaContent("meta[name='viewport' i]")
+        },
+        metaDescription: metaContent("meta[name='description' i]"),
+        metaKeywords,
+        canonical: clean(document.querySelector("link[rel='canonical' i]")?.href, 1200),
+        robots: metaContent("meta[name='robots' i]"),
+        viewport: metaContent("meta[name='viewport' i]"),
+        language: clean(document.documentElement?.lang, 80),
+        h1: headings.filter((heading) => heading.level === "h1").map((heading) => heading.text),
+        headings,
+        navItems,
+        tableHeaders,
+        keywordCandidates: dedupe(metaKeywords.split(/[,;|]/), 80),
+        openGraph: {
+          title: metaContent("meta[property='og:title' i]"),
+          description: metaContent("meta[property='og:description' i]"),
+          image: metaContent("meta[property='og:image' i]"),
+          url: metaContent("meta[property='og:url' i]"),
+          type: metaContent("meta[property='og:type' i]")
+        },
+        twitter: {
+          title: metaContent("meta[name='twitter:title' i]"),
+          description: metaContent("meta[name='twitter:description' i]"),
+          image: metaContent("meta[name='twitter:image' i]"),
+          card: metaContent("meta[name='twitter:card' i]")
+        },
+        jsonLdTypes,
+        imageAlt: {
+          total: images.length,
+          missing: images.filter((image) => !clean(image.getAttribute("alt"), 300)).length
+        },
+        linkCounts: {
+          total: links.length,
+          internal: links.filter((link) => link.origin === location.origin).length,
+          external: links.filter((link) => link.origin !== location.origin).length
+        }
+      };
+    })()`,
+    returnByValue: true
+  }).catch(() => ({ result: { value: null } }));
+  return result.result?.value && typeof result.result.value === "object" ? result.result.value : null;
 }
 
 function shouldGuardShokzSearchOverlay(url, viewport, options = {}) {

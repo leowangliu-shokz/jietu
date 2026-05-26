@@ -8,6 +8,7 @@ import { loadChanges } from "./changes.js";
 import { archiveDir, publicDir } from "./paths.js";
 import { safeJoin } from "./path-safety.js";
 import { annotateChangesForResponse, buildStatePayload } from "./server-state.js";
+import { buildSeoSummary, loadSeoChanges, loadSeoSnapshots } from "./seo-snapshots.js";
 import { deleteSnapshotAction, deleteSnapshotsAction, viewerModeErrorMessage } from "./snapshot-admin.js";
 import { ensureStorage, loadConfig, loadSnapshots, saveConfig } from "./store.js";
 
@@ -41,6 +42,18 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === "GET" && pathname === "/api/changes") {
       return sendJson(response, annotateChangesForResponse(await loadChanges(), config));
+    }
+
+    if (request.method === "GET" && pathname === "/api/seo") {
+      const [seoSnapshots, seoChanges] = await Promise.all([
+        loadSeoSnapshots(),
+        loadSeoChanges()
+      ]);
+      return sendJson(response, {
+        snapshots: seoSnapshots,
+        changes: seoChanges,
+        summary: buildSeoSummary(seoSnapshots, seoChanges)
+      });
     }
 
     if (request.method === "POST" && pathname === "/api/capture-issues") {
@@ -254,9 +267,11 @@ function scheduleNext() {
 }
 
 async function buildState() {
-  const [changes, snapshots, browser, captureIssues, captureRuns] = await Promise.all([
+  const [changes, snapshots, seoSnapshots, seoChanges, browser, captureIssues, captureRuns] = await Promise.all([
     loadChanges(),
     loadSnapshots(),
+    loadSeoSnapshots(),
+    loadSeoChanges(),
     browserStatus(),
     loadCaptureIssues(),
     loadCaptureRuns()
@@ -268,6 +283,8 @@ async function buildState() {
     browser,
     snapshots,
     changes,
+    seoSnapshots,
+    seoChanges,
     captureIssues,
     captureRuns,
     permissions: {

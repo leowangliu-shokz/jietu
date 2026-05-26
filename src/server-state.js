@@ -1,6 +1,7 @@
 import { buildPlatformViews } from "../public/app-model.js";
 import { devicePresets, toPublicDevicePreset } from "./device-presets.js";
 import { annotateChangeRuntimeMetadata, annotateSnapshotRuntimeMetadata } from "./platform-metadata.js";
+import { buildSeoSummary } from "./seo-snapshots.js";
 
 export function annotateSnapshotsForResponse(snapshots, config) {
   return (Array.isArray(snapshots) ? snapshots : [])
@@ -19,6 +20,8 @@ export function buildStatePayload({
   browser,
   snapshots,
   changes,
+  seoSnapshots,
+  seoChanges,
   captureIssues,
   captureRuns,
   permissions
@@ -46,6 +49,7 @@ export function buildStatePayload({
     changesSummary: {
       count: publicChanges.length,
       recent: publicChanges.slice(0, 6)
-    }
+    },
+    seoSummary: buildSeoSummary(seoSnapshots, seoChanges)
   };
 }

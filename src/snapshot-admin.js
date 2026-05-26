@@ -7,6 +7,7 @@ import {
   saveChanges
 } from "./changes.js";
 import { archiveDir, changesPath, snapshotsPath } from "./paths.js";
+import { deleteSeoSnapshotsForSnapshotIds } from "./seo-snapshots.js";
 import { readSnapshots, saveSnapshots } from "./store.js";
 
 export const viewerModeErrorMessage = "Viewer mode is read-only for capture and config changes. Set PAGE_SHOT_ADMIN=1 to enable admin actions.";
@@ -117,6 +118,13 @@ export async function deleteSnapshotsArchive(snapshotIds, options = {}) {
 
   const removedFiles = await removeSnapshotsFiles(deletedSnapshots, archiveRoot);
   const removedDiffFiles = await cleanupUnusedDiffFiles(changes, archiveRoot);
+  const seoRefresh = await deleteSeoSnapshotsForSnapshotIds(cleanSnapshotIds, {
+    seoSnapshotsFilePath: options.seoSnapshotsFilePath || path.join(path.dirname(snapshotsFilePath), "seo-snapshots.json"),
+    seoChangesFilePath: options.seoChangesFilePath || path.join(path.dirname(changesFilePath), "seo-changes.json")
+  }).catch((error) => ({
+    ok: false,
+    error: error.message
+  }));
 
   return {
     deletedSnapshotId: cleanSnapshotIds[0],
@@ -125,7 +133,8 @@ export async function deleteSnapshotsArchive(snapshotIds, options = {}) {
     changeRefresh: {
       ok: true,
       count: changes.length
-    }
+    },
+    seoRefresh
   };
 }
 

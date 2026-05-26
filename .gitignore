@@ -3,6 +3,8 @@ logs/
 archive/
 data/snapshots.json
 data/changes.json
+data/seo-snapshots.json
+data/seo-changes.json
 data/change-notifications.json
 data/capture-runs.json
 data/capture-issues.json

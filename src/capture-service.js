@@ -13,6 +13,7 @@ import { loadChanges, rebuildChanges } from "./changes.js";
 import { notifyChangeRecords } from "./change-notifier.js";
 import { findDevicePreset, toPublicDevicePreset } from "./device-presets.js";
 import { archiveDir } from "./paths.js";
+import { appendSeoSnapshots, createSeoSnapshotRecord, rebuildSeoChanges } from "./seo-snapshots.js";
 import {
   shokzCollectionRelatedSectionDefinitions,
   shokzComparisonRelatedSectionDefinitions,
@@ -392,9 +393,16 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
   if (snapshots.length) {
     await appendSnapshots(snapshots);
   }
+  const seoSnapshots = results.flatMap(captureResultSeoSnapshots);
+  if (seoSnapshots.length) {
+    await appendSeoSnapshots(seoSnapshots);
+  }
   const changeRefresh = options.deferChangeRefresh
     ? { ok: true, deferred: true }
     : await refreshChangeRecords();
+  const seoRefresh = options.deferChangeRefresh
+    ? { ok: true, deferred: true }
+    : await refreshSeoChangeRecords();
   const finishedAt = new Date();
   run.finishedAt = finishedAt.toISOString();
   run.durationMs = finishedAt.getTime() - new Date(run.startedAt).getTime();
@@ -404,14 +412,17 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
     ? run.successCount > 0 ? "partial" : "failed"
     : "succeeded";
   run.changeRefresh = changeRefresh;
+  run.seoRefresh = seoRefresh;
   for (const result of results) {
     if (result?.ok) {
       result.changeRefresh = changeRefresh;
+      result.seoRefresh = seoRefresh;
     }
   }
   await appendCaptureRun(run).catch(() => null);
   Object.defineProperty(results, "captureRun", { value: run, enumerable: false });
   Object.defineProperty(results, "changeRefresh", { value: changeRefresh, enumerable: false });
+  Object.defineProperty(results, "seoRefresh", { value: seoRefresh, enumerable: false });
   return results;
 }
 
@@ -430,6 +441,7 @@ function createCaptureRunRecord(plans, options = {}) {
     skippedCount: 0,
     concurrency: 1,
     changeRefresh: null,
+    seoRefresh: null,
     items: plans.map((plan, index) => captureRunItemForPlan(plan, id, index))
   };
 }
@@ -475,6 +487,13 @@ function captureResultSnapshots(result) {
     return result.snapshots;
   }
   return result.snapshot ? [result.snapshot] : [];
+}
+
+function captureResultSeoSnapshots(result) {
+  if (!result?.ok || !Array.isArray(result.seoSnapshots)) {
+    return [];
+  }
+  return result.seoSnapshots;
 }
 
 async function runCaptureExecution(execution, config, options = {}) {
@@ -594,16 +613,25 @@ async function capturePlanExecution(execution, config, options = {}) {
       });
     }
 
+    const seoSnapshots = createSeoSnapshotsForCapture(capture, snapshots);
+
     if (!options.deferSnapshotSave) {
       await appendSnapshots(snapshots);
+      if (seoSnapshots.length) {
+        await appendSeoSnapshots(seoSnapshots);
+      }
     }
     const changeRefresh = options.deferChangeRefresh
       ? { ok: true, deferred: true }
       : await refreshChangeRecords();
+    const seoRefresh = options.deferChangeRefresh
+      ? { ok: true, deferred: true }
+      : await refreshSeoChangeRecords();
     recordCaptureDiagnostic(diagnosticRun, {
       type: options.deferSnapshotSave ? "snapshot-prepared" : "snapshot-write",
       ok: true,
       snapshotCount: snapshots.length,
+      seoSnapshotCount: seoSnapshots.length,
       relatedShotCount: relatedShots.length,
       lowConfidenceSnapshots: snapshots
         .filter((snapshot) => snapshot.captureConfidence?.baselineEligible === false)
@@ -618,18 +646,21 @@ async function capturePlanExecution(execution, config, options = {}) {
           stateLabel: shot.stateLabel || shot.label || null,
           reasons: shot.captureConfidence.reasons
         })),
-      changeRefresh
+      changeRefresh,
+      seoRefresh
     });
     await finalizeCaptureDiagnostic(diagnosticRun, {
       ok: true,
       targetId: target.id,
       requestedUrl: normalizedUrl,
       snapshotCount: snapshots.length,
+      seoSnapshotCount: seoSnapshots.length,
       relatedShotCount: relatedShots.length,
       lowConfidenceSnapshotCount: snapshots.filter((snapshot) => snapshot.captureConfidence?.baselineEligible === false).length,
       lowConfidenceRelatedShotCount: relatedShots.filter((shot) => shot.captureConfidence?.baselineEligible === false).length,
       warningCount: Array.isArray(relatedCapture.validation?.warnings) ? relatedCapture.validation.warnings.length : 0,
-      changeRefresh
+      changeRefresh,
+      seoRefresh
     });
     return {
       ok: true,
@@ -638,7 +669,9 @@ async function capturePlanExecution(execution, config, options = {}) {
       deviceProfileId: execution.deviceProfile?.id || null,
       snapshot: snapshots[0],
       snapshots,
-      changeRefresh
+      seoSnapshots,
+      changeRefresh,
+      seoRefresh
     };
   } catch (error) {
     await removeCaptureOutputs(fileInfo.absolutePath);
@@ -762,6 +795,15 @@ async function refreshChangeRecords(options = {}) {
   }
 }
 
+async function refreshSeoChangeRecords() {
+  try {
+    const changes = await rebuildSeoChanges();
+    return { ok: true, count: changes.length };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+}
+
 function captureConfigForExecution(config, execution, options = {}) {
   const targetConfig = {
     ...config,
@@ -802,6 +844,18 @@ function captureConfigForExecution(config, execution, options = {}) {
     targetConfig.sectionKey = sectionKey;
   }
   return targetConfig;
+}
+
+function createSeoSnapshotsForCapture(capture, snapshots) {
+  if (!capture?.seoSnapshot || !Array.isArray(snapshots) || !snapshots.length) {
+    return [];
+  }
+  const primarySnapshot = snapshots.find((snapshot) => !snapshot.bannerIndex) || snapshots[0];
+  const seoSnapshot = createSeoSnapshotRecord({
+    snapshot: primarySnapshot,
+    seoSnapshot: capture.seoSnapshot
+  });
+  return seoSnapshot ? [seoSnapshot] : [];
 }
 
 function stringOrNull(value) {
