@@ -71,6 +71,18 @@ test("builds DingTalk markdown message with keyword and mentions", () => {
   assert.deepEqual(body.at.atMobiles, ["13800000000"]);
 });
 
+test("formats DingTalk change times in China time", () => {
+  const body = buildDingTalkMarkdownMessage([change("banner-p1", {
+    occurredBetween: {
+      from: "2026-05-28T07:48:59.467Z",
+      to: "2026-05-28T08:56:04.361Z"
+    }
+  })]);
+
+  assert.match(body.markdown.text, /2026-05-28 15:48 -> 2026-05-28 16:56/);
+  assert.equal(body.markdown.text.includes("2026-05-28 07:48"), false);
+});
+
 test("builds manual DingTalk broadcasts from Unicode-safe text", () => {
   const body = buildDingTalkBroadcastMessage({
     text: morningBroadcast,

@@ -6,6 +6,16 @@ import { changeNotificationsPath } from "./paths.js";
 const defaultScope = "home-banner";
 const defaultMinLevel = "P2";
 const maxStoredNotificationIds = 2000;
+const notificationTimeZone = "Asia/Shanghai";
+const shortDateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
+  timeZone: notificationTimeZone,
+  hourCycle: "h23",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit"
+});
 const levelRank = new Map([
   ["P0", 0],
   ["P1", 1],
@@ -353,7 +363,15 @@ function shortDateTime(value) {
   if (Number.isNaN(date.getTime())) {
     return String(value);
   }
-  return date.toISOString().replace("T", " ").slice(0, 16);
+  return formatShortDateTime(date);
+}
+
+function formatShortDateTime(date) {
+  const parts = Object.fromEntries(shortDateTimeFormatter
+    .formatToParts(date)
+    .filter((part) => part.type !== "literal")
+    .map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
 }
 
 function stringOrNull(value) {
