@@ -20,15 +20,57 @@ import {
 export { blankImageAuditForBuffer, imageQualityAuditForBuffer } from "./image-audit.js";
 
 const defaultTimeoutMs = 45000;
+const defaultCaptureTimeoutMs = 20 * 60 * 1000;
 const pageShotMotionFreezeStateKey = "__pageShotMotionFreeze";
 const pageShotMotionFreezeStyleId = "__pageShotMotionFreezeStyle";
+const browserLaunchProfiles = [
+  {
+    name: "headless-new",
+    args: ["--headless=new", "--disable-gpu"]
+  },
+  {
+    name: "headless-new-swiftshader",
+    args: [
+      "--headless=new",
+      "--disable-gpu",
+      "--disable-gpu-compositing",
+      "--use-angle=swiftshader",
+      "--use-gl=swiftshader"
+    ]
+  },
+  {
+    name: "headless-legacy",
+    args: ["--headless=old", "--disable-gpu"]
+  }
+];
 
 export async function capturePage(url, outputPath, options = {}) {
-  const browserPath = await findBrowser();
+  const browserPaths = await findBrowsers();
+  let lastLaunchError = null;
+
+  for (const browserPath of browserPaths) {
+    for (const profile of browserLaunchProfiles) {
+      try {
+        return await capturePageWithBrowserProfile(browserPath, profile, url, outputPath, options);
+      } catch (error) {
+        lastLaunchError = error;
+        if (!isRetryableBrowserLaunchError(error)) {
+          throw error;
+        }
+      }
+    }
+  }
+
+  throw lastLaunchError;
+}
+
+async function capturePageWithBrowserProfile(browserPath, profile, url, outputPath, options = {}) {
   const userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-"));
+  const captureTimeoutMs = Number.isFinite(Number(options.captureTimeoutMs))
+    ? Number(options.captureTimeoutMs)
+    : defaultCaptureTimeoutMs;
   const browser = spawn(browserPath, [
-    "--headless=new",
-    "--disable-gpu",
+    ...profile.args,
     "--disable-extensions",
     "--disable-background-networking",
     "--disable-default-apps",
@@ -52,16 +94,29 @@ export async function capturePage(url, outputPath, options = {}) {
     const target = await createTarget(port, url);
     const client = new CdpClient(target.webSocketDebuggerUrl);
     await client.ready;
-    const result = await driveCapture(client, url, outputPath, options);
+    const result = await withTimeout(
+      driveCapture(client, url, outputPath, options),
+      captureTimeoutMs,
+      () => new Error(`Capture timed out after ${Math.round(captureTimeoutMs / 1000)}s.`)
+    );
     client.close();
     return { ...result, browserPath };
   } catch (error) {
     const details = stderr.trim().split(/\r?\n/).slice(-6).join(" ");
-    error.message = details ? `${error.message} Browser output: ${details}` : error.message;
-    throw error;
+    const profileDetail = `browser: ${path.basename(browserPath)}; browser profile: ${profile.name}`;
+    const message = error instanceof Error
+      ? error.message
+      : String(error?.message || error?.type || error || "Browser capture failed.");
+    const decoratedMessage = details
+      ? `${message} (${profileDetail}) Browser output: ${details}`
+      : `${message} (${profileDetail})`;
+    if (error instanceof Error) {
+      error.message = decoratedMessage;
+      throw error;
+    }
+    throw new Error(decoratedMessage);
   } finally {
-    browser.kill();
-    await waitForExit(browser, 4000);
+    await terminateBrowser(browser);
     await removeTempDir(userDataDir);
     if (stderr.includes("DevToolsActivePort file doesn't exist")) {
       throw new Error("Browser could not start headless mode.");
@@ -69,7 +124,15 @@ export async function capturePage(url, outputPath, options = {}) {
   }
 }
 
+function isRetryableBrowserLaunchError(error) {
+  return /Browser could not start headless mode|CDP socket closed\. \(stage: initializing\)|Target crashed \(stage: initializing\)|Timed out waiting for browser debugging port|DevToolsActivePort|GPU process isn't usable|gpu_process_host|URL check failed after navigation|chrome-error:\/\/chromewebdata/i.test(String(error?.message || ""));
+}
+
 export async function findBrowser() {
+  return (await findBrowsers())[0];
+}
+
+async function findBrowsers() {
   const candidates = [
     process.env.BROWSER_PATH,
     "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
@@ -84,10 +147,18 @@ export async function findBrowser() {
     "/usr/bin/microsoft-edge"
   ].filter(Boolean);
 
+  const matches = [];
+  const seen = new Set();
   for (const candidate of candidates) {
-    if (fsSync.existsSync(candidate)) {
-      return candidate;
+    const normalized = path.normalize(candidate).toLowerCase();
+    if (!seen.has(normalized) && fsSync.existsSync(candidate)) {
+      seen.add(normalized);
+      matches.push(candidate);
     }
+  }
+
+  if (matches.length) {
+    return matches;
   }
 
   throw new Error("Could not find Edge or Chrome. Set BROWSER_PATH to your browser executable.");
@@ -19724,6 +19795,62 @@ async function waitForExit(child, timeoutMs) {
     new Promise((resolve) => child.once("exit", resolve)),
     sleep(timeoutMs)
   ]);
+}
+
+async function terminateBrowser(child) {
+  if (!child) {
+    return;
+  }
+
+  if (process.platform === "win32" && child.pid) {
+    await forceKillWindowsProcessTree(child.pid);
+    await waitForExit(child, 3000);
+    return;
+  }
+
+  if (child.exitCode !== null) {
+    return;
+  }
+  child.kill();
+  await waitForExit(child, 1000);
+  if (child.exitCode !== null) {
+    return;
+  }
+
+  child.kill("SIGKILL");
+  await waitForExit(child, 3000);
+}
+
+function forceKillWindowsProcessTree(pid) {
+  return new Promise((resolve) => {
+    const killer = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
+      stdio: "ignore"
+    });
+    killer.once("exit", resolve);
+    killer.once("error", resolve);
+  });
+}
+
+function withTimeout(promise, timeoutMs, createError) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return promise;
+  }
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(createError());
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
 }
 
 async function removeTempDir(dir) {

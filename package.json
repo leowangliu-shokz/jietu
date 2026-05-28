@@ -5,11 +5,11 @@
   "description": "Local website screenshot archive for tracking pages over time.",
   "type": "module",
   "scripts": {
-    "start": "node src/server.js",
-    "capture": "node src/capture-once.js",
+    "start": "powershell -ExecutionPolicy Bypass -File scripts/run-node20.ps1 src/server.js",
+    "capture": "powershell -ExecutionPolicy Bypass -File scripts/run-node20.ps1 src/capture-once.js",
     "compare": "node src/compare-once.js",
     "repair:data": "node src/repair-runtime-data.js",
-    "smoke:capture": "node src/capture-smoke.js",
+    "smoke:capture": "powershell -ExecutionPolicy Bypass -File scripts/run-node20.ps1 src/capture-smoke.js",
     "test": "node --test --test-isolation=none"
   },
   "engines": {
