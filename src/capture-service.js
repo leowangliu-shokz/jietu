@@ -355,6 +355,7 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
   const concurrency = captureConcurrency(config, options);
   run.concurrency = concurrency;
   let nextIndex = 0;
+  let saveQueue = Promise.resolve();
 
   async function runWorker() {
     while (nextIndex < plans.length) {
@@ -371,6 +372,14 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
         deferSnapshotSave: true,
         deferChangeRefresh: true
       });
+      if (result?.ok) {
+        try {
+          await enqueuePreparedCaptureSave(result);
+        } catch (error) {
+          result.ok = false;
+          result.error = `Capture completed but failed to save snapshot index: ${error.message}`;
+        }
+      }
       item.finishedAt = new Date().toISOString();
       item.durationMs = Date.now() - startedAt;
       item.ok = Boolean(result?.ok);
@@ -387,16 +396,14 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
     }
   }
 
+  function enqueuePreparedCaptureSave(result) {
+    const saveTask = saveQueue.then(() => persistPreparedCaptureResult(result));
+    saveQueue = saveTask.catch(() => null);
+    return saveTask;
+  }
+
   await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(1, plans.length)) }, runWorker));
 
-  const snapshots = results.flatMap(captureResultSnapshots);
-  if (snapshots.length) {
-    await appendSnapshots(snapshots);
-  }
-  const seoSnapshots = results.flatMap(captureResultSeoSnapshots);
-  if (seoSnapshots.length) {
-    await appendSeoSnapshots(seoSnapshots);
-  }
   const changeRefresh = options.deferChangeRefresh
     ? { ok: true, deferred: true }
     : await refreshChangeRecords();
@@ -424,6 +431,17 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
   Object.defineProperty(results, "changeRefresh", { value: changeRefresh, enumerable: false });
   Object.defineProperty(results, "seoRefresh", { value: seoRefresh, enumerable: false });
   return results;
+}
+
+async function persistPreparedCaptureResult(result) {
+  const snapshots = captureResultSnapshots(result);
+  if (snapshots.length) {
+    await appendSnapshots(snapshots);
+  }
+  const seoSnapshots = captureResultSeoSnapshots(result);
+  if (seoSnapshots.length) {
+    await appendSeoSnapshots(seoSnapshots);
+  }
 }
 
 function createCaptureRunRecord(plans, options = {}) {

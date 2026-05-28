@@ -10,9 +10,6 @@ const elements = {
   scheduleState: document.querySelector("#scheduleState"),
   browserState: document.querySelector("#browserState"),
   captureState: document.querySelector("#captureState"),
-  captureRunCount: document.querySelector("#captureRunCount"),
-  captureRunsList: document.querySelector("#captureRunsList"),
-  captureRunsEmpty: document.querySelector("#captureRunsEmpty"),
   changeCount: document.querySelector("#changeCount"),
   seoCount: document.querySelector("#seoCount"),
   seoChangeCount: document.querySelector("#seoChangeCount"),
@@ -447,7 +444,6 @@ function render(options = {}) {
   renderDeviceFilterOptions();
   renderChangesDevicePreset();
   renderArchiveStatus();
-  renderCaptureRuns();
   renderChangesSummary();
   renderSeoSummary();
   renderGallery({ preserveScroll: options.preserveScroll !== false });
@@ -517,86 +513,6 @@ function setArchiveStatus(message = "", tone = "info") {
     message: String(message || "").trim()
   };
   renderArchiveStatus();
-}
-
-function renderCaptureRuns() {
-  const runs = Array.isArray(state?.captureRuns) ? state.captureRuns : [];
-  const visibleRuns = runs.slice(0, 6);
-  elements.captureRunCount.textContent = `${runs.length} 条`;
-  elements.captureRunsList.innerHTML = visibleRuns.map(renderCaptureRunRow).join("");
-  elements.captureRunsEmpty.classList.toggle("visible", visibleRuns.length === 0);
-}
-
-function renderCaptureRunRow(run) {
-  const status = captureRunStatus(run);
-  const failedItems = captureRunFailedItems(run);
-  return `
-    <tr>
-      <td>
-        <strong>${escapeHtml(formatOptionalDate(run.startedAt))}</strong>
-        <span>${escapeHtml(run.finishedAt ? `完成：${formatOptionalDate(run.finishedAt)}` : "尚未完成")}</span>
-      </td>
-      <td>
-        <span class="run-status run-status-${escapeHtml(status.key)}">${escapeHtml(status.label)}</span>
-      </td>
-      <td>${escapeHtml(captureRunResultLabel(run))}</td>
-      <td>${escapeHtml(formatDuration(run.durationMs))}</td>
-      <td class="run-log-error">${escapeHtml(captureRunErrorSummary(failedItems))}</td>
-    </tr>
-  `;
-}
-
-function captureRunStatus(run) {
-  const status = String(run?.status || "").toLowerCase();
-  if (status === "succeeded" || status === "success") {
-    return { key: "succeeded", label: "成功" };
-  }
-  if (status === "failed" || Number(run?.failureCount || 0) > 0) {
-    return { key: "failed", label: "失败" };
-  }
-  if (status === "running") {
-    return { key: "running", label: "运行中" };
-  }
-  if (status === "skipped") {
-    return { key: "skipped", label: "跳过" };
-  }
-  return { key: "unknown", label: "未知" };
-}
-
-function captureRunResultLabel(run) {
-  const total = Number(run?.totalCount || 0);
-  const success = Number(run?.successCount || 0);
-  const failure = Number(run?.failureCount || 0);
-  const skipped = Number(run?.skippedCount || 0);
-  return `共 ${total} 个计划，成功 ${success}，失败 ${failure}，跳过 ${skipped}`;
-}
-
-function captureRunFailedItems(run) {
-  return Array.isArray(run?.items)
-    ? run.items.filter((item) => item?.ok === false || item?.status === "failed")
-    : [];
-}
-
-function captureRunErrorSummary(failedItems) {
-  if (!failedItems.length) {
-    return "-";
-  }
-  const firstError = failedItems.find((item) => item?.error)?.error || "失败原因未记录";
-  return truncateDisplayText(firstError, 180);
-}
-
-function formatDuration(value) {
-  const durationMs = Number(value);
-  if (!Number.isFinite(durationMs) || durationMs < 0) {
-    return "-";
-  }
-  if (durationMs < 1000) {
-    return `${Math.round(durationMs)}ms`;
-  }
-  const totalSeconds = Math.round(durationMs / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return minutes ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
 function latestSnapshotCapturedAt() {
