@@ -8,6 +8,7 @@ import {
 } from "./browser.js";
 import { assessRelatedShotConfidence, assessSnapshotConfidence } from "./capture-confidence.js";
 import { createCaptureDiagnosticRun, finalizeCaptureDiagnostic, recordCaptureDiagnostic } from "./capture-diagnostics.js";
+import { withCaptureLock } from "./capture-lock.js";
 import { appendCaptureRun } from "./capture-runs.js";
 import { loadChanges, rebuildChanges } from "./changes.js";
 import { notifyChangeRecords } from "./change-notifier.js";
@@ -37,7 +38,7 @@ import {
 export async function captureConfiguredUrls(config = null, options = {}) {
   const activeConfig = normalizeConfig(config || await loadConfig());
   const plans = resolveConfiguredCapturePlans(activeConfig, options);
-  return runResolvedCapturePlans(plans, activeConfig, options);
+  return withCaptureLock(() => runResolvedCapturePlans(plans, activeConfig, options));
 }
 
 export async function captureAllDevices(config = null, options = {}) {
@@ -47,7 +48,7 @@ export async function captureAllDevices(config = null, options = {}) {
 export async function captureOne(inputTarget, config = null, options = {}) {
   const activeConfig = normalizeConfig(config || await loadConfig());
   const execution = resolveAdHocCaptureExecution(inputTarget, activeConfig, options);
-  return runCaptureExecution(execution, activeConfig, options);
+  return withCaptureLock(() => runCaptureExecution(execution, activeConfig, options));
 }
 
 export async function replaceCaptureTile(input, config = null) {

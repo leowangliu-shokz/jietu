@@ -3,7 +3,7 @@ import { loadConfig } from "./store.js";
 
 const argUrl = process.argv[2];
 const config = await loadConfig();
-const results = argUrl ? [await captureOne(argUrl, config)] : await captureConfiguredUrls(config);
+const results = await runCaptureCommand();
 
 for (const result of results) {
   if (result.ok) {
@@ -17,4 +17,16 @@ for (const result of results) {
 
 if (results.some((result) => !result.ok)) {
   process.exitCode = 1;
+}
+
+async function runCaptureCommand() {
+  try {
+    return argUrl ? [await captureOne(argUrl, config)] : await captureConfiguredUrls(config);
+  } catch (error) {
+    if (error.code === "CAPTURE_LOCKED") {
+      console.log(error.message);
+      process.exit(0);
+    }
+    throw error;
+  }
 }
