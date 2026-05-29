@@ -113,7 +113,7 @@ test("deleteSnapshotArchive rebuilds change links and removes stale diff images"
     snapshot("snap-3", "2026-05-12T10:00:00.000Z", lastFile),
     snapshot("snap-2", "2026-05-12T09:30:00.000Z", middleFile),
     snapshot("snap-1", "2026-05-12T09:00:00.000Z", firstFile)
-  ];
+  ].map((item) => ({ ...item, devicePresetId: "pc-hd" }));
   await writeSnapshots(fixture.snapshotsFilePath, snapshots);
 
   const initialChanges = await compareSnapshots([...snapshots].reverse(), { archiveRoot: fixture.archiveRoot });

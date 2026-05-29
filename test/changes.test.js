@@ -455,7 +455,7 @@ test("home banner monitor compares banner variants from homepage composites", as
   assert.ok(changes[0].visualChange.signals.some((signal) => signal.type === "image"));
 });
 
-test("default change summary compares only fixed pc and mobile device presets", async () => {
+test("default change summary covers all sections using fixed pc and mobile device presets", async () => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-change-devices-"));
   const changesFilePath = path.join(dataDir, "changes.json");
   const makeBanner = (id, capturedAt, platform, deviceProfileId, devicePresetId, text) => ({
@@ -463,6 +463,19 @@ test("default change summary compares only fixed pc and mobile device presets", 
       text,
       images: [`https://cdn.example.com/${devicePresetId}.webp`]
     }),
+    platform,
+    deviceProfileId,
+    devicePresetId
+  });
+  const makeSection = (id, capturedAt, platform, deviceProfileId, devicePresetId, text) => ({
+    ...snapshot(id, capturedAt, [{
+      file: `${id}-product-showcase.png`,
+      sectionKey: "product-showcase",
+      sectionLabel: "产品橱窗",
+      stateIndex: 1,
+      tabIndex: 1,
+      sectionState: { text }
+    }]),
     platform,
     deviceProfileId,
     devicePresetId
@@ -477,20 +490,32 @@ test("default change summary compares only fixed pc and mobile device presets", 
       makeBanner("iphone-before", "2026-05-03T08:00:00.000Z", "mobile", "mobile-default", "iphone-15", "iPhone 15 old"),
       makeBanner("iphone-after", "2026-05-03T09:00:00.000Z", "mobile", "mobile-default", "iphone-15", "iPhone 15 new"),
       makeBanner("se-before", "2026-05-03T08:00:00.000Z", "mobile", "iphone-se", "iphone-se", "iPhone SE old"),
-      makeBanner("se-after", "2026-05-03T09:00:00.000Z", "mobile", "iphone-se", "iphone-se", "iPhone SE new")
+      makeBanner("se-after", "2026-05-03T09:00:00.000Z", "mobile", "iphone-se", "iphone-se", "iPhone SE new"),
+      makeSection("pc-section-before", "2026-05-03T08:00:00.000Z", "pc", "pc-default", "pc-hd", "Feature module old"),
+      makeSection("pc-section-after", "2026-05-03T09:00:00.000Z", "pc", "pc-default", "pc-hd", "Feature module new"),
+      makeSection("laptop-section-before", "2026-05-03T08:00:00.000Z", "pc", "pc-laptop", "pc-laptop", "Laptop module old"),
+      makeSection("laptop-section-after", "2026-05-03T09:00:00.000Z", "pc", "pc-laptop", "pc-laptop", "Laptop module new")
     ],
     changesFilePath,
     writeDiffImages: false
   });
 
-  assert.equal(changes.length, 2);
+  assert.equal(changes.length, 3);
   assert.deepEqual(
     changes.map((change) => change.location.devicePresetId).sort(),
-    ["iphone-15", "pc-hd"]
+    ["iphone-15", "pc-hd", "pc-hd"]
+  );
+  assert.deepEqual(
+    changes.map((change) => change.location.sectionKey).sort(),
+    ["banner", "banner", "product-showcase"]
+  );
+  assert.deepEqual(
+    [...new Set(changes.map((change) => change.monitorScope))],
+    ["all"]
   );
   assert.deepEqual(
     JSON.parse(await fs.readFile(changesFilePath, "utf8")).map((change) => change.location.devicePresetId).sort(),
-    ["iphone-15", "pc-hd"]
+    ["iphone-15", "pc-hd", "pc-hd"]
   );
 });
 

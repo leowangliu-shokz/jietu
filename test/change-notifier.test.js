@@ -27,9 +27,24 @@ test("leaves change notification disabled without a webhook", () => {
 
   assert.equal(config.enabled, false);
   assert.equal(config.webhook, null);
+  assert.equal(config.scope, "all");
+  assert.equal(config.minLevel, "P0");
 });
 
-test("selects home banner changes by scope and minimum level", () => {
+test("selects all P0 changes by default", () => {
+  const changes = [
+    change("banner-p0", { monitorScope: "all", changeLevel: "P0" }),
+    change("banner-p1", { monitorScope: "all", changeLevel: "P1" }),
+    change("other-p0", { monitorScope: "all", changeLevel: "P0", changeLocation: footerLocation, location: { sectionKey: "footer" } })
+  ];
+
+  assert.deepEqual(
+    notificationEligibleChanges(changes, {}).map((item) => item.id),
+    ["banner-p0", "other-p0"]
+  );
+});
+
+test("keeps explicit home banner scope available", () => {
   const changes = [
     change("banner-p1", { monitorScope: "home-banner", changeLevel: "P1" }),
     change("banner-p2", { monitorScope: "home-banner", changeLevel: "P2" }),
@@ -67,6 +82,7 @@ test("builds DingTalk markdown message with keyword and mentions", () => {
   assert.equal(body.msgtype, "markdown");
   assert.match(body.markdown.text, textPattern(happyTitle));
   assert.match(body.markdown.text, textPattern(monitorKeyword));
+  assert.match(body.markdown.text, textPattern("\u9875\u9762\u533a\u57df\u53d8\u66f4"));
   assert.match(body.markdown.text, textPattern(bannerOneLocation));
   assert.deepEqual(body.at.atMobiles, ["13800000000"]);
 });
@@ -186,7 +202,7 @@ function change(id, overrides = {}) {
   return {
     id,
     monitorScope: "home-banner",
-    changeLevel: "P1",
+    changeLevel: "P0",
     changeTypes: [imageChangeType],
     changeLocation: bannerOneLocation,
     occurredBetween: {

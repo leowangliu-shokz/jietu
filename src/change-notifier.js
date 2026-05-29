@@ -3,8 +3,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { changeNotificationsPath } from "./paths.js";
 
-const defaultScope = "home-banner";
-const defaultMinLevel = "P2";
+const defaultScope = "all";
+const defaultMinLevel = "P0";
 const maxStoredNotificationIds = 2000;
 const notificationTimeZone = "Asia/Shanghai";
 const shortDateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
@@ -24,14 +24,14 @@ const levelRank = new Map([
 const copy = {
   defaultTitle: "\u4e50\u4e50\u6765\u64ad\u62a5\u4e86\uff01",
   foundPrefix: "\u53d1\u73b0",
-  homeBannerChangeSuffix: "\u6761\u9996\u9875 banner \u53d8\u66f4\u3002",
+  changeSuffix: "\u6761\u9875\u9762\u533a\u57df\u53d8\u66f4\u3002",
   listSeparator: "\u3001",
   fallbackChangeType: "\u53d8\u66f4",
   reasonLabel: "\u539f\u56e0",
   omittedPrefix: "\u8fd8\u6709",
   omittedSuffix: "\u6761\u540c\u6279\u53d8\u66f4\u672a\u5728\u672c\u6761\u6d88\u606f\u5c55\u5f00\uff0c\u8bf7\u6253\u5f00 jietu \u53d8\u66f4\u6c47\u603b\u67e5\u770b\u3002",
   bannerLocationPrefix: "banner\u533a-banner",
-  homeBannerFallback: "\u9996\u9875 banner",
+  homeBannerFallback: "\u9875\u9762\u533a\u57df",
   unknownTime: "\u672a\u77e5\u65f6\u95f4"
 };
 
@@ -155,7 +155,7 @@ export function buildDingTalkMarkdownMessage(changes, options = {}) {
   const lines = [
     `### ${title}`,
     "",
-    `${copy.foundPrefix} ${changes.length} ${copy.homeBannerChangeSuffix}`,
+    `${copy.foundPrefix} ${changes.length} ${copy.changeSuffix}`,
     ""
   ];
 

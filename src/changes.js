@@ -30,7 +30,9 @@ const defaultVisualJudgmentOptions = {
   mediaRectResizeRatio: 0.08
 };
 
-export const defaultChangeMonitorScope = "home-banner";
+const homeBannerChangeMonitorScope = "home-banner";
+
+export const defaultChangeMonitorScope = "all";
 export const defaultChangeCompareDeviceIds = Object.freeze({
   pc: "pc-hd",
   mobile: "iphone-15"
@@ -99,7 +101,9 @@ export async function compareSnapshots(snapshots, options = {}) {
 }
 
 export function defaultCompareDeviceIdsForMonitorScope(monitorScope) {
-  return monitorScope === defaultChangeMonitorScope ? defaultChangeCompareDeviceIds : null;
+  return monitorScope === defaultChangeMonitorScope || monitorScope === homeBannerChangeMonitorScope
+    ? defaultChangeCompareDeviceIds
+    : null;
 }
 
 export function flattenComparableItems(snapshots) {
@@ -770,7 +774,7 @@ function itemMatchesMonitorScope(item, scope) {
   if (scope === "all") {
     return true;
   }
-  if (scope === defaultChangeMonitorScope) {
+  if (scope === homeBannerChangeMonitorScope) {
     return isHomeBannerItem(item);
   }
   return false;
