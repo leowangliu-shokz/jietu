@@ -16100,6 +16100,121 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
             }
           }
         };
+        const elementMeta = (element) => [
+          element.id,
+          String(element.className || ""),
+          element.getAttribute?.("role"),
+          element.getAttribute?.("aria-label"),
+          element.getAttribute?.("title")
+        ].filter(Boolean).join(" ");
+        const popupMetaHint = /(modal|dialog|popup|overlay|backdrop|lightbox|klaviyo|needsclick|newsletter|subscribe|interstitial|attentive|privy|yotpo)/i;
+        const darkBackdrop = (element, rect, style) => {
+          const background = String(style.backgroundColor || "");
+          const rgba = background.match(/rgba?\\(([^)]+)\\)/i);
+          if (!rgba) return false;
+          const parts = rgba[1].split(",").map((part) => Number.parseFloat(part));
+          const alpha = parts.length >= 4 ? parts[3] : 1;
+          const [red, green, blue] = parts;
+          const dark = [red, green, blue].every((value) => Number.isFinite(value) && value <= 110);
+          return dark && alpha >= 0.18 && rect.width * rect.height >= viewportArea * 0.35;
+        };
+        const closeControlLike = (element) => {
+          const rect = element.getBoundingClientRect();
+          if (rect.width > 96 || rect.height > 96 || rect.width < 8 || rect.height < 8) return false;
+          const meta = elementMeta(element) + " " + textOf(element).slice(0, 120);
+          return /close|dismiss|icon-close|modal__close|klaviyo-close|\\u00d7|^\\s*(?:x|\\u00d7)\\s*$/i.test(meta) ||
+            (element.querySelector?.("svg,path") && /button|svg/i.test(element.tagName || ""));
+        };
+        const explicitCloseControlLike = (element) => {
+          const meta = elementMeta(element) + " " + textOf(element).slice(0, 120);
+          return /close|dismiss|icon-close|modal__close|klaviyo-close|\\u00d7|^\\s*(?:x|\\u00d7)\\s*$/i.test(meta);
+        };
+        const hasCloseControl = (layer) =>
+          Array.from(layer.querySelectorAll(interactiveSelector + ", svg, [class], [id]"))
+            .some((control) => visible(control) && !isNavigationElement(control) && closeControlLike(control));
+        const cleanupPopupRemnants = () => {
+          let changed = 0;
+          for (const element of Array.from(document.querySelectorAll("body *"))) {
+            if (!visible(element) || element.dataset.pageShotHidden === "true" || isNavigationElement(element) || containsNavigation(element)) continue;
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            const zIndex = Number.parseInt(style.zIndex, 10);
+            const area = rect.width * rect.height;
+            const positioned = ["fixed", "sticky", "absolute"].includes(style.position) ||
+              (Number.isFinite(zIndex) && zIndex >= 1000);
+            if (!positioned) continue;
+            const spansViewport = area >= viewportArea * 0.35 &&
+              rect.left <= window.innerWidth * 0.25 &&
+              rect.right >= window.innerWidth * 0.75 &&
+              rect.top <= window.innerHeight * 0.35 &&
+              rect.bottom >= window.innerHeight * 0.65;
+            const spansHero = area >= viewportArea * 0.28 &&
+              rect.left <= window.innerWidth * 0.2 &&
+              rect.right >= window.innerWidth * 0.8 &&
+              rect.top <= Math.max(160, window.innerHeight * 0.18) &&
+              rect.bottom >= window.innerHeight * 0.5;
+            const hint = popupMetaHint.test(elementMeta(element));
+            if ((spansViewport || spansHero) && (hint || darkBackdrop(element, rect, style) || hasCloseControl(element))) {
+              if (forceRemovePopupElement(element, "popup remnant")) {
+                changed += 1;
+              }
+            }
+          }
+          for (const control of Array.from(document.querySelectorAll(interactiveSelector + ", svg, [class], [id]"))) {
+            if (!visible(control) || control.dataset.pageShotHidden === "true" || isNavigationElement(control)) continue;
+            const rect = control.getBoundingClientRect();
+            const style = getComputedStyle(control);
+            const zIndex = Number.parseInt(style.zIndex, 10);
+            const positioned = ["fixed", "sticky", "absolute"].includes(style.position) ||
+              (Number.isFinite(zIndex) && zIndex >= 1000);
+            const centeredExplicitClose = explicitCloseControlLike(control) &&
+              rect.left >= window.innerWidth * 0.2 &&
+              rect.right <= window.innerWidth * 0.8 &&
+              rect.top >= 72 &&
+              rect.top <= window.innerHeight * 0.85;
+            if ((!positioned && !centeredExplicitClose) || !closeControlLike(control)) continue;
+            if (rect.top < 72 && rect.right > window.innerWidth - 96) continue;
+            if (forceRemovePopupElement(control, "orphan popup close control")) {
+              changed += 1;
+            }
+          }
+          return changed;
+        };
+        const remainingPopupRemnants = () => {
+          const leftovers = [];
+          for (const element of Array.from(document.querySelectorAll("body *"))) {
+            if (!visible(element) || element.dataset.pageShotHidden === "true" || isNavigationElement(element) || containsNavigation(element)) continue;
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            const zIndex = Number.parseInt(style.zIndex, 10);
+            const area = rect.width * rect.height;
+            const positioned = ["fixed", "sticky", "absolute"].includes(style.position) ||
+              (Number.isFinite(zIndex) && zIndex >= 1000);
+            const spansViewport = area >= viewportArea * 0.35 &&
+              rect.left <= window.innerWidth * 0.25 &&
+              rect.right >= window.innerWidth * 0.75 &&
+              rect.top <= window.innerHeight * 0.35 &&
+              rect.bottom >= window.innerHeight * 0.65;
+            const spansHero = area >= viewportArea * 0.28 &&
+              rect.left <= window.innerWidth * 0.2 &&
+              rect.right >= window.innerWidth * 0.8 &&
+              rect.top <= Math.max(160, window.innerHeight * 0.18) &&
+              rect.bottom >= window.innerHeight * 0.5;
+            if (positioned && (spansViewport || spansHero) && (popupMetaHint.test(elementMeta(element)) || darkBackdrop(element, rect, style) || hasCloseControl(element))) {
+              leftovers.push({
+                kind: "modal-remnant",
+                text: textOf(element).slice(0, 120) || elementMeta(element).slice(0, 120),
+                rect: {
+                  left: Math.round(rect.left),
+                  top: Math.round(rect.top),
+                  width: Math.round(rect.width),
+                  height: Math.round(rect.height)
+                }
+              });
+            }
+          }
+          return leftovers;
+        };
 
         for (const item of layers) {
           const { layer, kind } = item;
@@ -16132,6 +16247,10 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
               }
             }
           }
+          if (closed && (kind === "email" || kind === "region") && visible(layer)) {
+            hideRelatedBackdrop(layer, kind);
+            forceRemovePopupElement(layer, kind + " popup after close");
+          }
           if (!closed) {
             hideRelatedBackdrop(layer, kind);
             if (kind === "email" || kind === "region") {
@@ -16141,6 +16260,8 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
             }
           }
         }
+
+        cleanupPopupRemnants();
 
         for (const element of Array.from(document.querySelectorAll("body *"))) {
           if (!visible(element) || element.dataset.pageShotHidden === "true" || isNavigationElement(element)) continue;
@@ -16173,6 +16294,7 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
             });
           }
         }
+        remaining.push(...remainingPopupRemnants());
         document.body.classList.remove("overflow-hidden");
         return { hidden, clicked, remaining: remaining.slice(0, 8) };
       })()`,
