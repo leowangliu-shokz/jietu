@@ -537,7 +537,7 @@ select:focus {
 
 .changes-table {
   width: 100%;
-  min-width: 840px;
+  min-width: 1040px;
   border-collapse: collapse;
   table-layout: fixed;
   font-size: 13px;
@@ -577,6 +577,82 @@ select:focus {
 
 .changes-table td {
   color: var(--text);
+}
+
+.change-select-column {
+  width: 58px;
+}
+
+.change-action-column {
+  width: 96px;
+}
+
+.change-table-row.is-selected td {
+  background: #f8fbfa;
+}
+
+.change-table-row.is-pending td {
+  opacity: 0.62;
+}
+
+.change-select-control {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+}
+
+.change-select-control input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+
+.change-select-control span {
+  width: 18px;
+  height: 18px;
+  border: 1px solid rgba(25, 122, 104, 0.42);
+  border-radius: 5px;
+  background: #fff;
+}
+
+.change-select-control input:checked + span {
+  border-color: var(--accent);
+  background:
+    linear-gradient(135deg, transparent 0 48%, #fff 48% 58%, transparent 58%),
+    linear-gradient(45deg, transparent 0 46%, #fff 46% 58%, transparent 58%),
+    var(--accent);
+}
+
+.change-select-control input:focus-visible + span {
+  outline: 2px solid rgba(15, 118, 110, 0.35);
+  outline-offset: 2px;
+}
+
+.change-select-control.is-disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.change-row-delete-button {
+  min-height: 30px;
+  border-color: rgba(153, 27, 27, 0.28);
+  background: #fff6f6;
+  color: #991b1b;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.change-row-delete-button:hover:not(:disabled),
+.change-row-delete-button:focus-visible:not(:disabled) {
+  border-color: rgba(153, 27, 27, 0.5);
+  background: #ffe8e8;
 }
 
 .change-level {

@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { captureAllDevices, captureConfiguredUrls, captureOne, browserStatus, replaceCaptureTile } from "./capture-service.js";
+import { deleteChangeAction, deleteChangesAction } from "./change-admin.js";
 import { loadCaptureIssues, markCaptureTileIssue, resolveCaptureTileIssue } from "./capture-issues.js";
 import { loadCaptureRuns } from "./capture-runs.js";
 import { loadChanges } from "./changes.js";
@@ -16,6 +17,7 @@ const host = "127.0.0.1";
 const port = Number(process.env.PORT || 4173);
 const adminApiEnabled = process.env.PAGE_SHOT_ADMIN === "1";
 const snapshotDeleteEnabled = true;
+const changeDeleteEnabled = true;
 
 let config = await loadConfig();
 let captureState = {
@@ -42,6 +44,17 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === "GET" && pathname === "/api/changes") {
       return sendJson(response, annotateChangesForResponse(await loadChanges(), config));
+    }
+
+    if (request.method === "POST" && pathname === "/api/changes/delete") {
+      const body = await readJsonBody(request);
+      const result = await deleteChangesAction({
+        canDeleteChanges: changeDeleteEnabled,
+        captureRunning: captureState.running,
+        changeIds: Array.isArray(body?.changeIds) ? body.changeIds : [],
+        buildState
+      });
+      return sendJson(response, result.payload, result.status);
     }
 
     if (request.method === "GET" && pathname === "/api/seo") {
@@ -116,6 +129,17 @@ const server = http.createServer(async (request, response) => {
         canDeleteSnapshots: snapshotDeleteEnabled,
         captureRunning: captureState.running,
         snapshotId,
+        buildState
+      });
+      return sendJson(response, result.payload, result.status);
+    }
+
+    if (request.method === "DELETE" && pathname.startsWith("/api/changes/")) {
+      const changeId = decodeURIComponent(pathname.slice("/api/changes/".length));
+      const result = await deleteChangeAction({
+        canDeleteChanges: changeDeleteEnabled,
+        captureRunning: captureState.running,
+        changeId,
         buildState
       });
       return sendJson(response, result.payload, result.status);
@@ -289,7 +313,9 @@ async function buildState() {
     captureRuns,
     permissions: {
       canDeleteSnapshots: snapshotDeleteEnabled,
-      canBatchDeleteSnapshots: snapshotDeleteEnabled
+      canBatchDeleteSnapshots: snapshotDeleteEnabled,
+      canDeleteChanges: changeDeleteEnabled,
+      canBatchDeleteChanges: changeDeleteEnabled
     }
   });
 }

@@ -29,6 +29,12 @@ const elements = {
   changesDateEndFilter: document.querySelector("#changesDateEndFilter"),
   changesDateClearFilter: document.querySelector("#changesDateClearFilter"),
   changesUrlFilter: document.querySelector("#changesUrlFilter"),
+  changesBulkActions: document.querySelector("#changesBulkActions"),
+  changesBulkSelectionCount: document.querySelector("#changesBulkSelectionCount"),
+  changesBulkSelectVisible: document.querySelector("#changesBulkSelectVisible"),
+  changesBulkClearSelection: document.querySelector("#changesBulkClearSelection"),
+  changesBulkDeleteSelected: document.querySelector("#changesBulkDeleteSelected"),
+  changesStatus: document.querySelector("#changesStatus"),
   seoUrlFilter: document.querySelector("#seoUrlFilter"),
   bulkActions: document.querySelector("#bulkActions"),
   bulkSelectionCount: document.querySelector("#bulkSelectionCount"),
@@ -133,9 +139,17 @@ const changesFiltersByPlatform = createPlatformFilterMap();
 const seoFiltersByPlatform = createPlatformFilterMap();
 const selectedSnapshotIds = new Set();
 const pendingSnapshotDeletes = new Set();
+const selectedChangeIds = new Set();
+const pendingChangeDeletes = new Set();
 let visibleGallerySnapshotIds = new Set();
+let visibleChangeIds = new Set();
 let pendingBulkSnapshotDelete = false;
+let pendingBulkChangeDelete = false;
 let archiveStatusState = {
+  tone: "info",
+  message: ""
+};
+let changesStatusState = {
   tone: "info",
   message: ""
 };
@@ -183,6 +197,9 @@ elements.changesDateEndFilter.addEventListener("change", () => {
 elements.changesDateClearFilter.addEventListener("click", clearChangesDateFilter);
 elements.changesPrevPage.addEventListener("click", () => changeChangesPage(-1));
 elements.changesNextPage.addEventListener("click", () => changeChangesPage(1));
+elements.changesBulkSelectVisible.addEventListener("click", handleChangesBulkSelectVisibleClick);
+elements.changesBulkClearSelection.addEventListener("click", handleChangesBulkClearSelectionClick);
+elements.changesBulkDeleteSelected.addEventListener("click", () => void handleChangesBulkDeleteSelectedClick());
 elements.seoUrlFilter.addEventListener("change", () => {
   activeSeoFilters().url = elements.seoUrlFilter.value;
   renderSeoSummary();
@@ -192,7 +209,8 @@ elements.bulkClearSelection.addEventListener("click", handleBulkClearSelectionCl
 elements.bulkDeleteSelected.addEventListener("click", () => void handleBulkDeleteSelectedClick());
 elements.gallery.addEventListener("click", handleGalleryClick);
 elements.gallery.addEventListener("change", handleGalleryChange);
-elements.changesList.addEventListener("click", handleImagePreviewClick);
+elements.changesList.addEventListener("click", handleChangesListClick);
+elements.changesList.addEventListener("change", handleChangesListChange);
 elements.imagePreview.addEventListener("click", handleImagePreviewBackdropClick);
 elements.imagePreviewMainFrame.addEventListener("click", handleImagePreviewFrameClick);
 elements.imagePreviewImage.addEventListener("load", handleImagePreviewImageLoad);
@@ -444,6 +462,7 @@ function render(options = {}) {
   renderDeviceFilterOptions();
   renderChangesDevicePreset();
   renderArchiveStatus();
+  renderChangesStatus();
   renderChangesSummary();
   renderSeoSummary();
   renderGallery({ preserveScroll: options.preserveScroll !== false });
@@ -513,6 +532,22 @@ function setArchiveStatus(message = "", tone = "info") {
     message: String(message || "").trim()
   };
   renderArchiveStatus();
+}
+
+function renderChangesStatus() {
+  const message = String(changesStatusState.message || "").trim();
+  elements.changesStatus.hidden = !message;
+  elements.changesStatus.textContent = message;
+  elements.changesStatus.classList.toggle("is-success", changesStatusState.tone === "success");
+  elements.changesStatus.classList.toggle("is-error", changesStatusState.tone === "error");
+}
+
+function setChangesStatus(message = "", tone = "info") {
+  changesStatusState = {
+    tone,
+    message: String(message || "").trim()
+  };
+  renderChangesStatus();
 }
 
 function latestSnapshotCapturedAt() {
@@ -2074,6 +2109,163 @@ function handleGalleryChange(event) {
   renderBulkDeleteControls();
 }
 
+function handleChangesListClick(event) {
+  const deleteButton = event.target.closest("[data-action='delete-change']");
+  if (deleteButton && elements.changesList.contains(deleteButton)) {
+    event.preventDefault();
+    void handleChangeDeleteClick(deleteButton);
+    return;
+  }
+
+  handleImagePreviewClick(event);
+}
+
+function handleChangesListChange(event) {
+  const input = event.target.closest("[data-action='select-change']");
+  if (!(input instanceof HTMLInputElement) || !elements.changesList.contains(input)) {
+    return;
+  }
+
+  const changeId = String(input.dataset.changeId || "").trim();
+  if (!changeId) {
+    return;
+  }
+
+  if (input.checked) {
+    selectedChangeIds.add(changeId);
+  } else {
+    selectedChangeIds.delete(changeId);
+  }
+
+  input.closest("tr")?.classList.toggle("is-selected", input.checked);
+  renderChangesBulkDeleteControls();
+}
+
+function handleChangesBulkSelectVisibleClick() {
+  for (const changeId of visibleChangeIds) {
+    selectedChangeIds.add(changeId);
+  }
+  renderChangesSummary();
+}
+
+function handleChangesBulkClearSelectionClick() {
+  selectedChangeIds.clear();
+  renderChangesSummary();
+}
+
+async function handleChangesBulkDeleteSelectedClick() {
+  if (pendingBulkChangeDelete || state?.capture?.running) {
+    return;
+  }
+
+  const changeIds = selectedVisibleChangeIds();
+  if (changeIds.length === 0) {
+    setChangesStatus("请先选择要删除的变更记录。", "error");
+    return;
+  }
+
+  const changesById = new Map(changes.map((change) => [String(change?.id || ""), change]));
+  const previewLines = changeIds.slice(0, 6).map((changeId) => {
+    const change = changesById.get(changeId);
+    return change
+      ? `- ${changeDeleteLabel(change)}`
+      : `- ${changeId}`;
+  });
+  if (changeIds.length > previewLines.length) {
+    previewLines.push(`- 另外 ${changeIds.length - previewLines.length} 条`);
+  }
+
+  if (!window.confirm([
+    `删除选中的 ${changeIds.length} 条变更记录？`,
+    "",
+    ...previewLines,
+    "",
+    "这只会从变更汇总中删除记录，不会删除截图存档。"
+  ].join("\n"))) {
+    return;
+  }
+
+  pendingBulkChangeDelete = true;
+  for (const changeId of changeIds) {
+    pendingChangeDeletes.add(changeId);
+  }
+  setChangesStatus(`正在批量删除 ${changeIds.length} 条变更记录...`);
+  renderChangesSummary();
+
+  try {
+    const response = await fetch("/api/changes/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ changeIds })
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `批量删除失败（HTTP ${response.status}）`);
+    }
+
+    selectedChangeIds.clear();
+    const deletedCount = Array.isArray(payload.deletedChangeIds)
+      ? payload.deletedChangeIds.length
+      : changeIds.length;
+    setChangesStatus(`已批量删除 ${deletedCount} 条变更记录。`, "success");
+    await refreshState({ preserveScroll: true });
+  } catch (error) {
+    setChangesStatus(error?.message || "批量删除失败，请稍后重试。", "error");
+  } finally {
+    pendingBulkChangeDelete = false;
+    for (const changeId of changeIds) {
+      pendingChangeDeletes.delete(changeId);
+    }
+    renderChangesSummary();
+  }
+}
+
+async function handleChangeDeleteClick(button) {
+  if (!(button instanceof HTMLButtonElement) || button.disabled) {
+    return;
+  }
+
+  const changeId = String(button.dataset.changeId || "").trim();
+  const change = changes.find((item) => String(item?.id || "") === changeId);
+  if (!change) {
+    setChangesStatus("找不到要删除的变更记录，请先刷新页面。", "error");
+    return;
+  }
+
+  if (!window.confirm([
+    "删除这条变更记录？",
+    "",
+    changeDeleteLabel(change),
+    "",
+    "这只会从变更汇总中删除记录，不会删除截图存档。"
+  ].join("\n"))) {
+    return;
+  }
+
+  pendingChangeDeletes.add(changeId);
+  setChangesStatus(`正在删除 ${changeDeleteLabel(change)}...`);
+  renderChangesSummary();
+
+  try {
+    const response = await fetch(`/api/changes/${encodeURIComponent(changeId)}`, {
+      method: "DELETE"
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `删除失败（HTTP ${response.status}）`);
+    }
+
+    selectedChangeIds.delete(changeId);
+    setChangesStatus(`已删除 ${changeDeleteLabel(change)}。`, "success");
+    await refreshState({ preserveScroll: true });
+  } catch (error) {
+    setChangesStatus(error?.message || "删除失败，请稍后重试。", "error");
+  } finally {
+    pendingChangeDeletes.delete(changeId);
+    renderChangesSummary();
+  }
+}
+
 function handleBulkSelectVisibleClick() {
   for (const snapshotId of visibleGallerySnapshotIds) {
     selectedSnapshotIds.add(snapshotId);
@@ -2301,6 +2493,14 @@ function changeTimeValue(change) {
   return change.to?.capturedAt || change.createdAt || change.occurredBetween?.to;
 }
 
+function changeDeleteLabel(change) {
+  return [
+    changeLocationForDisplay(change),
+    canonicalDisplayUrlForChange(change),
+    formatOptionalDate(changeTimeValue(change))
+  ].filter(Boolean).join(" / ");
+}
+
 function matchesDateRange(value, range) {
   if (!range) {
     return true;
@@ -2372,8 +2572,12 @@ function renderChangesSummary(options = {}) {
   changesPageByPlatform[activePlatform] = changesPage;
   const pageStart = filteredChanges.length === 0 ? 0 : (changesPage - 1) * changesPageSize;
   const pageChanges = filteredChanges.slice(pageStart, pageStart + changesPageSize);
+  visibleChangeIds = new Set(pageChanges.map((change) => String(change?.id || "").trim()).filter(Boolean));
+  pruneSelectedChangeIds();
   elements.changesList.innerHTML = "";
   elements.changesEmpty.classList.toggle("visible", filteredChanges.length === 0);
+  renderChangesBulkDeleteControls(pageChanges.length);
+  renderChangesStatus();
   renderChangesPagination(filteredChanges.length, pageStart, pageChanges.length, totalPages);
 
   if (pageChanges.length) {
@@ -2383,11 +2587,13 @@ function renderChangesSummary(options = {}) {
       <table class="changes-table">
         <thead>
           <tr>
+            <th class="change-select-column" scope="col">选择</th>
             <th scope="col">变更级别</th>
             <th scope="col">变更类型</th>
             <th scope="col">变更位置</th>
             <th scope="col">旧样式</th>
             <th scope="col">新样式</th>
+            <th class="change-action-column" scope="col">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -2397,6 +2603,38 @@ function renderChangesSummary(options = {}) {
     `;
     elements.changesList.append(table);
   }
+}
+
+function pruneSelectedChangeIds() {
+  for (const changeId of selectedChangeIds) {
+    if (!visibleChangeIds.has(changeId)) {
+      selectedChangeIds.delete(changeId);
+    }
+  }
+}
+
+function selectedVisibleChangeIds() {
+  return [...selectedChangeIds].filter((changeId) => visibleChangeIds.has(changeId));
+}
+
+function renderChangesBulkDeleteControls(visibleCount = visibleChangeIds.size) {
+  if (!elements.changesBulkActions) {
+    return;
+  }
+
+  const canDelete = Boolean(state?.permissions?.canDeleteChanges);
+  const selectedCount = selectedVisibleChangeIds().length;
+  const captureRunning = Boolean(state?.capture?.running);
+  elements.changesBulkActions.hidden = !canDelete || visibleCount === 0;
+  elements.changesBulkActions.classList.toggle("has-selection", selectedCount > 0);
+  elements.changesBulkActions.classList.toggle("is-pending", pendingBulkChangeDelete);
+  elements.changesBulkSelectionCount.textContent = `已选择 ${selectedCount} / 当前页 ${visibleCount} 条`;
+  elements.changesBulkSelectVisible.disabled = !canDelete || captureRunning || pendingBulkChangeDelete || visibleCount === 0;
+  elements.changesBulkClearSelection.disabled = selectedCount === 0 || pendingBulkChangeDelete;
+  elements.changesBulkDeleteSelected.disabled = !canDelete || captureRunning || pendingBulkChangeDelete || selectedCount === 0;
+  elements.changesBulkDeleteSelected.textContent = pendingBulkChangeDelete
+    ? "删除中..."
+    : `删除所选${selectedCount ? ` ${selectedCount}` : ""}`;
 }
 
 function renderChangesPagination(total, pageStart, visibleCount, totalPages) {
@@ -2555,8 +2793,17 @@ function matchesChangeFilters(change) {
 
 function renderChangeTableRow(change) {
   const level = changeLevelForDisplay(change);
+  const changeId = String(change?.id || "").trim();
+  const selected = Boolean(changeId && selectedChangeIds.has(changeId));
+  const pending = Boolean(changeId && pendingChangeDeletes.has(changeId));
+  const rowClassName = [
+    "change-table-row",
+    selected ? "is-selected" : "",
+    pending ? "is-pending" : ""
+  ].filter(Boolean).join(" ");
   return `
-    <tr>
+    <tr class="${rowClassName}" data-change-id="${escapeHtml(changeId)}">
+      <td>${renderChangeSelectCell(changeId, selected, pending)}</td>
       <td>
         <span class="change-level change-level-${escapeHtml(level.toLowerCase())}" title="${escapeHtml(change.changeLevelReason || "")}">
           ${escapeHtml(level)}
@@ -2570,7 +2817,57 @@ function renderChangeTableRow(change) {
       <td>${escapeHtml(changeLocationForDisplay(change))}</td>
       <td>${renderChangeStyleLink("旧样式", styleRefForChange(change, "old"), change)}</td>
       <td>${renderChangeStyleLink("新样式", styleRefForChange(change, "new"), change)}</td>
+      <td>${renderChangeDeleteCell(changeId, pending)}</td>
     </tr>
+  `;
+}
+
+function renderChangeSelectCell(changeId, selected, pending) {
+  const canDelete = Boolean(changeId) && Boolean(state?.permissions?.canDeleteChanges);
+  if (!canDelete) {
+    return `<span class="change-style-empty">-</span>`;
+  }
+
+  const disabled = pending || pendingBulkChangeDelete || Boolean(state?.capture?.running);
+  return `
+    <label class="change-select-control${selected ? " is-selected" : ""}${disabled ? " is-disabled" : ""}" title="选择这条变更记录用于批量删除">
+      <input
+        type="checkbox"
+        data-action="select-change"
+        data-change-id="${escapeHtml(changeId)}"
+        aria-label="选择这条变更记录用于批量删除"
+        ${selected ? "checked" : ""}
+        ${disabled ? "disabled" : ""}
+      >
+      <span aria-hidden="true"></span>
+    </label>
+  `;
+}
+
+function renderChangeDeleteCell(changeId, pending) {
+  const canDelete = Boolean(changeId) && Boolean(state?.permissions?.canDeleteChanges);
+  if (!canDelete) {
+    return `<span class="change-style-empty">-</span>`;
+  }
+
+  const captureRunning = Boolean(state?.capture?.running);
+  const disabled = pending || captureRunning || pendingBulkChangeDelete;
+  const title = pending
+    ? "删除中..."
+    : captureRunning
+      ? "截图运行中，暂时不能删除。"
+      : "删除这条变更汇总记录。";
+  return `
+    <button
+      class="change-row-delete-button${pending ? " is-pending" : ""}"
+      type="button"
+      data-action="delete-change"
+      data-change-id="${escapeHtml(changeId)}"
+      title="${escapeHtml(title)}"
+      ${disabled ? "disabled" : ""}
+    >
+      ${pending ? "删除中..." : "删除"}
+    </button>
   `;
 }
 

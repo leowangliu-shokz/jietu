@@ -195,6 +195,15 @@
                 </select>
               </div>
             </div>
+            <div id="changesBulkActions" class="bulk-actions" hidden>
+              <p id="changesBulkSelectionCount" class="bulk-selection-count">已选择 0 条</p>
+              <div class="bulk-action-buttons">
+                <button id="changesBulkSelectVisible" type="button">选择当前页</button>
+                <button id="changesBulkClearSelection" type="button">清空选择</button>
+                <button id="changesBulkDeleteSelected" class="danger-button" type="button">删除所选</button>
+              </div>
+            </div>
+            <p id="changesStatus" class="timeline-status" hidden aria-live="polite"></p>
             <div id="changesList" class="changes-list"></div>
             <nav id="changesPagination" class="changes-pagination" aria-label="变更分页" hidden>
               <button id="changesPrevPage" type="button">上一页</button>
