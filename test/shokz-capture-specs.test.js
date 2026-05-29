@@ -8,13 +8,15 @@ import {
   shokzRelatedSectionOrder
 } from "../src/shokz-capture-specs.js";
 
-test("defines a mobile-only homepage topbar section ahead of banner ordering", () => {
+test("defines homepage topbar section ahead of banner ordering", () => {
   const topbar = shokzHomeRelatedSectionDefinitions.find((definition) => definition.key === "topbar");
 
   assert.ok(topbar);
   assert.equal(topbar.sectionLabel, "Topbar");
   assert.equal(topbar.title, "Topbar 轮播图");
-  assert.equal(topbar.mobileOnly, true);
+  assert.equal(topbar.mobileOnly, undefined);
+  assert.equal(topbar.desktopStatic, true);
+  assert.equal(topbar.minAnchorHits, 0);
   assert.equal(topbar.rootSelector, ".announcement");
   assert.deepEqual(topbar.anchors, [
     "Fast & Free Shipping",

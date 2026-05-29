@@ -3953,7 +3953,7 @@ async function captureShokzHomeBanners(client, outputPath, viewport, captureCont
     await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 5 });
     await sleep(500);
 
-    const state = await readShokzHomeBannerState(client, index);
+    const state = await readShokzHomeBannerState(client, index, captureContext);
     if (!state.ok) {
       throw new Error(state.reason || `Could not read Shokz banner ${index + 1} state.`);
     }
@@ -10878,7 +10878,8 @@ async function readShokzHomeRelatedSectionPlan(client, definition, captureContex
     ...definition,
     captureHover: definition.key === "product-showcase" &&
       !mobile &&
-      !viewport.touch
+      !viewport.touch,
+    desktopStatic: Boolean(definition.desktopStatic && !mobile && !viewport.touch)
   };
   if (runtimeDefinition.mobileOnly && !mobile && !viewport.touch) {
     return {
@@ -11692,7 +11693,10 @@ async function readShokzHomeRelatedSectionPlan(client, definition, captureContex
       const anchorHits = (root) => (definition.anchors || [])
         .filter((anchor) => textOf(root, 5000).includes(anchor)).length;
       const findRoot = () => {
-        const minHits = Math.min(definition.anchors?.length || 1, definition.mode === "carousel" ? 1 : 2);
+        const configuredMinHits = Number(definition.minAnchorHits);
+        const minHits = Number.isFinite(configuredMinHits)
+          ? Math.max(0, configuredMinHits)
+          : Math.min(definition.anchors?.length || 1, definition.mode === "carousel" ? 1 : 2);
         return findRoots()
           .map((root) => {
             const rect = root.getBoundingClientRect();
@@ -12643,7 +12647,9 @@ async function readShokzHomeRelatedSectionPlan(client, definition, captureContex
         const seen = new Set();
         const bulletCount = findPageBullets(root).length;
         const expectedPages = Number(definition.expectedPages || 0);
-        const maxPages = expectedPages > 0
+        const maxPages = definition.desktopStatic
+          ? 1
+          : expectedPages > 0
           ? (bulletCount > 1 ? Math.min(bulletCount, expectedPages) : expectedPages)
           : (bulletCount > 1 ? bulletCount : 12);
         for (let pageIndex = 1; pageIndex <= maxPages; pageIndex += 1) {
@@ -15442,10 +15448,12 @@ async function waitForBannerImages(client) {
   }).catch(() => null);
 }
 
-async function readShokzHomeBannerState(client, ordinal) {
+async function readShokzHomeBannerState(client, ordinal, captureContext = {}) {
+  const includeTopbar = !isMobileCaptureContext(captureContext);
   const result = await client.send("Runtime.evaluate", {
     expression: `(() => {
       const ordinal = ${Number(ordinal)};
+      const includeTopbar = ${includeTopbar ? "true" : "false"};
       const root = window.__pageShotBannerRoot;
       if (!root) return { ok: false, reason: "Banner carousel root is not available." };
       const cleanText = (value, max = 220) => String(value || "")
@@ -15508,20 +15516,42 @@ async function readShokzHomeBannerState(client, ordinal) {
         slides.sort((a, b) => areaInRoot(b) - areaInRoot(a))[0] ||
         root;
       const activeRect = active.getBoundingClientRect();
-      const visibleTop = Math.max(0, rootRect.top);
-      const visibleBottom = Math.min(window.innerHeight, rootRect.bottom);
-      const fallbackHeight = Math.min(rootRect.height, window.innerHeight * 0.95);
+      const topbarRect = (() => {
+        if (!includeTopbar) return null;
+        const candidates = Array.from(document.querySelectorAll(
+          ".announcement, [class*='announcement'], [class*='topbar'], [class*='top-bar']"
+        ))
+          .filter(visible)
+          .map((element) => element.getBoundingClientRect())
+          .filter((rect) =>
+            rect.width >= Math.min(240, window.innerWidth * 0.55) &&
+            rect.height >= 8 &&
+            rect.height <= 160 &&
+            rect.top <= Math.max(120, rootRect.top + 4) &&
+            rect.bottom <= rootRect.top + 140
+          )
+          .sort((a, b) => a.top - b.top || b.width * b.height - a.width * a.height);
+        return candidates[0] || null;
+      })();
+      const clipLeft = Math.max(0, Math.min(rootRect.left, topbarRect?.left ?? rootRect.left));
+      const clipRight = Math.min(window.innerWidth, Math.max(rootRect.right, topbarRect?.right ?? rootRect.right));
+      const visibleTop = Math.max(0, Math.min(rootRect.top, topbarRect?.top ?? rootRect.top));
+      const visibleBottom = Math.min(window.innerHeight, Math.max(rootRect.bottom, topbarRect?.bottom ?? rootRect.bottom));
+      const fallbackHeight = Math.min(rootRect.height + Math.max(0, rootRect.top - visibleTop), window.innerHeight * 0.95);
       const height = Math.max(1, visibleBottom > visibleTop ? visibleBottom - visibleTop : fallbackHeight);
       const clip = {
-        x: Math.max(0, rootRect.left + window.scrollX),
+        x: Math.max(0, clipLeft + window.scrollX),
         y: Math.max(0, visibleTop + window.scrollY),
-        width: Math.min(rootRect.width, document.documentElement.clientWidth || window.innerWidth),
+        width: Math.min(
+          Math.max(1, clipRight - clipLeft),
+          document.documentElement.clientWidth || window.innerWidth
+        ),
         height
       };
       const clipRect = {
-        left: rootRect.left,
+        left: clipLeft,
         top: visibleTop,
-        right: rootRect.left + clip.width,
+        right: clipLeft + clip.width,
         bottom: visibleTop + clip.height
       };
       const seenText = new Set();
@@ -15915,8 +15945,11 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
             /(privacy|accept all|necessary cookies|preferences|consent|personalized features)/i.test(value);
           if (cookie) return "cookie";
 
-          const email = /(don.?t miss out|dont miss out|subscribe now|enter your email|email address|newsletter|sign up|primary use case|get\\s*\\d+%\\s*off|\\b\\d+%\\s*off\\b)/i.test(value) &&
-            /(email|subscribe|newsletter|great deals|primary use case|get\\s*\\d+%\\s*off|\\b\\d+%\\s*off\\b)/i.test(value);
+          const campaignPopup = /(enter for a chance to win|next-gen flagship clip-on earbuds|please enter a valid email|primary use case)/i.test(value);
+          const email = campaignPopup || (
+            /(don.?t miss out|dont miss out|subscribe now|enter your email|email address|newsletter|sign up|primary use case|get\\s*\\d+%\\s*off|\\b\\d+%\\s*off\\b)/i.test(value) &&
+            /(email|subscribe|newsletter|great deals|primary use case|get\\s*\\d+%\\s*off|\\b\\d+%\\s*off\\b)/i.test(value)
+          );
           if (email) return "email";
 
           const region = /(redirect|wrong site|ip address|your ip|detected.{0,80}(region|country|location)|shopping from|looks like.{0,80}(country|region|location)|stay on.{0,40}site|continue to.{0,80}(site|store|shokz))/i.test(value);
@@ -16132,10 +16165,26 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
         const hasCloseControl = (layer) =>
           Array.from(layer.querySelectorAll(interactiveSelector + ", svg, [class], [id]"))
             .some((control) => visible(control) && !isNavigationElement(control) && closeControlLike(control));
+        const campaignPopupText = (text) =>
+          /(enter for a chance to win|next-gen flagship clip-on earbuds|please enter a valid email|primary use case)/i.test(text);
         const cleanupPopupRemnants = () => {
           let changed = 0;
           for (const element of Array.from(document.querySelectorAll("body *"))) {
             if (!visible(element) || element.dataset.pageShotHidden === "true" || isNavigationElement(element) || containsNavigation(element)) continue;
+            const text = textOf(element);
+            if (campaignPopupText(text)) {
+              const layer = layerRootFor(element);
+              if (visible(layer) && !isNavigationElement(layer) && !containsNavigation(layer)) {
+                const state = layerState(layer, "email");
+                if (state.popupLike || state.roleDialog || state.ariaModal) {
+                  hideRelatedBackdrop(layer, "email");
+                  if (forceRemovePopupElement(layer, "email campaign popup")) {
+                    changed += 1;
+                    continue;
+                  }
+                }
+              }
+            }
             const rect = element.getBoundingClientRect();
             const style = getComputedStyle(element);
             const zIndex = Number.parseInt(style.zIndex, 10);

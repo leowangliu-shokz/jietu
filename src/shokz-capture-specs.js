@@ -95,7 +95,8 @@ export const shokzHomeRelatedSectionDefinitions = [
     ],
     labelPrefix: "Topbar",
     expectedPages: 4,
-    mobileOnly: true,
+    desktopStatic: true,
+    minAnchorHits: 0,
     rootSelector: ".announcement",
     minRootHeight: 24,
     maxRootHeight: 120
