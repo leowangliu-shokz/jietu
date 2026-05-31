@@ -19,6 +19,8 @@ if (results.some((result) => !result.ok)) {
   process.exitCode = 1;
 }
 
+process.exit(process.exitCode || 0);
+
 async function runCaptureCommand() {
   try {
     return argUrl ? [await captureOne(argUrl, config)] : await captureConfiguredUrls(config);

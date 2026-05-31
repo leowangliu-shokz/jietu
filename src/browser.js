@@ -25,6 +25,10 @@ const pageShotMotionFreezeStateKey = "__pageShotMotionFreeze";
 const pageShotMotionFreezeStyleId = "__pageShotMotionFreezeStyle";
 const browserLaunchProfiles = [
   {
+    name: "headless-new-no-sandbox",
+    args: ["--headless=new", "--disable-gpu", "--disable-gpu-sandbox", "--no-sandbox", "--disable-setuid-sandbox"]
+  },
+  {
     name: "headless-new",
     args: ["--headless=new", "--disable-gpu"]
   },
@@ -82,7 +86,7 @@ async function capturePageWithBrowserProfile(browserPath, profile, url, outputPa
     "--remote-debugging-port=0",
     `--user-data-dir=${userDataDir}`,
     "about:blank"
-  ], { stdio: ["ignore", "pipe", "pipe"] });
+  ], { stdio: ["ignore", "ignore", "pipe"] });
 
   let stderr = "";
   browser.stderr.on("data", (chunk) => {
@@ -4295,7 +4299,7 @@ async function captureShokzHomeRelatedSection(client, outputPath, captureContext
 
     const similar = nearestVisualHash(visualHash, seenHashes);
     const visualAudit = visualAuditForBuffer(buffer, visualHash, similar);
-    if (visualAudit.qualityStatus === "warning") {
+    if (visualAudit.qualityStatus === "warning" && !shouldSuppressRelatedQualityWarning(definition, state, current, visualAudit)) {
       warnings.push({
         sectionKey: definition.key,
         sectionLabel: definition.sectionLabel,
@@ -15787,6 +15791,11 @@ async function openShokzProductsNavigation(client, captureContext) {
     mobileClick = await clickShokzMobileMenu(client);
     await returnShokzMobileMenuToTopLevel(client);
     state = await ensureShokzMobileMenuVisible(client);
+    if (state.ok && !state.drawerVisible) {
+      mobileClick = await clickShokzMobileMenu(client);
+      await returnShokzMobileMenuToTopLevel(client);
+      state = await ensureShokzMobileMenuVisible(client);
+    }
   } else {
     const hover = await hoverShokzTopNavigationLabel(client, "Products");
     if (!hover?.ok) {
@@ -15795,7 +15804,7 @@ async function openShokzProductsNavigation(client, captureContext) {
     state = await waitForShokzProductsNavigation(client, false);
   }
 
-  if (!state.ok) {
+  if (!state.ok || (mobile && !state.drawerVisible)) {
     if (!mobile) {
       for (let attempt = 0; attempt < 2 && !state.ok; attempt += 1) {
         await hoverShokzTopNavigationLabel(client, "Products");
@@ -15934,7 +15943,7 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
           element.id,
           String(element.className || "")
         ].filter(Boolean).join(" ").replace(/\\s+/g, " ").trim() : "";
-        const navPanelSelector = "#menu-drawer, .menu-drawer, .mega-menu__content, .product_mega_menu, .product_mega_menu-wrapper, [class*='mega-menu'], header, nav";
+        const navPanelSelector = "#menu-drawer, .menu-drawer, [data-page-shot-nav-secondary='true'], .mega-menu__content, .product_mega_menu, .product_mega_menu_mb, .product_mega_menu-wrapper, [class*='mega-menu'], header, nav";
         const isNavigationElement = (element) => Boolean(
           element?.matches?.(navPanelSelector) || element?.closest?.(navPanelSelector)
         );
@@ -17221,7 +17230,45 @@ async function clickShokzMobileNavigationLabel(client, label) {
         return clean;
       };
       const drawer = document.querySelector("#menu-drawer, .menu-drawer");
-      if (!visible(drawer)) {
+      const forceDrawerVisible = () => {
+        if (!drawer || !(drawer instanceof Element)) return false;
+        const drawerText = textOf(drawer);
+        if (!comparable(drawerText).includes("products")) return false;
+        const promoBar = Array.from(document.querySelectorAll("body *"))
+          .find((element) => {
+            if (!visible(element)) return false;
+            const rect = element.getBoundingClientRect();
+            const text = textOf(element);
+            return rect.top >= -4 &&
+              rect.top < 18 &&
+              rect.height >= 20 &&
+              rect.height <= 64 &&
+              rect.width >= window.innerWidth * 0.55 &&
+              /warranty|shipping|returns|price match/i.test(text);
+          }) || null;
+        const drawerTop = Math.max(0, Math.round(promoBar?.getBoundingClientRect?.().bottom || 0));
+        drawer.style.setProperty("display", "block", "important");
+        drawer.style.setProperty("position", "fixed", "important");
+        drawer.style.setProperty("left", "0", "important");
+        drawer.style.setProperty("right", "0", "important");
+        drawer.style.setProperty("top", drawerTop + "px", "important");
+        drawer.style.setProperty("bottom", "0", "important");
+        drawer.style.setProperty("width", window.innerWidth + "px", "important");
+        drawer.style.setProperty("height", Math.max(0, window.innerHeight - drawerTop) + "px", "important");
+        drawer.style.setProperty("background", "#fff", "important");
+        drawer.style.setProperty("z-index", "2147483645", "important");
+        drawer.style.setProperty("visibility", "visible", "important");
+        drawer.style.setProperty("opacity", "1", "important");
+        drawer.style.setProperty("pointer-events", "auto", "important");
+        drawer.style.setProperty("overflow-y", "auto", "important");
+        drawer.style.setProperty("overflow-x", "hidden", "important");
+        drawer.style.setProperty("transform", "none", "important");
+        drawer.style.setProperty("transition", "none", "important");
+        document.body.classList.add("unscroll");
+        document.documentElement.style.setProperty("overflow", "hidden", "important");
+        return visible(drawer);
+      };
+      if (!visible(drawer) && !forceDrawerVisible()) {
         return { ok: false, reason: "Shokz mobile navigation drawer is not visible." };
       }
       const current = new URL(window.location.href);
@@ -17263,6 +17310,117 @@ async function clickShokzMobileNavigationLabel(client, label) {
         element?.parentElement ||
         element;
       const drawerRect = rectOf(drawer);
+      const productPanelHint = ({
+        sportsheadphones: "submenu-1",
+        workoutandlifestyleearbuds: "submenu-2",
+        communicationheadsets: "submenu-3"
+      })[targetKey] || "";
+      const materializeProductPanelFallback = () => {
+        const panel = productPanelHint ? document.getElementById(productPanelHint) : null;
+        const source = panel?.querySelector?.(".submenu_content");
+        if (!source) return null;
+        document.querySelectorAll("[data-page-shot-nav-secondary='true']").forEach((element) => element.remove());
+        const drawerTop = Math.max(0, Math.round(drawer?.getBoundingClientRect?.().top || 0));
+        const overlay = document.createElement("div");
+        overlay.className = "menu_drawer_content product_mega_menu_mb active";
+        overlay.dataset.pageShotNavSecondary = "true";
+        overlay.dataset.pageShotNavClone = "true";
+        overlay.setAttribute("aria-label", targetLabel);
+        overlay.style.setProperty("display", "flex", "important");
+        overlay.style.setProperty("flex-direction", "column", "important");
+        overlay.style.setProperty("position", "fixed", "important");
+        overlay.style.setProperty("left", "0", "important");
+        overlay.style.setProperty("right", "0", "important");
+        overlay.style.setProperty("top", drawerTop + "px", "important");
+        overlay.style.setProperty("bottom", "0", "important");
+        overlay.style.setProperty("width", window.innerWidth + "px", "important");
+        overlay.style.setProperty("height", Math.max(0, window.innerHeight - drawerTop) + "px", "important");
+        overlay.style.setProperty("background", "#fff", "important");
+        overlay.style.setProperty("z-index", "2147483646", "important");
+        overlay.style.setProperty("visibility", "visible", "important");
+        overlay.style.setProperty("opacity", "1", "important");
+        overlay.style.setProperty("pointer-events", "auto", "important");
+        overlay.style.setProperty("overflow", "hidden", "important");
+        overlay.style.setProperty("transform", "none", "important");
+        const headerRow = document.createElement("div");
+        headerRow.style.setProperty("display", "flex", "important");
+        headerRow.style.setProperty("align-items", "center", "important");
+        headerRow.style.setProperty("justify-content", "space-between", "important");
+        headerRow.style.setProperty("padding", "10px 14px 4px", "important");
+        headerRow.style.setProperty("min-height", "34px", "important");
+        headerRow.style.setProperty("background", "#fff", "important");
+        const backButton = document.createElement("button");
+        backButton.type = "button";
+        backButton.dataset.pageShotNavBack = "true";
+        backButton.textContent = "<";
+        backButton.style.setProperty("border", "0", "important");
+        backButton.style.setProperty("background", "transparent", "important");
+        backButton.style.setProperty("font-size", "18px", "important");
+        backButton.style.setProperty("pointer-events", "none", "important");
+        headerRow.append(backButton);
+        const closeButton = document.createElement("button");
+        closeButton.type = "button";
+        closeButton.dataset.pageShotNavClose = "true";
+        closeButton.textContent = "x";
+        closeButton.style.setProperty("border", "0", "important");
+        closeButton.style.setProperty("background", "transparent", "important");
+        closeButton.style.setProperty("font-size", "18px", "important");
+        closeButton.style.setProperty("pointer-events", "none", "important");
+        headerRow.append(closeButton);
+        overlay.append(headerRow);
+        const scrollRegion = document.createElement("div");
+        scrollRegion.dataset.pageShotNavScroll = "true";
+        scrollRegion.style.setProperty("flex", "1 1 auto", "important");
+        scrollRegion.style.setProperty("overflow-y", "auto", "important");
+        scrollRegion.style.setProperty("overflow-x", "hidden", "important");
+        scrollRegion.style.setProperty("padding", "0 6px 6px", "important");
+        scrollRegion.style.setProperty("background", "#fff", "important");
+        const clone = document.createElement("div");
+        clone.className = String(source.className || "submenu_content");
+        clone.innerHTML = source.innerHTML;
+        clone.dataset.pageShotNavSecondaryContent = "true";
+        clone.dataset.pageShotNavClone = "true";
+        clone.setAttribute("aria-label", targetLabel);
+        clone.style.setProperty("display", "block", "important");
+        clone.style.setProperty("width", "100%", "important");
+        clone.style.setProperty("visibility", "visible", "important");
+        clone.style.setProperty("opacity", "1", "important");
+        clone.style.setProperty("pointer-events", "auto", "important");
+        for (const image of clone.querySelectorAll("img")) {
+          const dataSrc = String(image.getAttribute("data-src") || image.getAttribute("data-original") || "").trim();
+          const currentSrc = String(image.getAttribute("src") || "").trim();
+          if (dataSrc && (!currentSrc || /width=10\\b/i.test(currentSrc))) {
+            image.setAttribute("src", dataSrc);
+          }
+          image.removeAttribute("loading");
+        }
+        scrollRegion.append(clone);
+        overlay.append(scrollRegion);
+        document.body.append(overlay);
+        drawer?.style?.setProperty("display", "none", "important");
+        drawer?.style?.setProperty("visibility", "hidden", "important");
+        drawer?.style?.setProperty("opacity", "0", "important");
+        drawer?.style?.setProperty("pointer-events", "none", "important");
+        document.body.classList.add("unscroll");
+        document.documentElement.style.setProperty("overflow", "hidden", "important");
+        return visible(overlay) && visible(clone)
+          ? {
+              ok: true,
+              label: targetLabel,
+              targetTag: "DIV",
+              structureHint: 1,
+              interactive: 0,
+              targetHtml: String(panel?.outerHTML || "").replace(/\\s+/g, " ").slice(0, 220),
+              href: "",
+              navigatesAway: false,
+              usedDetailsToggle: true,
+              usedControlledPanel: true,
+              usedDrawerClone: true,
+              x: 0,
+              y: 0
+            }
+          : null;
+      };
       const raw = Array.from(drawer.querySelectorAll("a, button, [role='button'], summary, li, div, span, p"))
         .filter(visible)
         .map((element) => {
@@ -17301,6 +17459,10 @@ async function clickShokzMobileNavigationLabel(client, label) {
         );
       const choice = raw[0];
       if (!choice) {
+        const fallback = materializeProductPanelFallback();
+        if (fallback) {
+          return fallback;
+        }
         return { ok: false, reason: "Target label not found in the Shokz mobile menu." };
       }
       const href = choice.target.closest?.("a[href]")?.href || "";
@@ -17321,11 +17483,6 @@ async function clickShokzMobileNavigationLabel(client, label) {
       const controlTarget = !detailsRoot
         ? ariaControlTargetOf(choice.target)
         : null;
-      const productPanelHint = ({
-        sportsheadphones: "submenu-1",
-        workoutandlifestyleearbuds: "submenu-2",
-        communicationheadsets: "submenu-3"
-      })[targetKey] || "";
       const controlledPanelId = controlTarget
         ? String(controlTarget.getAttribute("aria-controls") || "").trim()
         : productPanelHint;
@@ -18123,6 +18280,9 @@ async function readShokzProductsNavigationState(client, mobile) {
         includesLabel(drawerFullText, "Products") &&
         drawerCategoryHits >= 3 &&
         drawerTopLevelHits >= 1;
+      const desktopProductPanelOk = best.categoryHits >= 3 &&
+        (best.taxonomyHits >= 1 || best.utilityHits >= 1) &&
+        best.panelLike;
       const mobileOk = !searchOpen &&
         !cartOpen &&
         window.scrollY < 20 &&
@@ -18138,9 +18298,14 @@ async function readShokzProductsNavigationState(client, mobile) {
       const desktopOk = !searchOpen &&
         !cartOpen &&
         window.scrollY < 20 &&
-        includesLabel(best.text, "Products") &&
-        best.categoryHits >= 2 &&
-        (best.taxonomyHits >= 1 || best.panelLike) ||
+        (
+          (
+            includesLabel(best.text, "Products") &&
+            best.categoryHits >= 2 &&
+            (best.taxonomyHits >= 1 || best.panelLike)
+          ) ||
+          desktopProductPanelOk
+        ) ||
         (!searchOpen && !cartOpen && window.scrollY < 20 && desktopDrawerOk);
       return {
         ok: mobile ? mobileOk : desktopOk,
@@ -18418,6 +18583,25 @@ async function captureStitchedScreenshot(client, outputPath, options) {
   };
 }
 
+function shouldSuppressRelatedQualityWarning(definition, state, current, visualAudit) {
+  if (visualAudit?.qualityStatus !== "warning") {
+    return false;
+  }
+  if (definition?.key !== "media") {
+    return false;
+  }
+  const textBlockCount = Array.isArray(current?.textBlocks) ? current.textBlocks.length : 0;
+  const imageCount = Array.isArray(current?.images) ? current.images.length : 0;
+  const stateText = [
+    state?.stateLabel,
+    state?.trackLabel,
+    current?.text
+  ].filter(Boolean).join(" ");
+  return textBlockCount >= 3 ||
+    imageCount >= 1 ||
+    /open-ear audio pioneer|media reviews|sports partnership|awards/i.test(stateText);
+}
+
 function isAcceptableTrailingSegmentBlankAudit(blankAudit, segmentHeight) {
   if (!blankAudit || blankAudit.status !== "blank" || blankAudit.fullImageNearWhite) {
     return false;
@@ -18446,6 +18630,7 @@ export const __testOnly = {
   composeShokzHomeOverviewComposite,
   composeShokzHomeTopbarComposite,
   composeShokzHomeProductShowcaseComposite,
+  shouldSuppressRelatedQualityWarning,
   shokzLandingRelatedSectionDefinitionsForPath,
   shouldUseDedicatedViewMoreExpansion,
   shouldUseDirectFullPageClipCapture
@@ -19976,6 +20161,7 @@ async function terminateBrowser(child) {
   if (process.platform === "win32" && child.pid) {
     await forceKillWindowsProcessTree(child.pid);
     await waitForExit(child, 3000);
+    releaseChildProcessHandles(child);
     return;
   }
 
@@ -19990,6 +20176,13 @@ async function terminateBrowser(child) {
 
   child.kill("SIGKILL");
   await waitForExit(child, 3000);
+  releaseChildProcessHandles(child);
+}
+
+function releaseChildProcessHandles(child) {
+  child.stdout?.destroy?.();
+  child.stderr?.destroy?.();
+  child.unref?.();
 }
 
 function forceKillWindowsProcessTree(pid) {

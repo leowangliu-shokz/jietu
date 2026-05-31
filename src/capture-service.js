@@ -35,6 +35,9 @@ import {
   saveSnapshots
 } from "./store.js";
 
+const mobileCollectionRelatedSectionTimeoutMs = 25 * 60 * 1000;
+const mobileComparisonProductMapTimeoutMs = 55 * 60 * 1000;
+
 export async function captureConfiguredUrls(config = null, options = {}) {
   const activeConfig = normalizeConfig(config || await loadConfig());
   const plans = resolveConfiguredCapturePlans(activeConfig, options);
@@ -1428,12 +1431,7 @@ async function composeHomeOverviewForRelatedShots(baseOutputPath, relatedShots, 
 }
 
 async function captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun) {
-  const descriptors = relatedDescriptorsForCaptureConfig(shokzCollectionRelatedSectionDefinitions.map((definition) => ({
-    sectionKey: definition.key,
-    sectionLabel: definition.sectionLabel,
-    captureMode: "shokz-collection-related-section",
-    sectionCaptureKey: definition.key
-  })), captureConfig);
+  const descriptors = collectionRelatedDescriptorsForCaptureConfig(captureConfig);
   const shots = [];
   const warnings = [];
   const sections = [];
@@ -1458,12 +1456,7 @@ async function captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOut
 }
 
 async function captureShokzComparisonRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun) {
-  const descriptors = relatedDescriptorsForCaptureConfig(shokzComparisonRelatedSectionDefinitions.map((definition) => ({
-    sectionKey: definition.key,
-    sectionLabel: definition.sectionLabel,
-    captureMode: "shokz-comparison-related-section",
-    sectionCaptureKey: definition.key
-  })), captureConfig);
+  const descriptors = comparisonRelatedDescriptorsForCaptureConfig(captureConfig);
   const shots = [];
   const warnings = [];
   const sections = [];
@@ -1487,6 +1480,67 @@ async function captureShokzComparisonRelatedShotsIsolated(normalizedUrl, baseOut
   };
 }
 
+function collectionRelatedDescriptorsForCaptureConfig(captureConfig = {}) {
+  const descriptors = relatedDescriptorsForCaptureConfig(shokzCollectionRelatedSectionDefinitions.map((definition) => ({
+    sectionKey: definition.key,
+    sectionLabel: definition.sectionLabel,
+    captureMode: "shokz-collection-related-section",
+    sectionCaptureKey: definition.key
+  })), captureConfig);
+
+  if (!isMobileRelatedCaptureConfig(captureConfig) || captureConfig.relatedStateFilter) {
+    return descriptors;
+  }
+
+  return descriptors.flatMap((descriptor) => {
+    if (descriptor.sectionKey !== "collection-tabs") {
+      return [descriptor];
+    }
+    const definition = shokzCollectionRelatedSectionDefinitions.find((item) => item.key === descriptor.sectionKey);
+    const states = Array.isArray(definition?.states) ? definition.states : [];
+    return states.length
+      ? states.map((state) => ({
+          ...descriptor,
+          sectionLabel: `${descriptor.sectionLabel} / ${state.stateLabel || state.tabLabel || state.categoryKey}`,
+          relatedStateFilter: relatedFilterForCollectionState(descriptor.sectionKey, state),
+          captureTimeoutMs: mobileCollectionRelatedSectionTimeoutMs
+        }))
+      : [descriptor];
+  });
+}
+
+function comparisonRelatedDescriptorsForCaptureConfig(captureConfig = {}) {
+  const descriptors = relatedDescriptorsForCaptureConfig(shokzComparisonRelatedSectionDefinitions.map((definition) => ({
+    sectionKey: definition.key,
+    sectionLabel: definition.sectionLabel,
+    captureMode: "shokz-comparison-related-section",
+    sectionCaptureKey: definition.key
+  })), captureConfig);
+
+  if (!isMobileRelatedCaptureConfig(captureConfig) || captureConfig.relatedStateFilter) {
+    return descriptors;
+  }
+
+  return descriptors.map((descriptor) =>
+    descriptor.sectionKey === "comparison-products"
+      ? { ...descriptor, captureTimeoutMs: mobileComparisonProductMapTimeoutMs }
+      : descriptor
+  );
+}
+
+function relatedFilterForCollectionState(sectionKey, state = {}) {
+  return {
+    sectionKey,
+    categoryKey: state.categoryKey || state.matchHandle || null,
+    tabLabel: state.tabLabel || state.categoryLabel || state.stateLabel || null,
+    tileKey: state.categoryKey || state.fileId || state.stateLabel || null
+  };
+}
+
+function isMobileRelatedCaptureConfig(captureConfig = {}) {
+  return captureConfig.platform === "mobile" || Boolean(captureConfig.viewport?.mobile);
+}
+
 function relatedDescriptorsForCaptureConfig(descriptors, captureConfig = {}) {
   const requestedSectionKey = stringOrNull(captureConfig.sectionKey) ||
     stringOrNull(captureConfig.relatedStateFilter?.sectionKey);
@@ -1504,6 +1558,8 @@ async function captureIsolatedRelatedSection(normalizedUrl, baseOutputPath, capt
       ...captureConfig,
       captureMode: descriptor.captureMode,
       sectionKey: descriptor.sectionCaptureKey || null,
+      relatedStateFilter: descriptor.relatedStateFilter || captureConfig.relatedStateFilter || null,
+      captureTimeoutMs: descriptor.captureTimeoutMs || captureConfig.captureTimeoutMs,
       fullPage: false,
       lazyLoadScroll: false
     });

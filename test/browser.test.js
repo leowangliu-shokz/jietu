@@ -18,6 +18,7 @@ const {
   composeShokzHomeOverviewComposite,
   composeShokzHomeTopbarComposite,
   composeShokzHomeProductShowcaseComposite,
+  shouldSuppressRelatedQualityWarning,
   shokzLandingRelatedSectionDefinitionsForPath,
   shouldUseDedicatedViewMoreExpansion,
   shouldUseDirectFullPageClipCapture
@@ -39,6 +40,27 @@ test("passes high-contrast detailed images", () => {
   assert.equal(audit.status, "ok");
   assert.ok(audit.sharpness > 4);
   assert.ok(audit.contrast > 18);
+});
+
+test("suppresses structured media carousel low-detail quality warnings", () => {
+  assert.equal(
+    shouldSuppressRelatedQualityWarning(
+      { key: "media" },
+      { stateLabel: "Shokz | Open-Ear Audio Pioneer 1" },
+      { textBlocks: [{ text: "Open-Ear Audio Pioneer" }], images: [{ src: "media.jpg" }] },
+      { qualityStatus: "warning" }
+    ),
+    true
+  );
+  assert.equal(
+    shouldSuppressRelatedQualityWarning(
+      { key: "voices" },
+      { stateLabel: "Shokz | Open-Ear Audio Pioneer 1" },
+      { textBlocks: [{ text: "Open-Ear Audio Pioneer" }], images: [{ src: "media.jpg" }] },
+      { qualityStatus: "warning" }
+    ),
+    false
+  );
 });
 
 test("flags near-white images as blank", () => {

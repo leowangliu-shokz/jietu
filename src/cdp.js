@@ -6,7 +6,9 @@ export class CdpClient {
     this.socket = new WebSocket(webSocketUrl);
     this.ready = new Promise((resolve, reject) => {
       this.socket.addEventListener("open", resolve, { once: true });
-      this.socket.addEventListener("error", reject, { once: true });
+      this.socket.addEventListener("error", () => {
+        reject(new Error("CDP socket error."));
+      }, { once: true });
     });
 
     this.socket.addEventListener("message", (message) => {
