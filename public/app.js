@@ -3215,7 +3215,7 @@ function buildGalleryCards(snapshots) {
 
     cards.push({
       snapshot,
-      relatedShots: sortedRelatedShots(relatedShotsFromSnapshot(snapshot)),
+      relatedShots: snapshot.homeOverview ? [] : sortedRelatedShots(relatedShotsFromSnapshot(snapshot)),
       sortTime: timestamp(snapshot.capturedAt),
       homeGroup: false,
       relatedValidation: snapshot.relatedValidation || null

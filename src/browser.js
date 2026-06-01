@@ -15944,10 +15944,28 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
           String(element.className || "")
         ].filter(Boolean).join(" ").replace(/\\s+/g, " ").trim() : "";
         const navPanelSelector = "#menu-drawer, .menu-drawer, [data-page-shot-nav-secondary='true'], .mega-menu__content, .product_mega_menu, .product_mega_menu_mb, .product_mega_menu-wrapper, [class*='mega-menu'], header, nav";
+        const pageFooterSelector = [
+          "footer",
+          ".shopify-section-group-footer-group",
+          ".section-footer-new",
+          ".footer-navigation-bar-wrapper",
+          ".footer-inner",
+          ".footer-menus-wrapper",
+          ".footer-left-wrapper",
+          ".footer-bottom-wrapper",
+          ".section-sports-headphones-footer",
+          ".sports-headphones-footer-container",
+          "[id*='footer_new']",
+          "[id*='section-sports-headphones-footer']"
+        ].join(",");
         const isNavigationElement = (element) => Boolean(
           element?.matches?.(navPanelSelector) || element?.closest?.(navPanelSelector)
         );
         const containsNavigation = (element) => Boolean(element?.querySelector?.(navPanelSelector));
+        const isPageFooterElement = (element) => Boolean(
+          element?.matches?.(pageFooterSelector) || element?.closest?.(pageFooterSelector)
+        );
+        const containsPageFooter = (element) => Boolean(element?.querySelector?.(pageFooterSelector));
         const classifyKnownPopup = (text) => {
           const value = String(text || "");
           const cookie = /\\bcookies?\\b/i.test(value) &&
@@ -16028,6 +16046,8 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
           if (!visible(element) ||
               element === document.body ||
               element === document.documentElement ||
+              isPageFooterElement(element) ||
+              containsPageFooter(element) ||
               isNavigationElement(element) ||
               containsNavigation(element)) return false;
           element.dataset.pageShotHidden = "true";
@@ -16041,6 +16061,8 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
           if (!visible(element) ||
               element === document.body ||
               element === document.documentElement ||
+              isPageFooterElement(element) ||
+              containsPageFooter(element) ||
               isNavigationElement(element) ||
               containsNavigation(element)) return false;
           element.dataset.pageShotHidden = "true";
@@ -16053,7 +16075,7 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
         };
         const clickElement = (element, reason) => {
           const target = element?.closest?.(interactiveSelector) || element;
-          if (!visible(target) || isNavigationElement(target)) return false;
+          if (!visible(target) || isNavigationElement(target) || isPageFooterElement(target)) return false;
           if (!target.matches?.(interactiveSelector)) return false;
           if (navigatesAway(target)) return false;
           if (typeof target.click === "function") {
@@ -16067,7 +16089,11 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
         const layerRootFor = (element) => {
           let current = element;
           while (current && current !== document.body && current !== document.documentElement) {
-            if (!visible(current) || isNavigationElement(current) || containsNavigation(current)) {
+            if (!visible(current) ||
+                isPageFooterElement(current) ||
+                containsPageFooter(current) ||
+                isNavigationElement(current) ||
+                containsNavigation(current)) {
               current = current.parentElement;
               continue;
             }
@@ -16090,11 +16116,20 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
         const candidates = [];
         const seen = new Set();
         for (const element of Array.from(document.querySelectorAll("body *"))) {
-          if (!visible(element) || element.dataset.pageShotHidden === "true" || isNavigationElement(element)) continue;
+          if (!visible(element) ||
+              element.dataset.pageShotHidden === "true" ||
+              isPageFooterElement(element) ||
+              containsPageFooter(element) ||
+              isNavigationElement(element)) continue;
           const kind = classifyKnownPopup(textOf(element));
           if (!kind) continue;
           const layer = layerRootFor(element);
-          if (!visible(layer) || isNavigationElement(layer) || containsNavigation(layer) || seen.has(layer)) continue;
+          if (!visible(layer) ||
+              isPageFooterElement(layer) ||
+              containsPageFooter(layer) ||
+              isNavigationElement(layer) ||
+              containsNavigation(layer) ||
+              seen.has(layer)) continue;
           const state = layerState(layer, kind);
           if (state.pageContainer && !state.roleDialog && !state.bottomCookie) continue;
           if (!state.popupLike) continue;
@@ -16123,7 +16158,12 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
         const hideRelatedBackdrop = (layer, kind) => {
           const layerRect = layer.getBoundingClientRect();
           for (const element of Array.from(document.querySelectorAll("body *"))) {
-            if (!visible(element) || element.dataset.pageShotHidden === "true" || isNavigationElement(element) || containsNavigation(element)) continue;
+            if (!visible(element) ||
+                element.dataset.pageShotHidden === "true" ||
+                isPageFooterElement(element) ||
+                containsPageFooter(element) ||
+                isNavigationElement(element) ||
+                containsNavigation(element)) continue;
             const rect = element.getBoundingClientRect();
             const style = getComputedStyle(element);
             const zIndex = Number.parseInt(style.zIndex, 10);
@@ -16179,11 +16219,20 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
         const cleanupPopupRemnants = () => {
           let changed = 0;
           for (const element of Array.from(document.querySelectorAll("body *"))) {
-            if (!visible(element) || element.dataset.pageShotHidden === "true" || isNavigationElement(element) || containsNavigation(element)) continue;
+            if (!visible(element) ||
+                element.dataset.pageShotHidden === "true" ||
+                isPageFooterElement(element) ||
+                containsPageFooter(element) ||
+                isNavigationElement(element) ||
+                containsNavigation(element)) continue;
             const text = textOf(element);
             if (campaignPopupText(text)) {
               const layer = layerRootFor(element);
-              if (visible(layer) && !isNavigationElement(layer) && !containsNavigation(layer)) {
+              if (visible(layer) &&
+                  !isPageFooterElement(layer) &&
+                  !containsPageFooter(layer) &&
+                  !isNavigationElement(layer) &&
+                  !containsNavigation(layer)) {
                 const state = layerState(layer, "email");
                 if (state.popupLike || state.roleDialog || state.ariaModal) {
                   hideRelatedBackdrop(layer, "email");
@@ -16219,7 +16268,10 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
             }
           }
           for (const control of Array.from(document.querySelectorAll(interactiveSelector + ", svg, [class], [id]"))) {
-            if (!visible(control) || control.dataset.pageShotHidden === "true" || isNavigationElement(control)) continue;
+            if (!visible(control) ||
+                control.dataset.pageShotHidden === "true" ||
+                isPageFooterElement(control) ||
+                isNavigationElement(control)) continue;
             const rect = control.getBoundingClientRect();
             const style = getComputedStyle(control);
             const zIndex = Number.parseInt(style.zIndex, 10);
@@ -16241,7 +16293,12 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
         const remainingPopupRemnants = () => {
           const leftovers = [];
           for (const element of Array.from(document.querySelectorAll("body *"))) {
-            if (!visible(element) || element.dataset.pageShotHidden === "true" || isNavigationElement(element) || containsNavigation(element)) continue;
+            if (!visible(element) ||
+                element.dataset.pageShotHidden === "true" ||
+                isPageFooterElement(element) ||
+                containsPageFooter(element) ||
+                isNavigationElement(element) ||
+                containsNavigation(element)) continue;
             const rect = element.getBoundingClientRect();
             const style = getComputedStyle(element);
             const zIndex = Number.parseInt(style.zIndex, 10);
@@ -16322,11 +16379,19 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
         cleanupPopupRemnants();
 
         for (const element of Array.from(document.querySelectorAll("body *"))) {
-          if (!visible(element) || element.dataset.pageShotHidden === "true" || isNavigationElement(element)) continue;
+          if (!visible(element) ||
+              element.dataset.pageShotHidden === "true" ||
+              isPageFooterElement(element) ||
+              containsPageFooter(element) ||
+              isNavigationElement(element)) continue;
           const kind = classifyKnownPopup(textOf(element));
           if (!kind || kind === "cookie") continue;
           const layer = layerRootFor(element);
-          if (!visible(layer) || isNavigationElement(layer) || containsNavigation(layer)) continue;
+          if (!visible(layer) ||
+              isPageFooterElement(layer) ||
+              containsPageFooter(layer) ||
+              isNavigationElement(layer) ||
+              containsNavigation(layer)) continue;
           const state = layerState(layer, kind);
           if (!state.popupLike && !state.roleDialog && !state.ariaModal) continue;
           hideRelatedBackdrop(layer, kind);
@@ -16334,7 +16399,12 @@ async function dismissShokzKnownPopupsBeforeScreenshot(client, options = {}) {
         }
 
         for (const element of Array.from(document.querySelectorAll("body *"))) {
-          if (!visible(element) || element.dataset.pageShotHidden === "true" || isNavigationElement(element) || containsNavigation(element)) continue;
+          if (!visible(element) ||
+              element.dataset.pageShotHidden === "true" ||
+              isPageFooterElement(element) ||
+              containsPageFooter(element) ||
+              isNavigationElement(element) ||
+              containsNavigation(element)) continue;
           const kind = classifyKnownPopup(textOf(element));
           if (!kind) continue;
           const state = layerState(element, kind);

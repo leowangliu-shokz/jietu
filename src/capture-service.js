@@ -213,7 +213,14 @@ export async function replaceHomeOverviewTile(input, config = null) {
   const nextRelatedShots = (snapshot.relatedShots || [])
     .map((shot) => shot === moduleShot ? mergeRelatedShotForReplacement(moduleShot, updatedModuleShot) : shot)
     .sort(compareRelatedShots);
-  const overview = await composeHomeOverviewForRelatedShots(mainOutputPath, nextRelatedShots, captureConfig);
+  const overview = await composePageOverviewForRelatedShots(mainOutputPath, nextRelatedShots, captureConfig, {
+    sectionKey: snapshot.homeOverview?.sectionKey || "home-overview",
+    sectionLabel: snapshot.homeOverview?.sectionLabel || "Home overview",
+    sectionTitle: snapshot.homeOverview?.sectionTitle || "Home overview",
+    stateLabel: snapshot.homeOverview?.stateLabel || "Home overview",
+    label: snapshot.homeOverview?.label || "Home overview",
+    outputSuffix: "-home-overview-map.png"
+  });
   if (!overview.homeOverview) {
     const error = new Error("Home overview composite could not be rebuilt");
     error.statusCode = 500;
@@ -1464,20 +1471,28 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
     relatedShots.push(shot);
   }
 
+  const sortedShots = relatedShots.sort(compareRelatedShots);
+  const overview = await composePageOverviewForRelatedShots(baseOutputPath, sortedShots, captureConfig, {
+    sectionKey: relatedMode === "shokz-products-nav-related" ? "navigation-overview" : "page-overview",
+    sectionLabel: relatedMode === "shokz-products-nav-related" ? "Navigation overview" : "Page overview"
+  });
+  const validationWithOverview = relatedValidationWithOverviewWarnings(validation, overview.warnings);
+
   recordCaptureDiagnostic(diagnosticRun, {
     type: "related-capture",
     ok: true,
     sectionKey: relatedMode === "shokz-products-nav-related" ? "navigation" : "related",
     sectionLabel: relatedMode === "shokz-products-nav-related" ? "Navigation" : "More screenshots",
     captureMode: relatedMode,
-    shotCount: relatedShots.length,
-    warningCount: Array.isArray(validation?.warnings) ? validation.warnings.length : 0,
-    lowConfidenceShotCount: relatedShots.filter((shot) => shot.captureConfidence?.baselineEligible === false).length,
+    shotCount: sortedShots.length,
+    warningCount: Array.isArray(validationWithOverview?.warnings) ? validationWithOverview.warnings.length : 0,
+    lowConfidenceShotCount: sortedShots.filter((shot) => shot.captureConfidence?.baselineEligible === false).length,
     captureValidation: summarizeCaptureValidationEntries(relatedCapture.captures || [])
   });
   return {
-    shots: relatedShots.sort(compareRelatedShots),
-    validation
+    shots: sortedShots,
+    homeOverview: overview.homeOverview,
+    validation: validationWithOverview
   };
 }
 
@@ -1505,7 +1520,14 @@ async function captureShokzHomeRelatedShotsIsolated(normalizedUrl, baseOutputPat
 
   sections.sort(compareRelatedSectionEntries);
   const sortedShots = shots.sort(compareRelatedShots);
-  const overview = await composeHomeOverviewForRelatedShots(baseOutputPath, sortedShots, captureConfig);
+  const overview = await composePageOverviewForRelatedShots(baseOutputPath, sortedShots, captureConfig, {
+    sectionKey: "home-overview",
+    sectionLabel: "Home overview",
+    sectionTitle: "Home overview",
+    stateLabel: "Home overview",
+    label: "Home overview",
+    outputSuffix: "-home-overview-map.png"
+  });
   warnings.push(...overview.warnings);
 
   return {
@@ -1519,65 +1541,157 @@ async function captureShokzHomeRelatedShotsIsolated(normalizedUrl, baseOutputPat
   };
 }
 
-async function composeHomeOverviewForRelatedShots(baseOutputPath, relatedShots, captureConfig) {
-  const compositeShots = relatedShots.filter((shot) => shot.kind === "collection-tab-composite" && shot.composite);
-  if (!compositeShots.length) {
+async function composePageOverviewForRelatedShots(baseOutputPath, relatedShots, captureConfig, options = {}) {
+  const preparedShots = relatedShots
+    .filter((shot) => shot?.file)
+    .map((shot) => ({
+      ...shot,
+      outputPath: archiveAbsolutePath(shot.file)
+    }));
+  if (!preparedShots.length) {
     return { homeOverview: null, warnings: [] };
   }
 
-  const outputPath = baseOutputPath.replace(/\.png$/i, "-home-overview-map.png");
+  const sectionKey = options.sectionKey || "page-overview";
+  const sectionLabel = options.sectionLabel || "Page overview";
+  const sectionTitle = options.sectionTitle || sectionLabel;
+  const stateLabel = options.stateLabel || `${sectionLabel} composite`;
+  const label = options.label || stateLabel;
+  const compositeShots = preparedShots.filter((shot) => shot.kind === "collection-tab-composite" && shot.composite);
+
   try {
-    const overview = await composeShokzHomeOverviewCompositeCapture({
-      mainOutputPath: baseOutputPath,
-      outputPath,
-      viewport: captureConfig.viewport || {},
-      relatedShots: compositeShots.map((shot) => ({
-        ...shot,
-        outputPath: path.join(archiveDir, shot.file)
-      }))
-    });
-    const relativePath = archiveRelativePath(overview.outputPath);
-    const stat = await fs.stat(overview.outputPath);
+    const overview = compositeShots.length
+      ? await composeShokzHomeOverviewCompositeCapture({
+          mainOutputPath: baseOutputPath,
+          outputPath: pageOverviewOutputPath(baseOutputPath, options.outputSuffix || "-page-overview-map.png"),
+          viewport: captureConfig.viewport || {},
+          relatedShots: compositeShots
+        })
+      : await composeRawPageOverviewCompositeCapture({
+          mainOutputPath: baseOutputPath,
+          stateCaptures: preparedShots,
+          viewport: captureConfig.viewport || {},
+          sectionKey,
+          sectionLabel,
+          sectionTitle,
+          stateLabel,
+          label
+        });
     return {
-      homeOverview: {
-        label: overview.label,
-        file: relativePath,
-        imageUrl: publicSnapshotUrl(relativePath),
-        bytes: stat.size,
-        width: overview.width,
-        height: overview.height,
-        kind: overview.kind,
-        sectionKey: overview.sectionKey,
-        sectionLabel: overview.sectionLabel,
-        sectionTitle: overview.sectionTitle,
-        stateIndex: overview.stateIndex,
-        stateCount: overview.stateCount,
-        stateLabel: overview.stateLabel,
-        interactionState: overview.interactionState,
-        logicalSignature: overview.logicalSignature,
-        visualSignature: overview.visualSignature,
-        visualHash: overview.visualHash,
-        visualAudit: overview.visualAudit,
-        clip: overview.clip,
-        scrollInfo: overview.scrollInfo,
-        composite: publicRelatedComposite(overview.composite),
-        itemCount: overview.itemCount,
-        visibleItemCount: overview.visibleItemCount,
-        visibleItems: publicRelatedVisibleItems(overview.visibleItems),
-        itemRects: overview.itemRects
-      },
+      homeOverview: await publicPageOverviewForCapture({
+        ...overview,
+        kind: "home-overview-composite",
+        sectionKey,
+        sectionLabel,
+        sectionTitle,
+        stateLabel,
+        label,
+        logicalSignature: `${sectionKey}|all-modules`,
+        composite: overview.composite
+          ? { ...overview.composite, sourceKind: sectionKey }
+          : overview.composite
+      }),
       warnings: []
     };
   } catch (error) {
     return {
       homeOverview: null,
       warnings: [{
-        sectionKey: "home-overview",
-        sectionLabel: "首页总览图",
-        message: `Could not compose home overview screenshot: ${error.message}`
+        sectionKey,
+        sectionLabel,
+        message: `Could not compose page overview screenshot: ${error.message}`
       }]
     };
   }
+}
+
+function pageOverviewOutputPath(baseOutputPath, suffix) {
+  return /\.png$/i.test(baseOutputPath)
+    ? baseOutputPath.replace(/\.png$/i, suffix)
+    : `${baseOutputPath}${suffix}`;
+}
+
+async function composeRawPageOverviewCompositeCapture({
+  mainOutputPath,
+  stateCaptures,
+  viewport,
+  sectionKey,
+  sectionLabel,
+  sectionTitle,
+  stateLabel,
+  label
+}) {
+  const compositeResult = await composeShokzHomeModuleCompositeCaptureFromFiles({
+    mainOutputPath,
+    stateCaptures,
+    definition: {
+      key: sectionKey,
+      sectionLabel,
+      title: sectionTitle
+    },
+    viewport
+  });
+  const [overview] = compositeResult.captures || [];
+  if (!overview) {
+    const warningText = compositeResult.warnings.map((warning) => warning.message).filter(Boolean).join("; ");
+    throw new Error(warningText || "No page overview screenshot was produced.");
+  }
+  return {
+    ...overview,
+    sectionKey,
+    sectionLabel,
+    sectionTitle,
+    stateLabel,
+    label
+  };
+}
+
+async function publicPageOverviewForCapture(overview) {
+  const relativePath = archiveRelativePath(overview.outputPath);
+  const stat = await fs.stat(overview.outputPath);
+  return {
+    label: overview.label,
+    file: relativePath,
+    imageUrl: publicSnapshotUrl(relativePath),
+    bytes: stat.size,
+    width: overview.width,
+    height: overview.height,
+    kind: overview.kind,
+    sectionKey: overview.sectionKey,
+    sectionLabel: overview.sectionLabel,
+    sectionTitle: overview.sectionTitle,
+    stateIndex: overview.stateIndex,
+    stateCount: overview.stateCount,
+    stateLabel: overview.stateLabel,
+    interactionState: overview.interactionState,
+    logicalSignature: overview.logicalSignature,
+    visualSignature: overview.visualSignature,
+    visualHash: overview.visualHash,
+    visualAudit: overview.visualAudit,
+    clip: overview.clip,
+    scrollInfo: overview.scrollInfo,
+    composite: publicRelatedComposite(overview.composite),
+    itemCount: overview.itemCount,
+    visibleItemCount: overview.visibleItemCount,
+    visibleItems: publicRelatedVisibleItems(overview.visibleItems),
+    itemRects: overview.itemRects
+  };
+}
+
+function relatedValidationWithOverviewWarnings(validation, overviewWarnings = []) {
+  const warnings = Array.isArray(overviewWarnings) ? overviewWarnings.filter(Boolean) : [];
+  if (!warnings.length) {
+    return validation;
+  }
+  return {
+    ...(validation || {}),
+    status: "warning",
+    warnings: [
+      ...((validation?.warnings || [])),
+      ...warnings
+    ],
+    sections: validation?.sections || []
+  };
 }
 
 async function captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun) {
@@ -1591,9 +1705,16 @@ async function captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOut
   );
 
   sections.sort(compareRelatedSectionEntries);
+  const sortedShots = shots.sort(compareRelatedShots);
+  const overview = await composePageOverviewForRelatedShots(baseOutputPath, sortedShots, captureConfig, {
+    sectionKey: "collection-overview",
+    sectionLabel: "Collection overview"
+  });
+  warnings.push(...overview.warnings);
 
   return {
-    shots: shots.sort(compareRelatedShots),
+    shots: sortedShots,
+    homeOverview: overview.homeOverview,
     validation: {
       status: warnings.length ? "warning" : "ok",
       warnings,
@@ -1613,9 +1734,16 @@ async function captureShokzComparisonRelatedShotsIsolated(normalizedUrl, baseOut
   );
 
   sections.sort(compareRelatedSectionEntries);
+  const sortedShots = shots.sort(compareRelatedShots);
+  const overview = await composePageOverviewForRelatedShots(baseOutputPath, sortedShots, captureConfig, {
+    sectionKey: "comparison-overview",
+    sectionLabel: "Comparison overview"
+  });
+  warnings.push(...overview.warnings);
 
   return {
-    shots: shots.sort(compareRelatedShots),
+    shots: sortedShots,
+    homeOverview: overview.homeOverview,
     validation: {
       status: warnings.length ? "warning" : "ok",
       warnings,
