@@ -13,6 +13,7 @@ import { appendCaptureRun } from "./capture-runs.js";
 import { loadChanges, rebuildChanges } from "./changes.js";
 import { notifyChangeRecords } from "./change-notifier.js";
 import { findDevicePreset, toPublicDevicePreset } from "./device-presets.js";
+import { boundedConcurrency, runJobQueue } from "./job-queue.js";
 import { archiveDir } from "./paths.js";
 import { appendSeoSnapshots, createSeoSnapshotRecord, rebuildSeoChanges } from "./seo-snapshots.js";
 import {
@@ -358,46 +359,50 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
   const results = new Array(plans.length);
   const concurrency = captureConcurrency(config, options);
   run.concurrency = concurrency;
-  let nextIndex = 0;
   let saveQueue = Promise.resolve();
 
-  async function runWorker() {
-    while (nextIndex < plans.length) {
-      const planIndex = nextIndex;
-      nextIndex += 1;
-      const execution = plans[planIndex];
-      const item = run.items[planIndex];
-      item.status = "running";
-      item.startedAt = new Date().toISOString();
-      const startedAt = Date.now();
-      const result = await runCaptureExecution(execution, config, {
+  async function runPlan(execution, { index: planIndex }) {
+    const item = run.items[planIndex];
+    item.status = "running";
+    item.startedAt = new Date().toISOString();
+    const startedAt = Date.now();
+    let result;
+    try {
+      result = await runCaptureExecution(execution, config, {
         ...options,
         captureBatchIndex: planIndex,
         deferSnapshotSave: true,
         deferChangeRefresh: true
       });
-      if (result?.ok) {
-        try {
-          await enqueuePreparedCaptureSave(result);
-        } catch (error) {
-          result.ok = false;
-          result.error = `Capture completed but failed to save snapshot index: ${error.message}`;
-        }
-      }
-      item.finishedAt = new Date().toISOString();
-      item.durationMs = Date.now() - startedAt;
-      item.ok = Boolean(result?.ok);
-      item.status = result?.ok ? "succeeded" : "failed";
-      item.error = result?.ok ? null : result?.error || "Capture failed.";
-      item.snapshotIds = captureResultSnapshots(result).map((snapshot) => snapshot.id).filter(Boolean);
-      results[planIndex] = {
-        ...result,
-        runId: run.id,
-        runItemId: item.id,
-        runIndex: planIndex + 1,
-        runTotal: plans.length
+    } catch (error) {
+      result = {
+        ok: false,
+        error: error?.message || String(error)
       };
     }
+    result = failResultWithRetriableRelatedWarnings(result);
+    if (result?.ok) {
+      try {
+        await enqueuePreparedCaptureSave(result);
+      } catch (error) {
+        result.ok = false;
+        result.error = `Capture completed but failed to save snapshot index: ${error.message}`;
+      }
+    }
+    item.finishedAt = new Date().toISOString();
+    item.durationMs = Date.now() - startedAt;
+    item.ok = Boolean(result?.ok);
+    item.status = result?.ok ? "succeeded" : "failed";
+    item.error = result?.ok ? null : result?.error || "Capture failed.";
+    item.snapshotIds = captureResultSnapshots(result).map((snapshot) => snapshot.id).filter(Boolean);
+    results[planIndex] = {
+      ...result,
+      runId: run.id,
+      runItemId: item.id,
+      runIndex: planIndex + 1,
+      runTotal: plans.length
+    };
+    return results[planIndex];
   }
 
   function enqueuePreparedCaptureSave(result) {
@@ -406,7 +411,19 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
     return saveTask;
   }
 
-  await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(1, plans.length)) }, runWorker));
+  const queue = await runJobQueue(plans, runPlan, {
+    concurrency,
+    maxConcurrency: 8,
+    throwOnError: false
+  });
+  await retryFailedCapturePlans({
+    plans,
+    config,
+    options,
+    run,
+    results,
+    savePreparedCaptureResult: enqueuePreparedCaptureSave
+  });
 
   const changeRefresh = options.deferChangeRefresh
     ? { ok: true, deferred: true }
@@ -419,6 +436,12 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
   run.durationMs = finishedAt.getTime() - new Date(run.startedAt).getTime();
   run.successCount = results.filter((result) => result?.ok).length;
   run.failureCount = results.filter((result) => result && !result.ok).length;
+  run.jobQueue = {
+    totalCount: queue.totalCount,
+    concurrency: queue.concurrency,
+    durationMs: queue.durationMs,
+    maxActiveCount: queue.maxActiveCount
+  };
   run.status = run.failureCount > 0
     ? run.successCount > 0 ? "partial" : "failed"
     : "succeeded";
@@ -494,11 +517,141 @@ function captureConcurrency(config, options = {}) {
     config.captureConcurrency ??
     process.env.CAPTURE_CONCURRENCY ??
     1;
-  const number = Number(value);
-  if (!Number.isFinite(number)) {
-    return 1;
+  return boundedConcurrency(value, { defaultValue: 1, max: 8 });
+}
+
+function relatedCaptureConcurrency(config = {}, options = {}) {
+  const value = options.relatedCaptureConcurrency ??
+    config.relatedCaptureConcurrency ??
+    process.env.RELATED_CAPTURE_CONCURRENCY ??
+    1;
+  return boundedConcurrency(value, { defaultValue: 1, max: 4 });
+}
+
+function captureRetryAttempts(config = {}, options = {}) {
+  const value = options.captureRetryAttempts ??
+    config.captureRetryAttempts ??
+    process.env.CAPTURE_RETRY_ATTEMPTS ??
+    2;
+  return boundedConcurrency(value, { defaultValue: 2, max: 3 });
+}
+
+async function retryFailedCapturePlans({
+  plans,
+  config,
+  options,
+  run,
+  results,
+  savePreparedCaptureResult
+}) {
+  const maxAttempts = captureRetryAttempts(config, options);
+  if (maxAttempts <= 1) {
+    return;
   }
-  return Math.min(8, Math.max(1, Math.trunc(number)));
+
+  for (let attempt = 2; attempt <= maxAttempts; attempt += 1) {
+    const retryIndexes = results
+      .map((result, index) => shouldRetryCaptureResult(result) ? index : -1)
+      .filter((index) => index >= 0);
+    if (!retryIndexes.length) {
+      return;
+    }
+
+    for (const planIndex of retryIndexes) {
+      const execution = plans[planIndex];
+      const item = run.items[planIndex];
+      item.status = "retrying";
+      item.retryCount = Number(item.retryCount || 0) + 1;
+      const startedAt = Date.now();
+      let result;
+      try {
+        result = await runCaptureExecution(execution, retryCaptureConfig(config, attempt), {
+          ...options,
+          captureBatchIndex: planIndex,
+          captureRetryAttempt: attempt,
+          deferSnapshotSave: true,
+          deferChangeRefresh: true
+        });
+      } catch (error) {
+        result = {
+          ok: false,
+          error: error?.message || String(error)
+        };
+      }
+      result = failResultWithRetriableRelatedWarnings(result);
+      if (result?.ok) {
+        try {
+          await savePreparedCaptureResult(result);
+        } catch (error) {
+          result.ok = false;
+          result.error = `Capture completed but failed to save snapshot index: ${error.message}`;
+        }
+      }
+      const retryDurationMs = Date.now() - startedAt;
+      item.finishedAt = new Date().toISOString();
+      item.durationMs = Number(item.durationMs || 0) + retryDurationMs;
+      item.ok = Boolean(result?.ok);
+      item.status = result?.ok ? "succeeded" : "failed";
+      item.error = result?.ok ? null : result?.error || "Capture failed.";
+      item.snapshotIds = captureResultSnapshots(result).map((snapshot) => snapshot.id).filter(Boolean);
+      results[planIndex] = {
+        ...result,
+        runId: run.id,
+        runItemId: item.id,
+        runIndex: planIndex + 1,
+        runTotal: plans.length,
+        retryAttempt: attempt
+      };
+    }
+  }
+}
+
+function shouldRetryCaptureResult(result) {
+  if (captureResultRelatedWarnings(result).length) {
+    return true;
+  }
+  const message = String(result?.error || "");
+  return /failed blank-image validation|near-white blank band|related warnings/i.test(message);
+}
+
+function retryCaptureConfig(config, attempt) {
+  return attempt > 1
+    ? { ...config, relatedCaptureConcurrency: 1 }
+    : config;
+}
+
+function failResultWithRetriableRelatedWarnings(result) {
+  if (!result?.ok) {
+    return result;
+  }
+  const warnings = captureResultRelatedWarnings(result);
+  if (!warnings.length) {
+    return result;
+  }
+  return {
+    ...result,
+    ok: false,
+    error: `Capture completed with related warnings: ${relatedWarningSummary(warnings)}`
+  };
+}
+
+function captureResultRelatedWarnings(result) {
+  return captureResultSnapshots(result)
+    .flatMap((snapshot) => Array.isArray(snapshot?.relatedValidation?.warnings)
+      ? snapshot.relatedValidation.warnings
+      : [])
+    .filter(Boolean);
+}
+
+function relatedWarningSummary(warnings) {
+  return warnings
+    .slice(0, 3)
+    .map((warning) => [
+      warning.sectionLabel || warning.sectionKey || "related",
+      warning.stateLabel,
+      warning.message
+    ].filter(Boolean).join(" / "))
+    .join("; ");
 }
 
 function captureResultSnapshots(result) {
@@ -1342,16 +1495,13 @@ async function captureShokzHomeRelatedShotsIsolated(normalizedUrl, baseOutputPat
       sectionCaptureKey: definition.key
     }))
   ], captureConfig);
-  const shots = [];
-  const warnings = [];
-  const sections = [];
-
-  for (const descriptor of descriptors) {
-    const result = await captureIsolatedRelatedSection(normalizedUrl, baseOutputPath, captureConfig, descriptor, diagnosticRun);
-    shots.push(...result.shots);
-    warnings.push(...(result.validation?.warnings || []));
-    sections.push(...(result.validation?.sections || []));
-  }
+  const { shots, warnings, sections } = await captureIsolatedRelatedSections(
+    normalizedUrl,
+    baseOutputPath,
+    captureConfig,
+    descriptors,
+    diagnosticRun
+  );
 
   sections.sort(compareRelatedSectionEntries);
   const sortedShots = shots.sort(compareRelatedShots);
@@ -1432,16 +1582,13 @@ async function composeHomeOverviewForRelatedShots(baseOutputPath, relatedShots, 
 
 async function captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun) {
   const descriptors = collectionRelatedDescriptorsForCaptureConfig(captureConfig);
-  const shots = [];
-  const warnings = [];
-  const sections = [];
-
-  for (const descriptor of descriptors) {
-    const result = await captureIsolatedRelatedSection(normalizedUrl, baseOutputPath, captureConfig, descriptor, diagnosticRun);
-    shots.push(...result.shots);
-    warnings.push(...(result.validation?.warnings || []));
-    sections.push(...(result.validation?.sections || []));
-  }
+  const { shots, warnings, sections } = await captureIsolatedRelatedSections(
+    normalizedUrl,
+    baseOutputPath,
+    captureConfig,
+    descriptors,
+    diagnosticRun
+  );
 
   sections.sort(compareRelatedSectionEntries);
 
@@ -1457,16 +1604,13 @@ async function captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOut
 
 async function captureShokzComparisonRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun) {
   const descriptors = comparisonRelatedDescriptorsForCaptureConfig(captureConfig);
-  const shots = [];
-  const warnings = [];
-  const sections = [];
-
-  for (const descriptor of descriptors) {
-    const result = await captureIsolatedRelatedSection(normalizedUrl, baseOutputPath, captureConfig, descriptor, diagnosticRun);
-    shots.push(...result.shots);
-    warnings.push(...(result.validation?.warnings || []));
-    sections.push(...(result.validation?.sections || []));
-  }
+  const { shots, warnings, sections } = await captureIsolatedRelatedSections(
+    normalizedUrl,
+    baseOutputPath,
+    captureConfig,
+    descriptors,
+    diagnosticRun
+  );
 
   sections.sort(compareRelatedSectionEntries);
 
@@ -1477,6 +1621,49 @@ async function captureShokzComparisonRelatedShotsIsolated(normalizedUrl, baseOut
       warnings,
       sections
     }
+  };
+}
+
+async function captureIsolatedRelatedSections(normalizedUrl, baseOutputPath, captureConfig, descriptors, diagnosticRun) {
+  const shots = [];
+  const warnings = [];
+  const sections = [];
+  const queue = await runJobQueue(descriptors, (descriptor) =>
+    captureIsolatedRelatedSection(normalizedUrl, baseOutputPath, captureConfig, descriptor, diagnosticRun), {
+      concurrency: relatedCaptureConcurrency(captureConfig),
+      maxConcurrency: 4,
+      throwOnError: false
+    });
+
+  for (const entry of queue.results) {
+    const result = entry?.value;
+    if (!entry?.ok || !result) {
+      const descriptor = entry?.job || {};
+      warnings.push({
+        sectionKey: descriptor.sectionKey || "related",
+        sectionLabel: descriptor.sectionLabel || "More screenshots",
+        message: entry?.errorMessage || "Related capture failed."
+      });
+      sections.push({
+        sectionKey: descriptor.sectionKey || "related",
+        sectionLabel: descriptor.sectionLabel || "More screenshots",
+        expectedCount: 0,
+        capturedCount: 0,
+        savedCount: 0,
+        status: "warning"
+      });
+      continue;
+    }
+    shots.push(...result.shots);
+    warnings.push(...(result.validation?.warnings || []));
+    sections.push(...(result.validation?.sections || []));
+  }
+
+  return {
+    shots,
+    warnings,
+    sections,
+    queue
   };
 }
 
@@ -1870,6 +2057,9 @@ export const __testOnly = {
   replacementFilterForRelatedShot,
   relatedDescriptorsForCaptureConfig,
   relatedCaptureModeForTarget,
+  relatedCaptureConcurrency,
+  captureRetryAttempts,
+  shouldRetryCaptureResult,
   resolveAdHocCaptureExecution,
   createCaptureRunRecord,
   captureConcurrency,

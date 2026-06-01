@@ -9,6 +9,9 @@ const {
   relatedDescriptorsForCaptureConfig,
   resolveAdHocCaptureExecution,
   captureConcurrency,
+  relatedCaptureConcurrency,
+  captureRetryAttempts,
+  shouldRetryCaptureResult,
   createCaptureRunRecord,
   runnerNameForPlatform
 } = __testOnly;
@@ -213,4 +216,31 @@ test("capture concurrency is bounded and defaults to the conservative serial run
   assert.equal(captureConcurrency({ captureConcurrency: 3 }, {}), 3);
   assert.equal(captureConcurrency({ captureConcurrency: 20 }, {}), 8);
   assert.equal(captureConcurrency({ captureConcurrency: 3 }, { maxConcurrency: 2 }), 2);
+});
+
+test("related capture concurrency uses a tighter browser budget", () => {
+  assert.equal(relatedCaptureConcurrency({}, {}), 1);
+  assert.equal(relatedCaptureConcurrency({ relatedCaptureConcurrency: 2 }, {}), 2);
+  assert.equal(relatedCaptureConcurrency({ relatedCaptureConcurrency: 20 }, {}), 4);
+});
+
+test("blank screenshot failures are retried with a bounded attempt count", () => {
+  assert.equal(captureRetryAttempts({}, {}), 2);
+  assert.equal(captureRetryAttempts({ captureRetryAttempts: 9 }, {}), 3);
+  assert.equal(shouldRetryCaptureResult({
+    ok: false,
+    error: "full-page segment 2/6 failed blank-image validation after 3 attempts."
+  }), true);
+  assert.equal(shouldRetryCaptureResult({
+    ok: true,
+    snapshot: {
+      relatedValidation: {
+        warnings: [{ sectionKey: "navigation", message: "missing planned screenshots" }]
+      }
+    }
+  }), true);
+  assert.equal(shouldRetryCaptureResult({
+    ok: false,
+    error: "Capture completed but failed to save snapshot index: disk full"
+  }), false);
 });

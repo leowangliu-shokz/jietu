@@ -41,8 +41,21 @@ function normalizeCaptureRun(run = {}) {
     failureCount: numberOrDefault(run.failureCount, items.filter((item) => item?.ok === false).length),
     skippedCount: numberOrDefault(run.skippedCount, 0),
     concurrency: numberOrDefault(run.concurrency, 1),
+    jobQueue: normalizeCaptureRunJobQueue(run.jobQueue),
     changeRefresh: run.changeRefresh || null,
     items: items.map(normalizeCaptureRunItem)
+  };
+}
+
+function normalizeCaptureRunJobQueue(jobQueue = null) {
+  if (!jobQueue || typeof jobQueue !== "object") {
+    return null;
+  }
+  return {
+    totalCount: numberOrDefault(jobQueue.totalCount, 0),
+    concurrency: numberOrDefault(jobQueue.concurrency, 1),
+    durationMs: numberOrNull(jobQueue.durationMs),
+    maxActiveCount: numberOrNull(jobQueue.maxActiveCount)
   };
 }
 
@@ -61,6 +74,7 @@ function normalizeCaptureRunItem(item = {}) {
     startedAt: stringOrNull(item.startedAt),
     finishedAt: stringOrNull(item.finishedAt),
     durationMs: numberOrNull(item.durationMs),
+    retryCount: numberOrDefault(item.retryCount, 0),
     snapshotIds: Array.isArray(item.snapshotIds) ? item.snapshotIds.filter(Boolean) : [],
     error: stringOrNull(item.error)
   };

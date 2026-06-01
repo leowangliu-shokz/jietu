@@ -30,6 +30,12 @@ test("appendCaptureRun stores newest runs first and preserves item status", asyn
     status: "partial",
     startedAt: "2026-05-20T09:00:00.000Z",
     finishedAt: "2026-05-20T09:20:00.000Z",
+    jobQueue: {
+      totalCount: 1,
+      concurrency: 1,
+      durationMs: 1200000,
+      maxActiveCount: 1
+    },
     items: [{
       id: "run-2-item-1",
       ok: false,
@@ -37,6 +43,7 @@ test("appendCaptureRun stores newest runs first and preserves item status", asyn
       targetId: "home",
       platform: "mobile",
       capturePlanId: "home-mobile",
+      retryCount: 1,
       error: "Timed out"
     }]
   }, { filePath });
@@ -44,6 +51,8 @@ test("appendCaptureRun stores newest runs first and preserves item status", asyn
   const runs = await loadCaptureRuns(filePath);
   assert.deepEqual(runs.map((run) => run.id), ["run-2", "run-1"]);
   assert.equal(runs[0].failureCount, 1);
+  assert.equal(runs[0].jobQueue.durationMs, 1200000);
+  assert.equal(runs[0].items[0].retryCount, 1);
   assert.equal(runs[0].items[0].error, "Timed out");
   assert.deepEqual(runs[1].items[0].snapshotIds, ["snap-1"]);
 });

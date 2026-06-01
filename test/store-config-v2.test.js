@@ -13,7 +13,9 @@ test("normalizeConfig migrates legacy config into v2 targets, device profiles, a
     ],
     devicePresetId: "pc-hd",
     intervalMinutes: 30,
-    waitAfterLoadMs: 1800
+    waitAfterLoadMs: 1800,
+    relatedCaptureConcurrency: 3,
+    captureRetryAttempts: 3
   });
 
   assert.equal(config.version, 2);
@@ -23,6 +25,8 @@ test("normalizeConfig migrates legacy config into v2 targets, device profiles, a
   assert.equal(config.capturePlans.length, config.targets.length * config.deviceProfiles.length);
   assert.equal(config.intervalMinutes, 30);
   assert.equal(config.waitAfterLoadMs, 1800);
+  assert.equal(config.relatedCaptureConcurrency, 3);
+  assert.equal(config.captureRetryAttempts, 3);
 });
 
 test("normalizeConfig keeps explicit v2 plans and drops invalid duplicates", () => {

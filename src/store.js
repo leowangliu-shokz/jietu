@@ -35,7 +35,9 @@ const defaultConfigScalars = {
   scrollStepMs: 350,
   hideFixedElementsAfterFirstSegment: true,
   maxFullPageHeight: 16000,
-  captureConcurrency: 1
+  captureConcurrency: 1,
+  relatedCaptureConcurrency: 1,
+  captureRetryAttempts: 2
 };
 
 const defaultConfig = createDefaultConfig();
@@ -147,7 +149,19 @@ export function normalizeConfig(input = {}) {
       input.hideFixedElementsAfterFirstSegment ?? defaultConfigScalars.hideFixedElementsAfterFirstSegment
     ),
     maxFullPageHeight: clampNumber(input.maxFullPageHeight, 1000, 60000, defaultConfigScalars.maxFullPageHeight),
-    captureConcurrency: clampNumber(input.captureConcurrency, 1, 8, defaultConfigScalars.captureConcurrency)
+    captureConcurrency: clampNumber(input.captureConcurrency, 1, 8, defaultConfigScalars.captureConcurrency),
+    relatedCaptureConcurrency: clampNumber(
+      input.relatedCaptureConcurrency,
+      1,
+      4,
+      defaultConfigScalars.relatedCaptureConcurrency
+    ),
+    captureRetryAttempts: clampNumber(
+      input.captureRetryAttempts,
+      1,
+      3,
+      defaultConfigScalars.captureRetryAttempts
+    )
   };
 }
 
