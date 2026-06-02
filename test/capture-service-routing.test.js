@@ -77,7 +77,7 @@ test("captureConfigForExecution carries targeted related-state filters", () => {
   });
 });
 
-test("relatedCaptureMode routes related captures without changing the main capture mode", () => {
+test("Shokz page relatedCaptureMode also selects the main capture mode", () => {
   const config = normalizeConfig({
     targets: [{ id: "collection", url: "https://example.com/collection", label: "Collection" }],
     deviceProfiles: [{ id: "pc-main", platform: "pc", devicePresetId: "pc-hd", enabled: true }],
@@ -93,7 +93,7 @@ test("relatedCaptureMode routes related captures without changing the main captu
 
   const captureConfig = captureConfigForExecution(config, execution);
 
-  assert.equal(captureConfig.captureMode, undefined);
+  assert.equal(captureConfig.captureMode, "shokz-collection-page");
   assert.equal(captureConfig.relatedCaptureMode, "shokz-collection-page");
   assert.equal(
     relatedCaptureModeForTarget(execution.target, captureConfig),

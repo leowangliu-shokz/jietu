@@ -489,7 +489,7 @@ async function driveCapture(client, url, outputPath, options) {
   let captureValidation = null;
   if (options.fullPage) {
     const guardShokzSearchOverlay = shouldGuardShokzSearchOverlay(url, viewport, options);
-    if (shouldUseDirectFullPageClipCapture(options)) {
+    if (shouldUseDirectFullPageClipCapture(options) && !shouldUseStitchedLandingFullPageCapture(options, viewport)) {
       await freezePageMotion(client);
       try {
         const clipCapture = shouldUseDedicatedViewMoreExpansion(options)
@@ -521,6 +521,9 @@ async function driveCapture(client, url, outputPath, options) {
                 await ensureShokzSearchOverlayClosed(client, "before full-page clip screenshot capture");
               }
               await scrollTo(client, 0);
+              if (options.captureMode === "shokz-landing-page") {
+                await stabilizeShokzLandingAnchorNavigationForScreenshot(client);
+              }
               await settlePositionedViewport(client, {
                 delayMs: attempt > 1 ? 280 : 180,
                 frames: 2
@@ -567,13 +570,17 @@ async function driveCapture(client, url, outputPath, options) {
             ? "before mobile stitched segment screenshot capture"
             : "before stitched segment screenshot capture"
         });
+        if (options.captureMode === "shokz-landing-page") {
+          await stabilizeShokzLandingAnchorNavigationForScreenshot(client);
+        }
       };
       await freezePageMotion(client);
       try {
+        const stitchedViewportHeight = stitchedFullPageSegmentHeight(options, viewport, clipHeight);
         const stitchedCapture = await captureStitchedScreenshot(client, outputPath, {
           width: clipWidth,
           height: clipHeight,
-          viewportHeight: viewport.height,
+          viewportHeight: stitchedViewportHeight,
           stepDelay: options.scrollStepMs ?? 350,
           dismissObstructionsBeforeSegment: !cleanShokzKnownPopups,
           hideFixedElementsAfterFirstSegment: options.hideFixedElementsAfterFirstSegment !== false,
@@ -844,6 +851,19 @@ function shouldUseDirectFullPageClipCapture(options = {}) {
     captureMode === "shokz-landing-page";
 }
 
+function shouldUseStitchedLandingFullPageCapture(options = {}, viewport = {}) {
+  return String(options.captureMode || "").trim() === "shokz-landing-page" &&
+    !isMobileCaptureContext({ ...options, viewport });
+}
+
+function stitchedFullPageSegmentHeight(options = {}, viewport = {}, clipHeight = 0) {
+  const baseHeight = Math.max(320, Number(viewport.height || 0) || 0);
+  if (shouldUseStitchedLandingFullPageCapture(options, viewport)) {
+    return Math.min(Math.max(baseHeight, 1800), Math.max(baseHeight, Number(clipHeight || baseHeight)));
+  }
+  return baseHeight;
+}
+
 function shouldUseDedicatedViewMoreExpansion(options = {}) {
   return String(options.captureMode || "").trim() === "shokz-comparison-page";
 }
@@ -1018,7 +1038,8 @@ const shokzOpenEarLandingRelatedSectionDefinitions = [
     title: "What are Open-Ear Headphones",
     idPart: "section-ear-headphones-introduce",
     occurrence: 0,
-    mode: "carousel"
+    mode: "carousel",
+    relatedOverview: true
   },
   {
     key: "landing-product-selector",
@@ -1093,7 +1114,8 @@ const shokzSportsHeadphonesLandingRelatedSectionDefinitions = [
     title: "Engineered for Movement",
     idPart: "section-sport-swiper",
     occurrence: 0,
-    mode: "carousel"
+    mode: "carousel",
+    relatedOverview: true
   },
   {
     key: "landing-sports-product-nav",
@@ -1133,7 +1155,8 @@ const shokzSportsHeadphonesLandingRelatedSectionDefinitions = [
     title: "Trusted by Athletes",
     idPart: "section_sports_headphones_athletes",
     occurrence: 0,
-    mode: "carousel"
+    mode: "carousel",
+    relatedOverview: true
   },
   {
     key: "landing-sports-footer",
@@ -1153,6 +1176,113 @@ function shokzLandingRelatedSectionDefinitionsForPath(pathname = "") {
   return shokzOpenEarLandingRelatedSectionDefinitions;
 }
 
+async function stabilizeShokzLandingAnchorNavigationForScreenshot(client) {
+  await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const pathname = String(location.pathname || "").toLowerCase();
+      if (!pathname.includes("/pages/explore-open-ear-headphones") &&
+          !pathname.includes("/pages/explore-sports-headphones")) {
+        return { ok: true, changed: 0 };
+      }
+      const labels = pathname.includes("/pages/explore-sports-headphones")
+        ? ["Running & Cycling", "Workouts & Fitness", "Swimming", "Explore the Lineup"]
+        : ["Traditional Limitations", "Open-Ear Benefits", "Products", "Endorsement", "Why Shokz?"];
+      const clean = (value) => String(value || "").replace(/[\\u00a0\\s]+/g, " ").trim();
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 2 &&
+          rect.height > 2 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const labelHits = (element) => {
+        const text = clean(element.innerText || element.textContent);
+        return labels.filter((label) => text.includes(label)).length;
+      };
+      const candidates = Array.from(document.querySelectorAll("body *"))
+        .filter(visible)
+        .map((element) => {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          const hits = labelHits(element);
+          const text = clean(element.innerText || element.textContent);
+          return {
+            element,
+            rect,
+            hits,
+            text,
+            area: rect.width * rect.height,
+            documentY: Math.round(window.scrollY + rect.top),
+            position: style.position,
+            className: String(element.className?.baseVal || element.className || ""),
+            id: String(element.id || "")
+          };
+        })
+        .filter((item) =>
+          item.hits >= 3 &&
+          item.rect.width >= Math.max(320, window.innerWidth * 0.42) &&
+          item.rect.height >= 24 &&
+          item.rect.height <= 220 &&
+          item.area <= Math.max(50000, window.innerWidth * 220)
+        )
+        .sort((a, b) =>
+          a.documentY - b.documentY ||
+          a.area - b.area ||
+          b.hits - a.hits
+        );
+      const keep = candidates[0] || null;
+      const stabilizeElement = (element) => {
+        element.dataset.pageShotLandingAnchorStabilized = "true";
+        element.style.setProperty("position", "static", "important");
+        element.style.setProperty("top", "auto", "important");
+        element.style.setProperty("bottom", "auto", "important");
+        element.style.setProperty("left", "auto", "important");
+        element.style.setProperty("right", "auto", "important");
+        element.style.setProperty("transform", "none", "important");
+        element.style.setProperty("z-index", "auto", "important");
+      };
+      const stabilizeTree = (root) => {
+        for (const element of [root, ...root.querySelectorAll("*")]) {
+          const style = getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          const positioned = ["fixed", "sticky"].includes(style.position) ||
+            /sticky|fixed|anchor|nav|tabs?/i.test(String(element.id || "") + " " + String(element.className?.baseVal || element.className || ""));
+          if (!positioned && labelHits(element) < 2) {
+            continue;
+          }
+          if (rect.width < 12 || rect.height < 8) {
+            continue;
+          }
+          stabilizeElement(element);
+        }
+      };
+      let changed = 0;
+      for (const [index, item] of candidates.entries()) {
+        const element = item.element;
+        const isKeptTree = keep && (element === keep.element || keep.element.contains(element) || element.contains(keep.element));
+        if (!isKeptTree && index > 0) {
+          element.dataset.pageShotLandingAnchorHidden = "true";
+          element.style.setProperty("display", "none", "important");
+          changed += 1;
+          continue;
+        }
+        stabilizeTree(element);
+        changed += 1;
+      }
+      return {
+        ok: true,
+        changed,
+        candidateCount: candidates.length,
+        selectedCount: keep ? 1 : 0
+      };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
+}
+
 async function captureShokzLandingRelated(client, outputPath, captureContext) {
   const viewport = viewportForCaptureContext(captureContext);
   await materializeFullPageContent(client);
@@ -1160,6 +1290,7 @@ async function captureShokzLandingRelated(client, outputPath, captureContext) {
   await sleep(700);
   await primeLazyImages(client);
   await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 3, hideOnly: true });
+  await ensureShokzSearchOverlayClosed(client, "before Shokz landing related plan capture");
 
   const plan = await readShokzLandingRelatedPlan(client);
   if (!plan.ok) {
@@ -1250,8 +1381,10 @@ async function captureShokzLandingRelated(client, outputPath, captureContext) {
           shokzKnownPopups: true,
           stage: `before Shokz landing ${state.sectionLabel} screenshot capture`
         });
+        await stabilizeShokzLandingAnchorNavigationForScreenshot(client);
         await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2, hideOnly: true });
         await dismissObstructions(client, { rounds: 2 });
+        await ensureShokzSearchOverlayClosed(client, `before Shokz landing ${state.sectionLabel} screenshot capture`);
         await settlePositionedViewport(client, {
           delayMs: attempt > 1 ? 280 : 180,
           frames: 2
@@ -1570,14 +1703,19 @@ async function readShokzLandingRelatedPlan(client) {
             logicalSignature: definition.key + ":default:" + clean(root.innerText || root.textContent, 360),
             coverageKey: definition.key + ":default"
           }];
-        states.push(...sectionStates);
-        sections.push({
-          sectionKey: definition.key,
-          sectionLabel: definition.sectionLabel,
-          expectedCount: sectionStates.length,
-          title,
-          mode: definition.mode
-        });
+        const exposedSectionStates = definition.relatedOverview === true && sectionStates.length > 1
+          ? sectionStates
+          : [];
+        states.push(...exposedSectionStates);
+        if (exposedSectionStates.length) {
+          sections.push({
+            sectionKey: definition.key,
+            sectionLabel: definition.sectionLabel,
+            expectedCount: exposedSectionStates.length,
+            title,
+            mode: definition.mode
+          });
+        }
       }
 
       states.forEach((state, index) => {
@@ -1632,6 +1770,15 @@ async function activateShokzLandingRelatedState(client, state) {
       let activated = state.mode !== "carousel" || !state.slideIndex;
       if (state.mode === "carousel" && state.slideIndex) {
         const targetRealIndex = Number.isFinite(Number(state.realIndex)) ? Number(state.realIndex) : Number(state.slideIndex) - 1;
+        const tabControls = Array.from(root.querySelectorAll("[role='button'],button,a,[role='tab']"))
+          .filter(visible)
+          .filter((element) => clean(element.innerText || element.textContent || element.getAttribute("aria-label") || ""));
+        const tabControl = tabControls[Number(state.slideIndex) - 1] || null;
+        if (tabControl) {
+          tabControl.scrollIntoView({ block: "nearest", inline: "center" });
+          tabControl.click();
+          activated = true;
+        }
         const swiperNodes = [root, ...root.querySelectorAll(".swiper,.swiper-container,[class*='swiper']")];
         for (const node of swiperNodes) {
           const swiper = node?.swiper;
@@ -18703,7 +18850,9 @@ export const __testOnly = {
   shouldSuppressRelatedQualityWarning,
   shokzLandingRelatedSectionDefinitionsForPath,
   shouldUseDedicatedViewMoreExpansion,
-  shouldUseDirectFullPageClipCapture
+  shouldUseDirectFullPageClipCapture,
+  shouldUseStitchedLandingFullPageCapture,
+  stitchedFullPageSegmentHeight
 };
 
 async function captureFullPageClipScreenshot(client, outputPath, options) {
@@ -20178,8 +20327,34 @@ async function getPageState(client) {
 }
 
 async function scrollTo(client, y) {
+  const targetY = Math.max(0, Math.floor(y));
   await client.send("Runtime.evaluate", {
-    expression: `window.scrollTo(0, ${Math.max(0, Math.floor(y))}); window.dispatchEvent(new Event("scroll"));`
+    expression: `(() => new Promise((resolve) => {
+      const targetY = ${targetY};
+      const root = document.documentElement;
+      const body = document.body;
+      const forceScroll = () => {
+        root?.style.setProperty("scroll-behavior", "auto", "important");
+        body?.style.setProperty("scroll-behavior", "auto", "important");
+        window.scrollTo({ left: 0, top: targetY, behavior: "auto" });
+        if (root) root.scrollTop = targetY;
+        if (body) body.scrollTop = targetY;
+        window.dispatchEvent(new Event("scroll"));
+      };
+      let frames = 0;
+      const tick = () => {
+        forceScroll();
+        frames += 1;
+        if (Math.abs(window.scrollY - targetY) <= 2 || frames >= 6) {
+          resolve({ y: window.scrollY, targetY });
+          return;
+        }
+        requestAnimationFrame(tick);
+      };
+      tick();
+    }))()`,
+    awaitPromise: true,
+    returnByValue: true
   });
 }
 

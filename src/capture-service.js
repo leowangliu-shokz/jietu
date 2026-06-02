@@ -1005,11 +1005,13 @@ function captureConfigForExecution(config, execution, options = {}) {
   if (Object.hasOwn(execution, "fullPage")) {
     targetConfig.fullPage = execution.fullPage;
   }
-  const captureMode = execution.captureMode || execution.target.captureMode || null;
+  const relatedCaptureMode = execution.relatedCaptureMode || execution.target.relatedCaptureMode || null;
+  const captureMode = execution.captureMode ||
+    execution.target.captureMode ||
+    mainCaptureModeForRelatedCaptureMode(relatedCaptureMode);
   if (captureMode) {
     targetConfig.captureMode = captureMode;
   }
-  const relatedCaptureMode = execution.relatedCaptureMode || execution.target.relatedCaptureMode || null;
   if (relatedCaptureMode) {
     targetConfig.relatedCaptureMode = relatedCaptureMode;
   }
@@ -1026,6 +1028,17 @@ function captureConfigForExecution(config, execution, options = {}) {
     targetConfig.sectionKey = sectionKey;
   }
   return targetConfig;
+}
+
+function mainCaptureModeForRelatedCaptureMode(mode) {
+  const normalized = stringOrNull(mode);
+  return [
+    "shokz-collection-page",
+    "shokz-comparison-page",
+    "shokz-landing-page"
+  ].includes(normalized)
+    ? normalized
+    : null;
 }
 
 function createSeoSnapshotsForCapture(capture, snapshots) {

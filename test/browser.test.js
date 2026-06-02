@@ -21,7 +21,9 @@ const {
   shouldSuppressRelatedQualityWarning,
   shokzLandingRelatedSectionDefinitionsForPath,
   shouldUseDedicatedViewMoreExpansion,
-  shouldUseDirectFullPageClipCapture
+  shouldUseDirectFullPageClipCapture,
+  shouldUseStitchedLandingFullPageCapture,
+  stitchedFullPageSegmentHeight
 } = __testOnly;
 
 test("flags flat images as low-detail quality warnings", () => {
@@ -174,7 +176,7 @@ test("stitched capture runs the post-position hook before capture", async () => 
     async send(method, params = {}) {
       if (method === "Runtime.evaluate") {
         const expression = String(params.expression || "");
-        const scrollMatch = expression.match(/window\.scrollTo\(0, (\d+)\)/);
+        const scrollMatch = expression.match(/const targetY = (\d+)/);
         if (scrollMatch) {
           events.push(`scroll:${scrollMatch[1]}`);
         }
@@ -514,6 +516,34 @@ test("collection and comparison page capture modes prefer direct full-page clip 
   assert.equal(shouldUseDirectFullPageClipCapture({}), false);
 });
 
+test("desktop landing full-page capture uses stitched segments", () => {
+  assert.equal(shouldUseStitchedLandingFullPageCapture(
+    { captureMode: "shokz-landing-page", platform: "pc" },
+    { width: 1920, height: 1080, mobile: false }
+  ), true);
+  assert.equal(shouldUseStitchedLandingFullPageCapture(
+    { captureMode: "shokz-landing-page", platform: "mobile" },
+    { width: 393, height: 852, mobile: true }
+  ), false);
+  assert.equal(shouldUseStitchedLandingFullPageCapture(
+    { captureMode: "shokz-collection-page", platform: "pc" },
+    { width: 1920, height: 1080, mobile: false }
+  ), false);
+});
+
+test("desktop landing stitched capture uses taller segments", () => {
+  assert.equal(stitchedFullPageSegmentHeight(
+    { captureMode: "shokz-landing-page", platform: "pc" },
+    { width: 1920, height: 1080, mobile: false },
+    8213
+  ), 1800);
+  assert.equal(stitchedFullPageSegmentHeight(
+    { captureMode: "shokz-landing-page", platform: "mobile" },
+    { width: 393, height: 852, mobile: true },
+    6400
+  ), 852);
+});
+
 test("sports landing page uses the sports PP related-section plan", () => {
   const sportsDefinitions = shokzLandingRelatedSectionDefinitionsForPath("/pages/explore-sports-headphones");
   const openEarDefinitions = shokzLandingRelatedSectionDefinitionsForPath("/pages/explore-open-ear-headphones");
@@ -521,6 +551,20 @@ test("sports landing page uses the sports PP related-section plan", () => {
   assert.ok(sportsDefinitions.some((definition) => definition.key === "landing-sports-scenes"));
   assert.ok(sportsDefinitions.some((definition) => definition.idPart === "section-sports-headphones-product-1"));
   assert.equal(openEarDefinitions.some((definition) => definition.key === "landing-sports-scenes"), false);
+});
+
+test("landing page overview exposes only meaningful carousel modules", () => {
+  const openEarDefinitions = shokzLandingRelatedSectionDefinitionsForPath("/pages/explore-open-ear-headphones");
+  const sportsDefinitions = shokzLandingRelatedSectionDefinitionsForPath("/pages/explore-sports-headphones");
+
+  assert.deepEqual(
+    openEarDefinitions.filter((definition) => definition.relatedOverview).map((definition) => definition.key),
+    ["landing-open-ear-benefits"]
+  );
+  assert.deepEqual(
+    sportsDefinitions.filter((definition) => definition.relatedOverview).map((definition) => definition.key),
+    ["landing-sports-scenes", "landing-sports-athletes"]
+  );
 });
 
 test("only comparison page capture mode uses dedicated view more expansion", () => {
