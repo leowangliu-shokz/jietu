@@ -2,11 +2,14 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { checkText, getDefaultBundledSettingsAsync, suggestionsForWord } from "cspell-lib";
+import { parse } from "parse5";
 import { textQualityPath } from "./paths.js";
 import { loadSnapshots } from "./store.js";
 
 const maxIssuesPerRecord = 120;
 const maxSuggestions = 3;
+const maxHtmlAttributeBlocks = 180;
+const htmlFetchTimeoutMs = 12000;
 const customDictionaryWords = [
   "Aeropex",
   "AfterShokz",
@@ -40,8 +43,30 @@ const customDictionaryWords = [
 const knownCorrections = new Map([
   ["chicaliforniago", "Chicago"],
   ["californiago", "Chicago"],
+  ["condcution", "conduction"],
   ["regiter", "register"],
   ["sentense", "sentence"]
+]);
+const textLikeHtmlAttributes = new Set([
+  "aria-description",
+  "aria-label",
+  "content",
+  "placeholder",
+  "title"
+]);
+const technicalHtmlAttributes = new Set(["class", "id", "name"]);
+const ignoredHtmlTags = new Set([
+  "script",
+  "style",
+  "svg",
+  "path",
+  "use",
+  "defs",
+  "clipPath",
+  "linearGradient",
+  "radialGradient",
+  "stop",
+  "source"
 ]);
 
 let settingsPromise = null;
@@ -72,10 +97,26 @@ export async function rebuildTextQuality(options = {}) {
   const checkedAt = new Date().toISOString();
   const settings = await textQualitySettings();
   const suggestionCache = new Map();
+  const htmlFetchCache = options.htmlFetchCache || new Map();
+  const htmlAttributeOwnerIds = htmlAttributeOwnerSnapshotIds(targetSnapshots);
+  const sharedOptions = {
+    ...options,
+    checkedAt,
+    settings,
+    suggestionCache,
+    htmlFetchCache,
+    fetchHtmlAttributes: options.fetchHtmlAttributes !== false
+  };
   const records = [];
 
   for (const snapshot of targetSnapshots) {
-    const record = await createTextQualityRecord(snapshot, { checkedAt, settings, suggestionCache });
+    const htmlUrl = snapshotHtmlUrl(snapshot);
+    const htmlUrlKey = htmlUrl ? `${normalizedPlatform(snapshot.platform)}::${htmlUrl}` : "";
+    const shouldFetchHtmlAttributes = Boolean(sharedOptions.fetchHtmlAttributes && htmlUrlKey && htmlAttributeOwnerIds.has(snapshot.id));
+    const record = await createTextQualityRecord(snapshot, {
+      ...sharedOptions,
+      fetchHtmlAttributes: shouldFetchHtmlAttributes
+    });
     if (record) {
       records.push(record);
     }
@@ -135,7 +176,10 @@ export async function createTextQualityRecord(snapshot, options = {}) {
   }
 
   const settings = options.settings || await textQualitySettings();
-  const blocks = collectTextBlocks(snapshot);
+  const blocks = [
+    ...collectTextBlocks(snapshot),
+    ...await collectHtmlAttributeBlocks(snapshot, options)
+  ];
   const issues = [];
   const seenIssueKeys = new Set();
 
@@ -188,7 +232,7 @@ async function spellingIssuesForBlock(block, settings, options = {}) {
     }
     const expanded = expandKnownWrongWord(block.text, item.startPos, item.endPos, item.text);
     const wrong = expanded.word;
-    if (!shouldReportWord(wrong) || isProbablyTruncatedIssue(block.text, expanded)) {
+    if (!shouldReportWord(wrong, block) || isProbablyTruncatedIssue(block.text, expanded)) {
       continue;
     }
     const suggestedWords = await spellingSuggestions(wrong, settings, options.suggestionCache);
@@ -212,7 +256,9 @@ async function spellingIssuesForBlock(block, settings, options = {}) {
       location: block.location,
       sectionKey: block.sectionKey,
       sectionLabel: block.sectionLabel,
-      imageUrl: block.imageUrl
+      imageUrl: block.imageUrl,
+      attributeName: block.attributeName,
+      element: block.element
     });
   }
 
@@ -266,7 +312,9 @@ function grammarIssuesForBlock(block) {
       location: block.location,
       sectionKey: block.sectionKey,
       sectionLabel: block.sectionLabel,
-      imageUrl: block.imageUrl
+      imageUrl: block.imageUrl,
+      attributeName: block.attributeName,
+      element: block.element
     });
   }
 
@@ -287,7 +335,9 @@ function grammarIssuesForBlock(block) {
       location: block.location,
       sectionKey: block.sectionKey,
       sectionLabel: block.sectionLabel,
-      imageUrl: block.imageUrl
+      imageUrl: block.imageUrl,
+      attributeName: block.attributeName,
+      element: block.element
     });
   }
 
@@ -319,7 +369,10 @@ function collectTextBlocks(snapshot) {
       location: meta.location || meta.sectionLabel || "页面",
       sectionKey: cleanText(meta.sectionKey),
       sectionLabel: cleanText(meta.sectionLabel),
-      imageUrl: cleanText(meta.imageUrl)
+      imageUrl: cleanText(meta.imageUrl),
+      attributeName: cleanText(meta.attributeName),
+      element: cleanText(meta.element),
+      checkMode: cleanText(meta.checkMode)
     });
   };
 
@@ -392,6 +445,53 @@ function latestSnapshotsByPage(snapshots) {
     });
 }
 
+function htmlAttributeOwnerSnapshotIds(snapshots) {
+  const owners = new Map();
+  for (const snapshot of Array.isArray(snapshots) ? snapshots : []) {
+    const htmlUrl = snapshotHtmlUrl(snapshot);
+    if (!snapshot?.id || !htmlUrl) {
+      continue;
+    }
+    const key = `${normalizedPlatform(snapshot.platform)}::${htmlUrl}`;
+    const current = owners.get(key);
+    if (!current || compareHtmlAttributeOwner(snapshot, current) > 0) {
+      owners.set(key, snapshot);
+    }
+  }
+  return new Set([...owners.values()].map((snapshot) => snapshot.id));
+}
+
+function compareHtmlAttributeOwner(left, right) {
+  const scoreDiff = htmlAttributeOwnerScore(left) - htmlAttributeOwnerScore(right);
+  if (scoreDiff) {
+    return scoreDiff;
+  }
+  return String(left?.capturedAt || "").localeCompare(String(right?.capturedAt || ""));
+}
+
+function htmlAttributeOwnerScore(snapshot = {}) {
+  const haystack = [
+    snapshot.targetId,
+    snapshot.targetLabel,
+    snapshot.displayUrl,
+    snapshot.captureMode
+  ].map(cleanText).join(" ").toLowerCase();
+  let score = 0;
+  if (/home|首页|shokz-home/.test(haystack)) {
+    score += 100;
+  }
+  if (/nav|navigation|导航/.test(haystack)) {
+    score -= 80;
+  }
+  if (/comparison|对比/.test(haystack)) {
+    score += 20;
+  }
+  if (/collection|集合/.test(haystack)) {
+    score += 20;
+  }
+  return score;
+}
+
 function collectStateText(state, addText, meta) {
   if (!state || typeof state !== "object") {
     return;
@@ -413,6 +513,227 @@ function collectVisibleItems(items, addText, meta) {
       addText(item?.text, { ...meta, source: "visible-item", sourceLabel: "可见元素文案" });
     }
   }
+}
+
+async function collectHtmlAttributeBlocks(snapshot, options = {}) {
+  const directHtml = cleanHtmlSource(options.htmlSource || snapshot.htmlSource || snapshot.html);
+  if (directHtml) {
+    return htmlAttributeBlocksFromHtml(directHtml, snapshot);
+  }
+  if (options.fetchHtmlAttributes !== true) {
+    return [];
+  }
+  const url = snapshotHtmlUrl(snapshot);
+  if (!url) {
+    return [];
+  }
+  const html = await htmlSourceForUrl(url, options).catch(() => "");
+  return html ? htmlAttributeBlocksFromHtml(html, snapshot) : [];
+}
+
+async function htmlSourceForUrl(url, options = {}) {
+  const cache = options.htmlFetchCache;
+  if (cache?.has(url)) {
+    return cache.get(url);
+  }
+  const promise = fetchHtmlSource(url, options);
+  if (cache) {
+    cache.set(url, promise);
+  }
+  const html = await promise.catch(() => "");
+  if (cache) {
+    cache.set(url, html);
+  }
+  return html;
+}
+
+async function fetchHtmlSource(url, options = {}) {
+  const fetcher = options.htmlFetcher || globalThis.fetch;
+  if (typeof fetcher !== "function") {
+    return "";
+  }
+  const response = await fetcher(url, {
+    headers: {
+      "accept": "text/html,application/xhtml+xml",
+      "user-agent": "jietu-woodpecker/1.0"
+    },
+    signal: AbortSignal.timeout(Number(options.htmlFetchTimeoutMs) || htmlFetchTimeoutMs)
+  });
+  if (typeof response === "string") {
+    return cleanHtmlSource(response);
+  }
+  if (!response?.ok) {
+    return "";
+  }
+  const contentType = cleanText(response.headers?.get?.("content-type")).toLowerCase();
+  if (contentType && !/html|text/.test(contentType)) {
+    return "";
+  }
+  return cleanHtmlSource(await response.text());
+}
+
+function htmlAttributeBlocksFromHtml(html, snapshot = {}) {
+  const blocks = [];
+  const seen = new Set();
+  const document = parse(html);
+
+  const addAttributeBlock = (node, attr, checkMode) => {
+    const name = cleanText(attr?.name).toLowerCase();
+    const value = cleanAttributeValue(attr?.value);
+    if (!name || !value || !shouldCheckHtmlAttributeValue(value, name)) {
+      return;
+    }
+    const tagName = cleanText(node?.tagName || node?.nodeName).toLowerCase();
+    const text = `${name}="${value}"`;
+    const key = [tagName, name, value.toLowerCase()].join("::");
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    blocks.push({
+      text,
+      source: checkMode === "technical-attribute" ? "html-attribute-technical" : "html-attribute",
+      sourceLabel: checkMode === "technical-attribute" ? "HTML 属性（源码命名）" : "HTML 属性",
+      location: htmlAttributeLocation(node, name),
+      sectionKey: "html-source",
+      sectionLabel: "HTML 源码",
+      imageUrl: snapshot.imageUrl,
+      attributeName: name,
+      element: tagName,
+      checkMode
+    });
+  };
+
+  const visit = (node) => {
+    const tagName = cleanText(node?.tagName || node?.nodeName).toLowerCase();
+    if (ignoredHtmlTags.has(tagName)) {
+      return;
+    }
+    for (const attr of Array.isArray(node?.attrs) ? node.attrs : []) {
+      const name = cleanText(attr?.name).toLowerCase();
+      if (isTextLikeHtmlAttribute(node, name)) {
+        addAttributeBlock(node, attr, "text-attribute");
+      } else if (isTechnicalHtmlAttribute(name) && hasKnownCorrectionToken(attr?.value)) {
+        addAttributeBlock(node, attr, "technical-attribute");
+      }
+      if (blocks.length >= maxHtmlAttributeBlocks) {
+        return;
+      }
+    }
+    for (const child of Array.isArray(node?.childNodes) ? node.childNodes : []) {
+      if (blocks.length >= maxHtmlAttributeBlocks) {
+        return;
+      }
+      visit(child);
+    }
+  };
+
+  visit(document);
+  return blocks;
+}
+
+function isTextLikeHtmlAttribute(node, name) {
+  if (!name) {
+    return false;
+  }
+  if (textLikeHtmlAttributes.has(name)) {
+    if (name !== "content") {
+      return true;
+    }
+    return isTextLikeMetaContent(node);
+  }
+  return name.startsWith("data-") &&
+    /(?:alt|caption|description|heading|label|text|title)$/i.test(name);
+}
+
+function isTextLikeMetaContent(node) {
+  const tagName = cleanText(node?.tagName || node?.nodeName).toLowerCase();
+  if (tagName !== "meta") {
+    return false;
+  }
+  const attrs = new Map((Array.isArray(node?.attrs) ? node.attrs : [])
+    .map((attr) => [cleanText(attr?.name).toLowerCase(), cleanText(attr?.value).toLowerCase()]));
+  const metaName = attrs.get("name") || attrs.get("property") || "";
+  return /(?:description|keywords|title|og:title|og:description|twitter:title|twitter:description)/i.test(metaName);
+}
+
+function isTechnicalHtmlAttribute(name) {
+  return technicalHtmlAttributes.has(name) || name.startsWith("data-");
+}
+
+function hasKnownCorrectionToken(value) {
+  return splitAttributeWords(value)
+    .some((word) => knownCorrections.has(word.toLowerCase()));
+}
+
+function splitAttributeWords(value) {
+  return cleanText(value)
+    .split(/[^A-Za-z]+/)
+    .map((word) => word.trim())
+    .filter(Boolean);
+}
+
+function shouldCheckHtmlAttributeValue(value, name = "") {
+  const cleaned = cleanText(value);
+  return cleaned.length >= 3 &&
+    cleaned.length <= 500 &&
+    /[A-Za-z]{3,}/.test(cleaned) &&
+    !/^(?:https?:|data:|mailto:|tel:)/i.test(cleaned) &&
+    !/\bgid:\/\/|:\/\/|shopify\/|^[A-Za-z0-9_-]+\/[A-Za-z0-9/_-]+$/i.test(cleaned) &&
+    !isLikelyMachineAttributeValue(cleaned, name);
+}
+
+function isLikelyMachineAttributeValue(value, name = "") {
+  if (hasKnownCorrectionToken(value)) {
+    return false;
+  }
+  const cleaned = cleanText(value);
+  if (!cleaned) {
+    return true;
+  }
+  if (!/\s/.test(cleaned) && /[-_:]/.test(cleaned)) {
+    return true;
+  }
+  if (/^(?:slide|swiper|variant|product|filter)[-_:\w]+$/i.test(cleaned)) {
+    return true;
+  }
+  return cleanText(name).toLowerCase() === "title" && /^gid:\/\//i.test(cleaned);
+}
+
+function cleanHtmlSource(value) {
+  return String(value || "").slice(0, 2_000_000);
+}
+
+function cleanAttributeValue(value) {
+  return String(value || "")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&amp;/gi, "&")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 500);
+}
+
+function htmlAttributeLocation(node, name) {
+  const tagName = cleanText(node?.tagName || node?.nodeName).toLowerCase() || "element";
+  const attrs = new Map((Array.isArray(node?.attrs) ? node.attrs : [])
+    .map((attr) => [cleanText(attr?.name).toLowerCase(), cleanText(attr?.value)]));
+  const id = attrs.get("id");
+  const className = attrs.get("class");
+  const elementHint = id
+    ? `<${tagName}#${id}>`
+    : className
+      ? `<${tagName}.${className.split(/\s+/)[0]}>`
+      : `<${tagName}>`;
+  return `${elementHint} @${name}`;
+}
+
+function snapshotHtmlUrl(snapshot = {}) {
+  const url = cleanText(snapshot.finalUrl || snapshot.requestedUrl || snapshot.url);
+  if (!/^https?:\/\//i.test(url)) {
+    return "";
+  }
+  return url;
 }
 
 function normalizeTextQualityRecord(input) {
@@ -472,7 +793,9 @@ function normalizeIssue(input) {
     location: cleanText(input.location),
     sectionKey: cleanText(input.sectionKey),
     sectionLabel: cleanText(input.sectionLabel),
-    imageUrl: cleanText(input.imageUrl)
+    imageUrl: cleanText(input.imageUrl),
+    attributeName: cleanText(input.attributeName),
+    element: cleanText(input.element)
   };
 }
 
@@ -556,8 +879,12 @@ function shouldCheckGrammarBlock(block) {
     cleanText(block.text).length <= 220;
 }
 
-function shouldReportWord(word) {
+function shouldReportWord(word, block = {}) {
   const cleaned = cleanText(word);
+  const lower = cleaned.toLowerCase();
+  if (cleanText(block.checkMode) === "technical-attribute" && !knownCorrections.has(lower)) {
+    return false;
+  }
   return /^[A-Za-z][A-Za-z-]{2,}$/.test(cleaned) &&
     !/^[A-Z]{2,}$/.test(cleaned) &&
     !/\d/.test(cleaned);

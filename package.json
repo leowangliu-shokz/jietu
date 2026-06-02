@@ -17,6 +17,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "cspell-lib": "^10.0.1"
+    "cspell-lib": "^10.0.1",
+    "parse5": "^7.1.2"
   }
 }

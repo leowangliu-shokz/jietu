@@ -2837,10 +2837,33 @@ function woodpeckerExpectedText(issue) {
 }
 
 function woodpeckerIssueSource(issue) {
+  const attributeLocation = issue.attributeName
+    ? `${issue.element ? `<${issue.element}>` : "元素"} @${issue.attributeName}`
+    : "";
   return [
-    issue.sourceLabel || issue.source,
+    woodpeckerSourceLabel(issue),
+    attributeLocation,
     issue.location || issue.sectionLabel || issue.sectionKey
   ].filter(Boolean).join(" / ") || "页面文案";
+}
+
+function woodpeckerSourceLabel(issue) {
+  if (issue.source === "html-attribute-technical") {
+    return "HTML 属性（源码命名，不是页面可见文案）";
+  }
+  if (issue.source === "html-attribute") {
+    return "HTML 属性";
+  }
+  if (issue.source === "image-alt") {
+    return "图片 Alt（HTML 属性，不一定可见）";
+  }
+  if (issue.source === "visible-item") {
+    return "可见元素文案";
+  }
+  if (issue.source === "text-block") {
+    return "页面可见文案";
+  }
+  return issue.sourceLabel || issue.source || "页面文案";
 }
 
 function renderSeoSnapshotRow(snapshot) {
