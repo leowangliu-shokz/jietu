@@ -14,3 +14,4 @@ export const seoChangesPath = path.join(dataDir, "seo-changes.json");
 export const changeNotificationsPath = path.join(dataDir, "change-notifications.json");
 export const captureRunsPath = path.join(dataDir, "capture-runs.json");
 export const captureIssuesPath = path.join(dataDir, "capture-issues.json");
+export const textQualityPath = path.join(dataDir, "text-quality.json");

@@ -73,6 +73,18 @@
             >
               SEO
             </button>
+            <button
+              id="tabWoodpecker"
+              class="tab"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="woodpeckerPanel"
+              data-tab="woodpecker"
+              tabindex="-1"
+            >
+              啄木鸟
+            </button>
           </nav>
         </div>
         <div class="actions">
@@ -251,6 +263,46 @@
             </div>
             <div id="seoList" class="changes-list seo-list"></div>
             <p id="seoEmpty" class="empty">No SEO snapshots yet.</p>
+          </section>
+        </section>
+
+        <section
+          id="woodpeckerPanel"
+          class="tab-panel"
+          role="tabpanel"
+          aria-labelledby="tabWoodpecker"
+          data-tab-panel="woodpecker"
+          hidden
+        >
+          <section class="status-grid changes-status woodpecker-status" aria-label="啄木鸟检查状态">
+            <div class="stat">
+              <span>检查页面</span>
+              <strong id="woodpeckerCount">0</strong>
+            </div>
+            <div class="stat">
+              <span>发现问题</span>
+              <strong id="woodpeckerIssueCount">0</strong>
+            </div>
+            <div class="stat">
+              <span>最近检查</span>
+              <strong id="latestWoodpeckerTime">-</strong>
+            </div>
+          </section>
+
+          <section class="changes-panel woodpecker-panel" aria-label="啄木鸟拼写与语法检查">
+            <div class="timeline-head">
+              <div>
+                <h2>啄木鸟 · 拼写与语法检查</h2>
+                <p>按页面可见文案检查拼写、重复单词和基础语法问题</p>
+              </div>
+              <div class="timeline-filters">
+                <select id="woodpeckerUrlFilter" aria-label="按 URL 过滤啄木鸟检查结果">
+                  <option value="">全部 URL</option>
+                </select>
+              </div>
+            </div>
+            <div id="woodpeckerList" class="changes-list woodpecker-list"></div>
+            <p id="woodpeckerEmpty" class="empty">暂无啄木鸟检查结果。</p>
           </section>
         </section>
       </section>

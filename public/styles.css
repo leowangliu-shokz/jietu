@@ -216,6 +216,10 @@ h2 {
   grid-template-columns: minmax(180px, 280px);
 }
 
+.woodpecker-status {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 280px));
+}
+
 .stat {
   min-height: 86px;
   border: 1px solid var(--line);
@@ -547,6 +551,10 @@ select:focus {
   min-width: 980px;
 }
 
+.woodpecker-table {
+  min-width: 1120px;
+}
+
 .changes-table th,
 .changes-table td {
   border-right: 1px solid var(--line);
@@ -577,6 +585,32 @@ select:focus {
 
 .changes-table td {
   color: var(--text);
+}
+
+.woodpecker-table td strong,
+.woodpecker-table td small {
+  display: block;
+}
+
+.woodpecker-table td small {
+  margin-top: 4px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.woodpecker-status-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  border-radius: 999px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.woodpecker-status-pill.is-ok {
+  background: rgba(15, 118, 110, 0.12);
+  color: var(--accent-dark);
 }
 
 .change-select-column {

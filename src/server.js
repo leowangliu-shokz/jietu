@@ -12,6 +12,7 @@ import { annotateChangesForResponse, buildStatePayload } from "./server-state.js
 import { buildSeoSummary, loadSeoChanges, loadSeoSnapshots } from "./seo-snapshots.js";
 import { deleteSnapshotAction, deleteSnapshotsAction, viewerModeErrorMessage } from "./snapshot-admin.js";
 import { ensureStorage, loadConfig, loadSnapshots, saveConfig } from "./store.js";
+import { buildTextQualitySummary, loadTextQualityRecords } from "./text-quality.js";
 
 const host = "127.0.0.1";
 const port = Number(process.env.PORT || 4173);
@@ -66,6 +67,14 @@ const server = http.createServer(async (request, response) => {
         snapshots: seoSnapshots,
         changes: seoChanges,
         summary: buildSeoSummary(seoSnapshots, seoChanges)
+      });
+    }
+
+    if (request.method === "GET" && pathname === "/api/woodpecker") {
+      const records = await loadTextQualityRecords();
+      return sendJson(response, {
+        records,
+        summary: buildTextQualitySummary(records)
       });
     }
 

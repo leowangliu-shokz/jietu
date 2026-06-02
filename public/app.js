@@ -14,6 +14,9 @@ const elements = {
   seoCount: document.querySelector("#seoCount"),
   seoChangeCount: document.querySelector("#seoChangeCount"),
   latestSeoTime: document.querySelector("#latestSeoTime"),
+  woodpeckerCount: document.querySelector("#woodpeckerCount"),
+  woodpeckerIssueCount: document.querySelector("#woodpeckerIssueCount"),
+  latestWoodpeckerTime: document.querySelector("#latestWoodpeckerTime"),
   latestShotTime: document.querySelector("#latestShotTime"),
   deviceFilter: document.querySelector("#deviceFilter"),
   deviceFilterButton: document.querySelector("#deviceFilterButton"),
@@ -36,6 +39,7 @@ const elements = {
   changesBulkDeleteSelected: document.querySelector("#changesBulkDeleteSelected"),
   changesStatus: document.querySelector("#changesStatus"),
   seoUrlFilter: document.querySelector("#seoUrlFilter"),
+  woodpeckerUrlFilter: document.querySelector("#woodpeckerUrlFilter"),
   bulkActions: document.querySelector("#bulkActions"),
   bulkSelectionCount: document.querySelector("#bulkSelectionCount"),
   bulkSelectVisible: document.querySelector("#bulkSelectVisible"),
@@ -52,6 +56,8 @@ const elements = {
   changesEmpty: document.querySelector("#changesEmpty"),
   seoList: document.querySelector("#seoList"),
   seoEmpty: document.querySelector("#seoEmpty"),
+  woodpeckerList: document.querySelector("#woodpeckerList"),
+  woodpeckerEmpty: document.querySelector("#woodpeckerEmpty"),
   imagePreview: document.querySelector("#imagePreview"),
   imagePreviewViewport: document.querySelector("#imagePreviewViewport"),
   imagePreviewLongView: document.querySelector("#imagePreviewLongView"),
@@ -109,6 +115,7 @@ const relatedSectionTitles = {
 let state = null;
 let changes = [];
 let seoState = { snapshots: [], changes: [] };
+let woodpeckerState = { records: [] };
 let activePlatform = "pc";
 let imagePreviewReturnFocus = null;
 let imagePreviewPreviousOverflow = "";
@@ -137,6 +144,7 @@ const activeTabByPlatform = {
 const archiveFiltersByPlatform = createPlatformFilterMap();
 const changesFiltersByPlatform = createPlatformFilterMap();
 const seoFiltersByPlatform = createPlatformFilterMap();
+const woodpeckerFiltersByPlatform = createPlatformFilterMap();
 const selectedSnapshotIds = new Set();
 const pendingSnapshotDeletes = new Set();
 const selectedChangeIds = new Set();
@@ -204,6 +212,10 @@ elements.seoUrlFilter.addEventListener("change", () => {
   activeSeoFilters().url = elements.seoUrlFilter.value;
   renderSeoSummary();
 });
+elements.woodpeckerUrlFilter.addEventListener("change", () => {
+  activeWoodpeckerFilters().url = elements.woodpeckerUrlFilter.value;
+  renderWoodpeckerSummary();
+});
 elements.bulkSelectVisible.addEventListener("click", handleBulkSelectVisibleClick);
 elements.bulkClearSelection.addEventListener("click", handleBulkClearSelectionClick);
 elements.bulkDeleteSelected.addEventListener("click", () => void handleBulkDeleteSelectedClick());
@@ -261,6 +273,10 @@ function activeChangesFilters() {
 
 function activeSeoFilters() {
   return seoFiltersByPlatform[activePlatform];
+}
+
+function activeWoodpeckerFilters() {
+  return woodpeckerFiltersByPlatform[activePlatform];
 }
 
 function setActivePlatform(platform, options = {}) {
@@ -334,6 +350,7 @@ function syncActivePlatformFilterInputs() {
   const archiveFilters = activeArchiveFilters();
   const changeFilters = activeChangesFilters();
   const seoFilters = activeSeoFilters();
+  const woodpeckerFilters = activeWoodpeckerFilters();
   elements.urlFilter.value = archiveFilters.url;
   elements.dateStartFilter.value = archiveFilters.dateStart;
   elements.dateEndFilter.value = archiveFilters.dateEnd;
@@ -341,6 +358,7 @@ function syncActivePlatformFilterInputs() {
   elements.changesDateStartFilter.value = changeFilters.dateStart;
   elements.changesDateEndFilter.value = changeFilters.dateEnd;
   elements.seoUrlFilter.value = seoFilters.url;
+  elements.woodpeckerUrlFilter.value = woodpeckerFilters.url;
 }
 
 function closePlatformMenus() {
@@ -349,11 +367,11 @@ function closePlatformMenus() {
 
 function activeTabForPlatform(platform = activePlatform) {
   const activeTab = activeTabByPlatform[resolveActivePlatformValue(platform)];
-  return ["archive", "changes", "seo"].includes(activeTab) ? activeTab : "archive";
+  return ["archive", "changes", "seo", "woodpecker"].includes(activeTab) ? activeTab : "archive";
 }
 
 function resolveActiveTabValue(tabName) {
-  return ["changes", "seo"].includes(tabName) ? tabName : "archive";
+  return ["changes", "seo", "woodpecker"].includes(tabName) ? tabName : "archive";
 }
 
 function setActiveTab(tabName, options = {}) {
@@ -413,10 +431,11 @@ function handleTabKeydown(event) {
 }
 
 async function refreshState(options = {}) {
-  const [stateResponse, changesResponse, seoResponse] = await Promise.all([
+  const [stateResponse, changesResponse, seoResponse, woodpeckerResponse] = await Promise.all([
     fetch("/api/state"),
     fetch("/api/changes"),
-    fetch("/api/seo")
+    fetch("/api/seo"),
+    fetch("/api/woodpecker")
   ]);
   state = await stateResponse.json();
   const loadedChanges = await changesResponse.json();
@@ -428,6 +447,13 @@ async function refreshState(options = {}) {
       changes: Array.isArray(loadedSeoState.changes) ? loadedSeoState.changes : []
     }
     : { snapshots: [], changes: [] };
+  const loadedWoodpeckerState = await woodpeckerResponse.json();
+  woodpeckerState = loadedWoodpeckerState && typeof loadedWoodpeckerState === "object"
+    ? {
+      records: Array.isArray(loadedWoodpeckerState.records) ? loadedWoodpeckerState.records : [],
+      summary: loadedWoodpeckerState.summary || {}
+    }
+    : { records: [], summary: {} };
   setActivePlatform(resolveAvailablePlatform(state, activePlatform), { render: false });
   render(options);
 }
@@ -439,8 +465,15 @@ function render(options = {}) {
   elements.changeCount.textContent = platformChanges().length;
   elements.seoCount.textContent = platformSeoSnapshots().length;
   elements.seoChangeCount.textContent = platformSeoChanges().length;
+  const currentWoodpeckerRecords = latestWoodpeckerRecordsByKey(platformWoodpeckerRecords());
+  elements.woodpeckerCount.textContent = currentWoodpeckerRecords.length;
+  elements.woodpeckerIssueCount.textContent = currentWoodpeckerRecords
+    .reduce((sum, record) => sum + Number(record.issueCount || 0), 0);
   elements.latestSeoTime.textContent = latestSeoCapturedAt()
     ? formatDate(latestSeoCapturedAt())
+    : "-";
+  elements.latestWoodpeckerTime.textContent = latestWoodpeckerCheckedAt()
+    ? formatDate(latestWoodpeckerCheckedAt())
     : "-";
   elements.captureState.textContent = state.capture.running ? "截图中" : "空闲";
   elements.browserState.textContent = state.browser.ok ? browserName(state.browser.path) : "未找到";
@@ -459,12 +492,14 @@ function render(options = {}) {
   renderFilterOptions();
   renderChangesFilterOptions();
   renderSeoFilterOptions();
+  renderWoodpeckerFilterOptions();
   renderDeviceFilterOptions();
   renderChangesDevicePreset();
   renderArchiveStatus();
   renderChangesStatus();
   renderChangesSummary();
   renderSeoSummary();
+  renderWoodpeckerSummary();
   renderGallery({ preserveScroll: options.preserveScroll !== false });
 }
 
@@ -489,6 +524,12 @@ function platformSeoSnapshots() {
 function platformSeoChanges() {
   return (seoState?.changes || []).filter((change) =>
     (change.location?.platform || change.to?.platform || change.from?.platform || "pc") === activePlatform
+  );
+}
+
+function platformWoodpeckerRecords() {
+  return (woodpeckerState?.records || []).filter((record) =>
+    (record.platform || "pc") === activePlatform
   );
 }
 
@@ -560,6 +601,11 @@ function latestSeoCapturedAt() {
   return Number.isFinite(latest) ? new Date(latest).toISOString() : null;
 }
 
+function latestWoodpeckerCheckedAt() {
+  const latest = Math.max(...platformWoodpeckerRecords().map((record) => timestamp(record.checkedAt || record.capturedAt)));
+  return Number.isFinite(latest) ? new Date(latest).toISOString() : null;
+}
+
 function renderFilterOptions() {
   renderUrlFilterOptions(elements.urlFilter, urlFilterOptions(), activeArchiveFilters().url);
 }
@@ -570,6 +616,10 @@ function renderChangesFilterOptions() {
 
 function renderSeoFilterOptions() {
   renderUrlFilterOptions(elements.seoUrlFilter, seoUrlFilterOptions(), activeSeoFilters().url);
+}
+
+function renderWoodpeckerFilterOptions() {
+  renderUrlFilterOptions(elements.woodpeckerUrlFilter, woodpeckerUrlFilterOptions(), activeWoodpeckerFilters().url);
 }
 
 function renderUrlFilterOptions(select, urls, currentValue = "") {
@@ -2711,6 +2761,88 @@ function renderSeoSummary() {
   }
 }
 
+function renderWoodpeckerSummary() {
+  const records = latestWoodpeckerRecordsByKey(platformWoodpeckerRecords().filter(matchesWoodpeckerFilters)).slice(0, 40);
+  elements.woodpeckerList.innerHTML = "";
+  elements.woodpeckerEmpty.classList.toggle("visible", records.length === 0);
+
+  if (!records.length) {
+    return;
+  }
+
+  const table = document.createElement("div");
+  table.className = "changes-table-wrap woodpecker-table-wrap";
+  table.innerHTML = `
+    <table class="changes-table woodpecker-table">
+      <thead>
+        <tr>
+          <th scope="col">状态</th>
+          <th scope="col">URL</th>
+          <th scope="col">错误</th>
+          <th scope="col">正确写法</th>
+          <th scope="col">来源</th>
+          <th scope="col">检查时间</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${records.flatMap(renderWoodpeckerRecordRows).join("")}
+      </tbody>
+    </table>
+  `;
+  elements.woodpeckerList.append(table);
+}
+
+function renderWoodpeckerRecordRows(record) {
+  const issues = Array.isArray(record.issues) ? record.issues : [];
+  if (!issues.length) {
+    return [`
+      <tr>
+        <td><span class="woodpecker-status-pill is-ok">未发现错误</span></td>
+        <td>${escapeHtml(truncateDisplayText(canonicalDisplayUrlForWoodpeckerRecord(record), 140))}</td>
+        <td><span class="change-style-empty">-</span></td>
+        <td><span class="change-style-empty">-</span></td>
+        <td>${escapeHtml(truncateDisplayText(record.title || record.targetLabel || "页面文案", 120))}</td>
+        <td>${escapeHtml(formatOptionalDate(record.checkedAt || record.capturedAt))}</td>
+      </tr>
+    `];
+  }
+
+  return issues.slice(0, 20).map((issue, index) => `
+    <tr>
+      <td>
+        <span class="change-level change-level-${escapeHtml((issue.level || "P2").toLowerCase())}">
+          ${escapeHtml(issue.level || "P2")}
+        </span>
+      </td>
+      <td>${index === 0 ? escapeHtml(truncateDisplayText(canonicalDisplayUrlForWoodpeckerRecord(record), 140)) : ""}</td>
+      <td>
+        <strong>${escapeHtml(issue.message || issue.wrong || "疑似错误")}</strong>
+        <small>${escapeHtml(truncateDisplayText(issue.context || "", 180))}</small>
+      </td>
+      <td>${escapeHtml(truncateDisplayText(woodpeckerExpectedText(issue), 220))}</td>
+      <td>${escapeHtml(truncateDisplayText(woodpeckerIssueSource(issue), 140))}</td>
+      <td>${index === 0 ? escapeHtml(formatOptionalDate(record.checkedAt || record.capturedAt)) : ""}</td>
+    </tr>
+  `);
+}
+
+function woodpeckerExpectedText(issue) {
+  if (issue.expected) {
+    return issue.expected;
+  }
+  if (Array.isArray(issue.suggestions) && issue.suggestions.length) {
+    return issue.suggestions.join(" / ");
+  }
+  return "请人工确认正确写法";
+}
+
+function woodpeckerIssueSource(issue) {
+  return [
+    issue.sourceLabel || issue.source,
+    issue.location || issue.sectionLabel || issue.sectionKey
+  ].filter(Boolean).join(" / ") || "页面文案";
+}
+
 function renderSeoSnapshotRow(snapshot) {
   const h1 = Array.isArray(snapshot.h1) && snapshot.h1.length ? snapshot.h1.join(" | ") : "";
   const headings = Array.isArray(snapshot.headings)
@@ -2774,6 +2906,24 @@ function latestSeoSnapshotsByKey(snapshots) {
     });
 }
 
+function latestWoodpeckerRecordsByKey(records) {
+  const seen = new Set();
+  return [...records]
+    .sort((a, b) => timestamp(b.capturedAt) - timestamp(a.capturedAt))
+    .filter((record) => {
+      const key = [
+        record.platform || activePlatform,
+        record.targetId || "",
+        canonicalDisplayUrlForWoodpeckerRecord(record)
+      ].join("::");
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+}
+
 function matchesSeoFilters(snapshot) {
   const selectedUrl = activeSeoFilters().url;
   return selectedUrl ? canonicalDisplayUrlForSeoSnapshot(snapshot) === selectedUrl : true;
@@ -2782,6 +2932,11 @@ function matchesSeoFilters(snapshot) {
 function matchesSeoChangeFilters(change) {
   const selectedUrl = activeSeoFilters().url;
   return selectedUrl ? canonicalDisplayUrlForSeoChange(change) === selectedUrl : true;
+}
+
+function matchesWoodpeckerFilters(record) {
+  const selectedUrl = activeWoodpeckerFilters().url;
+  return selectedUrl ? canonicalDisplayUrlForWoodpeckerRecord(record) === selectedUrl : true;
 }
 
 function matchesChangeFilters(change) {
@@ -3922,6 +4077,11 @@ function seoUrlFilterOptions() {
   return [...new Set([...snapshots, ...changed].filter(Boolean))];
 }
 
+function woodpeckerUrlFilterOptions() {
+  const records = platformWoodpeckerRecords().map(canonicalDisplayUrlForWoodpeckerRecord);
+  return [...new Set(records.filter(Boolean))];
+}
+
 function canonicalDisplayUrlForSnapshot(snapshot) {
   if (isProductsNavSnapshot(snapshot)) {
     return navDisplayUrl();
@@ -3948,6 +4108,10 @@ function canonicalDisplayUrlForSeoSnapshot(snapshot) {
 function canonicalDisplayUrlForSeoChange(change) {
   const location = change.location || {};
   return location.displayUrl || location.targetLabel || location.finalUrl || location.url || "SEO target";
+}
+
+function canonicalDisplayUrlForWoodpeckerRecord(record) {
+  return record.displayUrl || record.targetLabel || record.finalUrl || record.url || "啄木鸟检查页面";
 }
 
 function isHomeSnapshot(snapshot) {

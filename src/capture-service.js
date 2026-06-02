@@ -35,6 +35,7 @@ import {
   resolveConfiguredCapturePlans,
   saveSnapshots
 } from "./store.js";
+import { rebuildTextQuality } from "./text-quality.js";
 
 const mobileCollectionRelatedSectionTimeoutMs = 25 * 60 * 1000;
 const mobileComparisonProductMapTimeoutMs = 55 * 60 * 1000;
@@ -236,6 +237,7 @@ export async function replaceHomeOverviewTile(input, config = null) {
   snapshots[snapshotIndex] = updatedSnapshot;
   await saveSnapshots(snapshots);
   const changeRefresh = await refreshChangeRecords({ sendNotifications: false });
+  const textQualityRefresh = await refreshTextQualityRecords();
 
   return {
     ok: true,
@@ -244,7 +246,8 @@ export async function replaceHomeOverviewTile(input, config = null) {
     sourceFile: tile.sourceFile,
     relatedShot: updatedModuleShot,
     homeOverview: overview.homeOverview,
-    changeRefresh
+    changeRefresh,
+    textQualityRefresh
   };
 }
 
@@ -303,6 +306,7 @@ async function replaceRelatedShotTile({ input, snapshots, snapshotIndex, snapsho
   snapshots[snapshotIndex] = updatedSnapshot;
   await saveSnapshots(snapshots);
   const changeRefresh = await refreshChangeRecords({ sendNotifications: false });
+  const textQualityRefresh = await refreshTextQualityRecords();
   const preview = nextRelatedShots.find((shot) => shot.file === replacementShot.file) || replacementShot;
 
   return {
@@ -312,7 +316,8 @@ async function replaceRelatedShotTile({ input, snapshots, snapshotIndex, snapsho
     sourceFile,
     relatedShot: preview,
     preview,
-    changeRefresh
+    changeRefresh,
+    textQualityRefresh
   };
 }
 
@@ -350,6 +355,7 @@ async function replaceSnapshotImage({ input, snapshots, snapshotIndex, snapshot,
   snapshots[snapshotIndex] = updatedSnapshot;
   await saveSnapshots(snapshots);
   const changeRefresh = await refreshChangeRecords({ sendNotifications: false });
+  const textQualityRefresh = await refreshTextQualityRecords();
 
   return {
     ok: true,
@@ -357,7 +363,8 @@ async function replaceSnapshotImage({ input, snapshots, snapshotIndex, snapshot,
     tile: input,
     sourceFile: snapshot.file,
     preview: updatedSnapshot,
-    changeRefresh
+    changeRefresh,
+    textQualityRefresh
   };
 }
 
@@ -438,6 +445,9 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
   const seoRefresh = options.deferChangeRefresh
     ? { ok: true, deferred: true }
     : await refreshSeoChangeRecords();
+  const textQualityRefresh = options.deferChangeRefresh
+    ? { ok: true, deferred: true }
+    : await refreshTextQualityRecords();
   const finishedAt = new Date();
   run.finishedAt = finishedAt.toISOString();
   run.durationMs = finishedAt.getTime() - new Date(run.startedAt).getTime();
@@ -454,16 +464,19 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
     : "succeeded";
   run.changeRefresh = changeRefresh;
   run.seoRefresh = seoRefresh;
+  run.textQualityRefresh = textQualityRefresh;
   for (const result of results) {
     if (result?.ok) {
       result.changeRefresh = changeRefresh;
       result.seoRefresh = seoRefresh;
+      result.textQualityRefresh = textQualityRefresh;
     }
   }
   await appendCaptureRun(run).catch(() => null);
   Object.defineProperty(results, "captureRun", { value: run, enumerable: false });
   Object.defineProperty(results, "changeRefresh", { value: changeRefresh, enumerable: false });
   Object.defineProperty(results, "seoRefresh", { value: seoRefresh, enumerable: false });
+  Object.defineProperty(results, "textQualityRefresh", { value: textQualityRefresh, enumerable: false });
   return results;
 }
 
@@ -494,6 +507,7 @@ function createCaptureRunRecord(plans, options = {}) {
     concurrency: 1,
     changeRefresh: null,
     seoRefresh: null,
+    textQualityRefresh: null,
     items: plans.map((plan, index) => captureRunItemForPlan(plan, id, index))
   };
 }
@@ -809,6 +823,9 @@ async function capturePlanExecution(execution, config, options = {}) {
     const seoRefresh = options.deferChangeRefresh
       ? { ok: true, deferred: true }
       : await refreshSeoChangeRecords();
+    const textQualityRefresh = options.deferChangeRefresh
+      ? { ok: true, deferred: true }
+      : await refreshTextQualityRecords();
     recordCaptureDiagnostic(diagnosticRun, {
       type: options.deferSnapshotSave ? "snapshot-prepared" : "snapshot-write",
       ok: true,
@@ -829,7 +846,8 @@ async function capturePlanExecution(execution, config, options = {}) {
           reasons: shot.captureConfidence.reasons
         })),
       changeRefresh,
-      seoRefresh
+      seoRefresh,
+      textQualityRefresh
     });
     await finalizeCaptureDiagnostic(diagnosticRun, {
       ok: true,
@@ -842,7 +860,8 @@ async function capturePlanExecution(execution, config, options = {}) {
       lowConfidenceRelatedShotCount: relatedShots.filter((shot) => shot.captureConfidence?.baselineEligible === false).length,
       warningCount: Array.isArray(relatedCapture.validation?.warnings) ? relatedCapture.validation.warnings.length : 0,
       changeRefresh,
-      seoRefresh
+      seoRefresh,
+      textQualityRefresh
     });
     return {
       ok: true,
@@ -853,7 +872,8 @@ async function capturePlanExecution(execution, config, options = {}) {
       snapshots,
       seoSnapshots,
       changeRefresh,
-      seoRefresh
+      seoRefresh,
+      textQualityRefresh
     };
   } catch (error) {
     await removeCaptureOutputs(fileInfo.absolutePath);
@@ -981,6 +1001,16 @@ async function refreshSeoChangeRecords() {
   try {
     const changes = await rebuildSeoChanges();
     return { ok: true, count: changes.length };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+}
+
+async function refreshTextQualityRecords() {
+  try {
+    const records = await rebuildTextQuality();
+    const issueCount = records.reduce((sum, record) => sum + Number(record.issueCount || 0), 0);
+    return { ok: true, count: records.length, issueCount };
   } catch (error) {
     return { ok: false, error: error.message };
   }

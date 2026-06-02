@@ -9,6 +9,7 @@ import {
 import { archiveDir, changesPath, snapshotsPath } from "./paths.js";
 import { deleteSeoSnapshotsForSnapshotIds } from "./seo-snapshots.js";
 import { readSnapshots, saveSnapshots } from "./store.js";
+import { deleteTextQualityRecordsForSnapshotIds } from "./text-quality.js";
 
 export const viewerModeErrorMessage = "Viewer mode is read-only for capture and config changes. Set PAGE_SHOT_ADMIN=1 to enable admin actions.";
 export const snapshotDeleteDisabledMessage = "Snapshot deletion is disabled.";
@@ -54,6 +55,7 @@ export async function deleteSnapshotsAction(options = {}) {
         deletedSnapshotIds: result.deletedSnapshotIds,
         removedFiles: result.removedFiles,
         changeRefresh: result.changeRefresh,
+        textQualityRefresh: result.textQualityRefresh,
         state: options.buildState ? await options.buildState() : null
       }
     };
@@ -125,6 +127,12 @@ export async function deleteSnapshotsArchive(snapshotIds, options = {}) {
     ok: false,
     error: error.message
   }));
+  const textQualityRefresh = await deleteTextQualityRecordsForSnapshotIds(cleanSnapshotIds, {
+    textQualityFilePath: options.textQualityFilePath || path.join(path.dirname(snapshotsFilePath), "text-quality.json")
+  }).catch((error) => ({
+    ok: false,
+    error: error.message
+  }));
 
   return {
     deletedSnapshotId: cleanSnapshotIds[0],
@@ -134,7 +142,8 @@ export async function deleteSnapshotsArchive(snapshotIds, options = {}) {
       ok: true,
       count: changes.length
     },
-    seoRefresh
+    seoRefresh,
+    textQualityRefresh
   };
 }
 
