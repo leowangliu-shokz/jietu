@@ -1337,6 +1337,7 @@ async function captureShokzLandingRelated(client, outputPath, captureContext) {
     await waitForRelatedSectionImages(client, state.sectionKey);
     await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2, hideOnly: true });
     await dismissObstructions(client, { rounds: 2 });
+    await hideShokzLandingGlobalChromeForRelatedScreenshot(client);
 
     let current = await readShokzLandingRelatedState(client, state);
     if (!current.ok) {
@@ -1385,6 +1386,7 @@ async function captureShokzLandingRelated(client, outputPath, captureContext) {
         await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2, hideOnly: true });
         await dismissObstructions(client, { rounds: 2 });
         await ensureShokzSearchOverlayClosed(client, `before Shokz landing ${state.sectionLabel} screenshot capture`);
+        await hideShokzLandingGlobalChromeForRelatedScreenshot(client);
         await settlePositionedViewport(client, {
           delayMs: attempt > 1 ? 280 : 180,
           frames: 2
@@ -1508,6 +1510,88 @@ async function captureShokzLandingRelated(client, outputPath, captureContext) {
       sections
     }
   };
+}
+
+async function hideShokzLandingGlobalChromeForRelatedScreenshot(client) {
+  await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const pathname = String(location.pathname || "").toLowerCase();
+      if (!pathname.includes("/pages/explore-open-ear-headphones") &&
+          !pathname.includes("/pages/explore-sports-headphones")) {
+        return { ok: true, hidden: 0 };
+      }
+      const viewportWidth = Math.max(1, window.innerWidth || 0);
+      const viewportHeight = Math.max(1, window.innerHeight || 0);
+      const clean = (value) => String(value || "").replace(/[\\u00a0\\s]+/g, " ").trim();
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 2 &&
+          rect.height > 2 &&
+          rect.bottom > 0 &&
+          rect.right > 0 &&
+          rect.top < viewportHeight * 0.32 &&
+          rect.left < viewportWidth &&
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const elementMeta = (element) => [
+        element.tagName,
+        element.id,
+        String(element.className?.baseVal || element.className || ""),
+        element.getAttribute?.("role"),
+        element.getAttribute?.("aria-label")
+      ].filter(Boolean).join(" ");
+      const globalChromeText = (element) => {
+        const text = clean(element.innerText || element.textContent);
+        return /choose your exclusive launch gift/i.test(text) ||
+          (/products/i.test(text) &&
+            /support/i.test(text) &&
+            /technology/i.test(text) &&
+            /about us/i.test(text) &&
+            /membership/i.test(text));
+      };
+      const globalChromeMeta = (element) =>
+        /(^|[^a-z])(header|announcement|topbar|top-bar|site-header|header-wrapper|utility-bar)([^a-z]|$)/i.test(elementMeta(element)) ||
+        /shopify-section-header/i.test(elementMeta(element));
+      const compactTopBar = (element) => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        const position = style.position;
+        return rect.top < viewportHeight * 0.22 &&
+          rect.bottom > -4 &&
+          rect.width >= viewportWidth * 0.35 &&
+          rect.height <= 180 &&
+          (["fixed", "sticky"].includes(position) ||
+            globalChromeMeta(element) ||
+            globalChromeText(element));
+      };
+      const hidden = [];
+      const roots = new Set();
+      for (const element of document.querySelectorAll("body *")) {
+        if (!visible(element) || !compactTopBar(element)) continue;
+        if (!globalChromeMeta(element) && !globalChromeText(element)) continue;
+        const root = element.closest("header, [id*='shopify-section-header'], [class*='announcement'], [class*='header-wrapper'], [class*='site-header'], [class*='topbar'], [class*='top-bar'], [class*='utility-bar']") || element;
+        if (!visible(root)) continue;
+        const rootRect = root.getBoundingClientRect();
+        if (rootRect.height > 220 || rootRect.width < viewportWidth * 0.3) continue;
+        roots.add(root);
+      }
+      for (const root of roots) {
+        root.dataset.pageShotLandingGlobalChromeHidden = "true";
+        root.style.setProperty("display", "none", "important");
+        root.style.setProperty("visibility", "hidden", "important");
+        root.style.setProperty("pointer-events", "none", "important");
+        hidden.push(clean(root.innerText || root.textContent).slice(0, 120) || elementMeta(root).slice(0, 120));
+      }
+      document.body.classList.remove("overflow-hidden", "overflow-hidden-tablet", "overflow-hidden-desktop");
+      document.documentElement.classList.remove("overflow-hidden", "overflow-hidden-tablet", "overflow-hidden-desktop");
+      return { ok: true, hidden: hidden.length, hiddenLabels: hidden };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
 }
 
 function landingRelatedStateMatchesFilter(outputPath, state, filter) {
