@@ -1115,7 +1115,7 @@ const shokzSportsHeadphonesLandingRelatedSectionDefinitions = [
     idPart: "section-sport-swiper",
     occurrence: 0,
     mode: "carousel",
-    centerSlideOnly: true,
+    labeledSlideWindow: true,
     relatedOverview: true
   },
   {
@@ -1339,6 +1339,9 @@ async function captureShokzLandingRelated(client, outputPath, captureContext) {
     await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2, hideOnly: true });
     await dismissObstructions(client, { rounds: 2 });
     await hideShokzLandingGlobalChromeForRelatedScreenshot(client);
+    await settlePositionedViewport(client, { delayMs: 120, frames: 1 });
+    await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 3, hideOnly: true });
+    await dismissObstructions(client, { rounds: 1 });
 
     let current = await readShokzLandingRelatedState(client, state);
     if (!current.ok) {
@@ -1391,6 +1394,12 @@ async function captureShokzLandingRelated(client, outputPath, captureContext) {
         await settlePositionedViewport(client, {
           delayMs: attempt > 1 ? 280 : 180,
           frames: 2
+        });
+        await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 3, hideOnly: true });
+        await dismissObstructions(client, { rounds: 1 });
+        await settlePositionedViewport(client, {
+          delayMs: 80,
+          frames: 1
         });
         current = await readShokzLandingRelatedState(client, state);
         if (!current.ok) {
@@ -1759,23 +1768,33 @@ async function readShokzLandingRelatedPlan(client) {
         const title = headingFor(root, definition.title || definition.sectionLabel);
         const slides = definition.mode === "carousel" ? slidesFor(root) : [];
         const sectionStates = slides.length > 1
-          ? slides.map((slide, index) => ({
-            ...definition,
-            sectionKey: definition.key,
-            sectionTitle: title,
-            stateIndex: states.length + index + 1,
-            stateCount: slides.length,
-            pageIndex: index + 1,
-            pageCount: slides.length,
-            slideIndex: index + 1,
-            realIndex: slide.realIndex,
-            isDefaultState: index === 0,
-            stateLabel: [title, slide.label || "Slide " + (index + 1)].filter(Boolean).join(" - "),
-            label: [title, slide.label || "Slide " + (index + 1)].filter(Boolean).join(" - "),
-            fileId: keyPart(definition.key + "-" + (index + 1) + "-" + (slide.label || "slide")),
-            logicalSignature: definition.key + ":slide:" + (index + 1) + ":" + slide.signature,
-            coverageKey: definition.key + ":slide:" + (index + 1)
-          }))
+          ? slides.map((slide, index) => {
+            const activationIndex = index;
+            const activationSlide = slides[activationIndex] || slide;
+            const slideLabel = slide.label || "Slide " + (index + 1);
+            const stateSignature = definition.labeledSlideWindow
+              ? JSON.stringify({ label: slideLabel })
+              : slide.signature;
+            return {
+              ...definition,
+              sectionKey: definition.key,
+              sectionTitle: title,
+              stateIndex: states.length + index + 1,
+              stateCount: slides.length,
+              pageIndex: index + 1,
+              pageCount: slides.length,
+              slideIndex: index + 1,
+              activationSlideIndex: activationIndex + 1,
+              realIndex: slide.realIndex,
+              activationRealIndex: activationSlide.realIndex,
+              isDefaultState: index === 0,
+              stateLabel: [title, slideLabel].filter(Boolean).join(" - "),
+              label: [title, slideLabel].filter(Boolean).join(" - "),
+              fileId: keyPart(definition.key + "-" + (index + 1) + "-" + slideLabel),
+              logicalSignature: definition.key + ":slide:" + (index + 1) + ":" + stateSignature,
+              coverageKey: definition.key + ":slide:" + (index + 1)
+            };
+          })
           : [{
             ...definition,
             sectionKey: definition.key,
@@ -1859,11 +1878,18 @@ async function activateShokzLandingRelatedState(client, state) {
       window.scrollBy(0, -8);
       let activated = state.mode !== "carousel" || !state.slideIndex;
       if (state.mode === "carousel" && state.slideIndex) {
-        const targetRealIndex = Number.isFinite(Number(state.realIndex)) ? Number(state.realIndex) : Number(state.slideIndex) - 1;
+        const targetRealIndex = Number.isFinite(Number(state.activationRealIndex))
+          ? Number(state.activationRealIndex)
+          : Number.isFinite(Number(state.realIndex))
+            ? Number(state.realIndex)
+            : Number(state.slideIndex) - 1;
+        const targetSlideIndex = Number.isFinite(Number(state.activationSlideIndex))
+          ? Number(state.activationSlideIndex)
+          : Number(state.slideIndex);
         const tabControls = Array.from(root.querySelectorAll("[role='button'],button,a,[role='tab']"))
           .filter(visible)
           .filter((element) => clean(element.innerText || element.textContent || element.getAttribute("aria-label") || ""));
-        const tabControl = tabControls[Number(state.slideIndex) - 1] || null;
+        const tabControl = tabControls[targetSlideIndex - 1] || null;
         if (tabControl) {
           tabControl.scrollIntoView({ block: "nearest", inline: "center" });
           tabControl.click();
@@ -1886,8 +1912,8 @@ async function activateShokzLandingRelatedState(client, state) {
         ));
         const control = controls.find((element) => {
           const label = clean(element.getAttribute("aria-label") || element.textContent || "");
-          return new RegExp("slide\\\\s+" + state.slideIndex + "\\\\b", "i").test(label);
-        }) || controls.filter(visible)[Number(state.slideIndex) - 1] || null;
+          return new RegExp("slide\\\\s+" + targetSlideIndex + "\\\\b", "i").test(label);
+        }) || controls.filter(visible)[targetSlideIndex - 1] || null;
         if (control) {
           control.click();
           activated = true;
@@ -1896,8 +1922,8 @@ async function activateShokzLandingRelatedState(client, state) {
         const originalSlides = allSlides.filter((slide) => !/swiper-slide-duplicate/.test(String(slide.className || "")));
         const slide = originalSlides.find((item) => Number(item.getAttribute("data-swiper-slide-index")) === targetRealIndex) ||
           allSlides.find((item) => Number(item.getAttribute("data-swiper-slide-index")) === targetRealIndex) ||
-          originalSlides[Number(state.slideIndex) - 1] ||
-          allSlides[Number(state.slideIndex) - 1] ||
+          originalSlides[targetSlideIndex - 1] ||
+          allSlides[targetSlideIndex - 1] ||
           null;
         if (slide) {
           slide.scrollIntoView({ block: "nearest", inline: "center" });
