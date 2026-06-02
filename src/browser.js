@@ -1115,6 +1115,7 @@ const shokzSportsHeadphonesLandingRelatedSectionDefinitions = [
     idPart: "section-sport-swiper",
     occurrence: 0,
     mode: "carousel",
+    centerSlideOnly: true,
     relatedOverview: true
   },
   {
@@ -1705,34 +1706,39 @@ async function readShokzLandingRelatedPlan(client) {
       };
       const slidesFor = (root) => {
         const slides = Array.from(root.querySelectorAll(".swiper-slide"))
-          .filter((slide) => !/swiper-slide-duplicate/.test(String(slide.className || "")))
           .filter((slide) => textFor(slide, 220) || imageSourcesForNode(slide).length || backgroundSources(slide).length);
-        const seen = new Set();
-        return slides
-          .map((slide, index) => {
-            const text = textFor(slide, 220);
-            const images = [
-              ...Array.from(slide.querySelectorAll("img, source")).flatMap(imageSourcesForNode),
-              ...backgroundSources(slide)
-            ].slice(0, 4);
-            const signature = JSON.stringify({ text, images });
-            const realIndexAttr = slide.getAttribute("data-swiper-slide-index");
-            const realIndex = realIndexAttr !== null && Number.isInteger(Number(realIndexAttr)) ? Number(realIndexAttr) : index;
-            const labelNode = Array.from(slide.querySelectorAll("h2,h3,h4,h5,a,button,p")).find((node) => textFor(node, 90));
-            return {
-              element: slide,
-              index,
-              realIndex,
-              signature,
-              label: textFor(labelNode || slide, 80),
-              rect: rectInfo(slide.getBoundingClientRect())
-            };
-          })
-          .filter((slide) => {
-            if (seen.has(slide.signature)) return false;
-            seen.add(slide.signature);
-            return true;
-          });
+        const byKey = new Map();
+        for (const [index, slide] of slides.entries()) {
+          const text = textFor(slide, 220);
+          const images = [
+            ...Array.from(slide.querySelectorAll("img, source")).flatMap(imageSourcesForNode),
+            ...backgroundSources(slide)
+          ].slice(0, 4);
+          const signature = JSON.stringify({ text, images });
+          const realIndexAttr = slide.getAttribute("data-swiper-slide-index");
+          const hasRealIndex = realIndexAttr !== null && Number.isInteger(Number(realIndexAttr));
+          const realIndex = hasRealIndex ? Number(realIndexAttr) : index;
+          const labelNode = Array.from(slide.querySelectorAll("h2,h3,h4,h5,a,button,p")).find((node) => textFor(node, 90));
+          const item = {
+            element: slide,
+            index,
+            realIndex,
+            hasRealIndex,
+            duplicate: /swiper-slide-duplicate/.test(String(slide.className || "")),
+            signature,
+            label: textFor(labelNode || slide, 80),
+            rect: rectInfo(slide.getBoundingClientRect())
+          };
+          const key = hasRealIndex ? "real:" + realIndex : signature;
+          const existing = byKey.get(key);
+          if (!existing || (existing.duplicate && !item.duplicate)) {
+            byKey.set(key, item);
+          }
+        }
+        return [...byKey.values()].sort((a, b) =>
+          (a.hasRealIndex && b.hasRealIndex ? a.realIndex - b.realIndex : 0) ||
+          a.index - b.index
+        );
       };
 
       window.__pageShotRelatedSections = window.__pageShotRelatedSections || {};
@@ -1886,10 +1892,12 @@ async function activateShokzLandingRelatedState(client, state) {
           control.click();
           activated = true;
         }
-        const slides = Array.from(root.querySelectorAll(".swiper-slide"))
-          .filter((slide) => !/swiper-slide-duplicate/.test(String(slide.className || "")));
-        const slide = slides.find((item) => Number(item.getAttribute("data-swiper-slide-index")) === targetRealIndex) ||
-          slides[Number(state.slideIndex) - 1] ||
+        const allSlides = Array.from(root.querySelectorAll(".swiper-slide"));
+        const originalSlides = allSlides.filter((slide) => !/swiper-slide-duplicate/.test(String(slide.className || "")));
+        const slide = originalSlides.find((item) => Number(item.getAttribute("data-swiper-slide-index")) === targetRealIndex) ||
+          allSlides.find((item) => Number(item.getAttribute("data-swiper-slide-index")) === targetRealIndex) ||
+          originalSlides[Number(state.slideIndex) - 1] ||
+          allSlides[Number(state.slideIndex) - 1] ||
           null;
         if (slide) {
           slide.scrollIntoView({ block: "nearest", inline: "center" });
@@ -1973,11 +1981,58 @@ async function readShokzLandingRelatedState(client, state) {
       window.__pageShotRelatedSections = window.__pageShotRelatedSections || {};
       window.__pageShotRelatedSections[state.sectionKey] = { root };
       const rootRect = root.getBoundingClientRect();
-      const clipX = Math.max(0, Math.floor(Math.min(rootRect.left, 0)));
-      const clipY = Math.max(0, Math.floor(window.scrollY + rootRect.top - 4));
-      const clipWidth = Math.max(1, Math.min(window.innerWidth || rootRect.width, Math.ceil(Math.max(rootRect.width, window.innerWidth || 0))));
-      const clipHeight = Math.max(1, Math.ceil(rootRect.height + 8));
-      const textBlocks = Array.from(root.querySelectorAll("h1,h2,h3,h4,h5,p,a,button,li,span,strong"))
+      const targetRealIndex = Number.isFinite(Number(state.realIndex))
+        ? Number(state.realIndex)
+        : Number(state.slideIndex) - 1;
+      const targetSlideCandidates = () => {
+        const rootCenterX = rootRect.left + rootRect.width / 2;
+        return Array.from(root.querySelectorAll(".swiper-slide"))
+          .filter(visible)
+          .map((element, index) => {
+            const rect = element.getBoundingClientRect();
+            const realIndexAttr = element.getAttribute("data-swiper-slide-index");
+            const realIndex = realIndexAttr !== null && Number.isInteger(Number(realIndexAttr))
+              ? Number(realIndexAttr)
+              : index;
+            return {
+              element,
+              index,
+              rect,
+              realIndex,
+              duplicate: /swiper-slide-duplicate/.test(String(element.className || "")) ? 1 : 0,
+              area: intersects(rect, rootRect),
+              centerDistance: Math.abs((rect.left + rect.right) / 2 - rootCenterX)
+            };
+          })
+          .filter((item) => item.area > 0)
+          .filter((item) => !Number.isFinite(targetRealIndex) || item.realIndex === targetRealIndex)
+          .sort((a, b) =>
+            b.area - a.area ||
+            a.centerDistance - b.centerDistance ||
+            a.duplicate - b.duplicate ||
+            a.index - b.index
+          );
+      };
+      const targetSlide = state.centerSlideOnly ? targetSlideCandidates()[0]?.element || null : null;
+      if (state.centerSlideOnly && !targetSlide) {
+        return { ok: false, reason: "Could not find the target carousel card." };
+      }
+      const captureRoot = targetSlide || root;
+      const captureRect = captureRoot.getBoundingClientRect();
+      const clipX = targetSlide
+        ? Math.max(0, Math.floor(window.scrollX + captureRect.left - 4))
+        : Math.max(0, Math.floor(Math.min(rootRect.left, 0)));
+      const clipY = Math.max(0, Math.floor(window.scrollY + captureRect.top - 4));
+      const clipRight = targetSlide
+        ? Math.min(
+          Math.max(window.scrollX + 1, window.scrollX + (window.innerWidth || document.documentElement.clientWidth || captureRect.right)),
+          Math.ceil(window.scrollX + captureRect.right + 4)
+        )
+        : clipX + Math.max(1, Math.min(window.innerWidth || rootRect.width, Math.ceil(Math.max(rootRect.width, window.innerWidth || 0))));
+      const clipWidth = Math.max(1, Math.ceil(clipRight - clipX));
+      const clipHeight = Math.max(1, Math.ceil(captureRect.height + 8));
+      const metadataBounds = targetSlide ? captureRect : rootRect;
+      const textBlocks = Array.from(captureRoot.querySelectorAll("h1,h2,h3,h4,h5,p,a,button,li,span,strong"))
         .filter(visible)
         .map((element, index) => {
           const rect = element.getBoundingClientRect();
@@ -1985,7 +2040,7 @@ async function readShokzLandingRelatedState(client, state) {
             index,
             text: clean(element.innerText || element.textContent || element.getAttribute("aria-label") || "", 240),
             rect: rectInfo(rect),
-            area: intersects(rect, rootRect)
+            area: intersects(rect, metadataBounds)
           };
         })
         .filter((block) => block.text && block.area > 0)
@@ -1993,22 +2048,25 @@ async function readShokzLandingRelatedState(client, state) {
         .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left)
         .slice(0, 40);
       const images = [
-        ...Array.from(root.querySelectorAll("img, source")).flatMap((node) =>
+        ...Array.from(captureRoot.querySelectorAll("img, source")).flatMap((node) =>
           imageSourcesForNode(node).map((src) => ({
             src,
             alt: clean(node.getAttribute?.("alt"), 120),
             rect: rectInfo((node.closest("picture") || node).getBoundingClientRect())
           }))
         ),
-        ...backgroundSources(root).map((src) => ({
+        ...backgroundSources(captureRoot).map((src) => ({
           src,
           alt: "",
-          rect: rectInfo(rootRect)
+          rect: rectInfo(metadataBounds)
         }))
       ]
         .filter((image, index, list) => image.src && list.findIndex((candidate) => candidate.src === image.src) === index)
         .slice(0, 24);
-      const visibleItems = Array.from(root.querySelectorAll(".swiper-slide, [class*='product-card'], [class*='review'], [class*='item']"))
+      const visibleItemNodes = targetSlide
+        ? [targetSlide]
+        : Array.from(root.querySelectorAll(".swiper-slide, [class*='product-card'], [class*='review'], [class*='item']"));
+      const visibleItems = visibleItemNodes
         .filter(visible)
         .map((element, index) => {
           const rect = element.getBoundingClientRect();
@@ -2017,7 +2075,7 @@ async function readShokzLandingRelatedState(client, state) {
             label: clean(element.querySelector("h2,h3,h4,h5,a,button,p")?.innerText || element.innerText || element.textContent, 120),
             text: clean(element.innerText || element.textContent, 360),
             rect: rectInfo(rect),
-            area: intersects(rect, rootRect)
+            area: intersects(rect, metadataBounds)
           };
         })
         .filter((item) => item.area > 0 && (item.label || item.text))

@@ -567,6 +567,15 @@ test("landing page overview exposes only meaningful carousel modules", () => {
   );
 });
 
+test("sports scenes carousel crops each state to the centered slide", () => {
+  const sportsDefinitions = shokzLandingRelatedSectionDefinitionsForPath("/pages/explore-sports-headphones");
+  const scenes = sportsDefinitions.find((definition) => definition.key === "landing-sports-scenes");
+  const athletes = sportsDefinitions.find((definition) => definition.key === "landing-sports-athletes");
+
+  assert.equal(scenes?.centerSlideOnly, true);
+  assert.equal(athletes?.centerSlideOnly, undefined);
+});
+
 test("only comparison page capture mode uses dedicated view more expansion", () => {
   assert.equal(shouldUseDedicatedViewMoreExpansion({ captureMode: "shokz-comparison-page" }), true);
   assert.equal(shouldUseDedicatedViewMoreExpansion({ captureMode: "shokz-collection-page" }), false);
