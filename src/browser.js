@@ -25,6 +25,19 @@ const pageShotMotionFreezeStateKey = "__pageShotMotionFreeze";
 const pageShotMotionFreezeStyleId = "__pageShotMotionFreezeStyle";
 const browserLaunchProfiles = [
   {
+    name: "headless-new-in-process-gpu",
+    args: [
+      "--headless=new",
+      "--disable-gpu",
+      "--disable-gpu-sandbox",
+      "--disable-software-rasterizer",
+      "--disable-dev-shm-usage",
+      "--in-process-gpu",
+      "--no-sandbox",
+      "--disable-setuid-sandbox"
+    ]
+  },
+  {
     name: "headless-new-no-sandbox",
     args: ["--headless=new", "--disable-gpu", "--disable-gpu-sandbox", "--no-sandbox", "--disable-setuid-sandbox"]
   },
@@ -70,6 +83,7 @@ export async function capturePage(url, outputPath, options = {}) {
 
 async function capturePageWithBrowserProfile(browserPath, profile, url, outputPath, options = {}) {
   const userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-"));
+  let client = null;
   const captureTimeoutMs = Number.isFinite(Number(options.captureTimeoutMs))
     ? Number(options.captureTimeoutMs)
     : defaultCaptureTimeoutMs;
@@ -96,7 +110,7 @@ async function capturePageWithBrowserProfile(browserPath, profile, url, outputPa
   try {
     const port = await waitForDebugPort(userDataDir, defaultTimeoutMs);
     const target = await createTarget(port, url);
-    const client = new CdpClient(target.webSocketDebuggerUrl);
+    client = new CdpClient(target.webSocketDebuggerUrl);
     await client.ready;
     const result = await withTimeout(
       driveCapture(client, url, outputPath, options),
@@ -104,6 +118,7 @@ async function capturePageWithBrowserProfile(browserPath, profile, url, outputPa
       () => new Error(`Capture timed out after ${Math.round(captureTimeoutMs / 1000)}s.`)
     );
     client.close();
+    client = null;
     return { ...result, browserPath };
   } catch (error) {
     const details = stderr.trim().split(/\r?\n/).slice(-6).join(" ");
@@ -120,6 +135,7 @@ async function capturePageWithBrowserProfile(browserPath, profile, url, outputPa
     }
     throw new Error(decoratedMessage);
   } finally {
+    client?.close();
     await terminateBrowser(browser);
     await removeTempDir(userDataDir);
     if (stderr.includes("DevToolsActivePort file doesn't exist")) {
@@ -129,7 +145,15 @@ async function capturePageWithBrowserProfile(browserPath, profile, url, outputPa
 }
 
 function isRetryableBrowserLaunchError(error) {
-  return /Browser could not start headless mode|CDP socket closed\. \(stage: initializing\)|Target crashed \(stage: initializing\)|Timed out waiting for browser debugging port|DevToolsActivePort|GPU process isn't usable|gpu_process_host|URL check failed after navigation|chrome-error:\/\/chromewebdata/i.test(String(error?.message || ""));
+  const message = String(error?.message || "");
+  if (String(error?.finalUrl || "").startsWith("chrome-error://")) {
+    return false;
+  }
+  const stageMatch = message.match(/\(stage: ([^)]+)\)/);
+  if (stageMatch && stageMatch[1] !== "initializing") {
+    return /URL check failed after navigation|chrome-error:\/\/chromewebdata/i.test(message);
+  }
+  return /Browser could not start headless mode|CDP socket closed\. \(stage: initializing\)|Target crashed \(stage: initializing\)|Timed out waiting for browser debugging port|DevToolsActivePort|GPU process isn't usable|gpu_process_host|URL check failed after navigation|chrome-error:\/\/chromewebdata/i.test(message);
 }
 
 export async function findBrowser() {
@@ -137,8 +161,15 @@ export async function findBrowser() {
 }
 
 async function findBrowsers() {
+  const browserPathOverride = String(process.env.BROWSER_PATH || "").trim();
+  if (browserPathOverride) {
+    if (fsSync.existsSync(browserPathOverride)) {
+      return [browserPathOverride];
+    }
+    throw new Error(`BROWSER_PATH does not exist: ${browserPathOverride}`);
+  }
+
   const candidates = [
-    process.env.BROWSER_PATH,
     "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
     "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
     "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
@@ -20572,8 +20603,16 @@ async function terminateBrowser(child) {
   }
 
   if (process.platform === "win32" && child.pid) {
+    if (child.exitCode === null) {
+      child.kill();
+      await waitForExit(child, 1000);
+    }
     await forceKillWindowsProcessTree(child.pid);
     await waitForExit(child, 3000);
+    if (child.exitCode === null) {
+      child.kill("SIGKILL");
+      await waitForExit(child, 3000);
+    }
     releaseChildProcessHandles(child);
     return;
   }
