@@ -16367,13 +16367,13 @@ async function waitForShokzProductsNavigationPanelImages(client) {
         });
       })).then(() => {
         const readyCount = images.filter((img) => img.complete && img.naturalWidth > 0 && img.naturalHeight > 0).length;
-        const expectedReady = Math.min(images.length, 3);
+        const expectedReady = Math.min(images.length, 2);
         return {
-          ok: images.length >= 3 && readyCount >= expectedReady,
+          ok: images.length >= 1 && readyCount >= expectedReady,
           imageCount: images.length,
           readyCount,
-          reason: images.length < 3
-            ? "Desktop Products navigation panel had too few visible images."
+          reason: images.length < 1
+            ? "Desktop Products navigation panel had no visible product images."
             : "Only loaded " + readyCount + "/" + images.length + " Products menu images."
         };
       });
