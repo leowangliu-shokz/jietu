@@ -6,7 +6,9 @@ const config = await loadConfig();
 const results = await runCaptureCommand();
 
 for (const result of results) {
-  if (result.ok) {
+  if (result.skipped) {
+    console.log(`Skipped ${result.displayUrl || result.url || result.capturePlanId || "capture"}: ${result.error || "capture skipped"}`);
+  } else if (result.ok) {
     for (const snapshot of result.snapshots || [result.snapshot]) {
       console.log(`Saved ${snapshot.displayUrl || snapshot.url} -> archive/${snapshot.file}`);
     }
@@ -15,7 +17,7 @@ for (const result of results) {
   }
 }
 
-if (results.some((result) => !result.ok)) {
+if (results.some((result) => !result.ok && !result.skipped)) {
   process.exitCode = 1;
 }
 

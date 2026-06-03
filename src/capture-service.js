@@ -11,7 +11,7 @@ import { createCaptureDiagnosticRun, finalizeCaptureDiagnostic, recordCaptureDia
 import { withCaptureLock } from "./capture-lock.js";
 import { appendCaptureRun } from "./capture-runs.js";
 import { loadChanges, rebuildChanges } from "./changes.js";
-import { notifyChangeRecords } from "./change-notifier.js";
+import { notifyChangeRecords, resolveChangeNotificationConfig } from "./change-notifier.js";
 import { findDevicePreset, toPublicDevicePreset } from "./device-presets.js";
 import { boundedConcurrency, runJobQueue } from "./job-queue.js";
 import { archiveDir } from "./paths.js";
@@ -43,7 +43,13 @@ const mobileComparisonProductMapTimeoutMs = 55 * 60 * 1000;
 export async function captureConfiguredUrls(config = null, options = {}) {
   const activeConfig = normalizeConfig(config || await loadConfig());
   const plans = resolveConfiguredCapturePlans(activeConfig, options);
-  return withCaptureLock(() => runResolvedCapturePlans(plans, activeConfig, options));
+  return withCaptureLock(async () => {
+    const preflight = await runCaptureNetworkPreflight(plans, activeConfig, options);
+    if (!preflight.ok) {
+      return skipCaptureRunForNetworkPreflight(plans, activeConfig, options, preflight);
+    }
+    return runResolvedCapturePlans(plans, activeConfig, options);
+  });
 }
 
 export async function captureAllDevices(config = null, options = {}) {
@@ -472,12 +478,244 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
       result.textQualityRefresh = textQualityRefresh;
     }
   }
-  await appendCaptureRun(run).catch(() => null);
+  await appendCaptureRun(run, { filePath: options.captureRunsFilePath }).catch(() => null);
   Object.defineProperty(results, "captureRun", { value: run, enumerable: false });
   Object.defineProperty(results, "changeRefresh", { value: changeRefresh, enumerable: false });
   Object.defineProperty(results, "seoRefresh", { value: seoRefresh, enumerable: false });
   Object.defineProperty(results, "textQualityRefresh", { value: textQualityRefresh, enumerable: false });
   return results;
+}
+
+async function runCaptureNetworkPreflight(plans, config = {}, options = {}) {
+  const settings = captureNetworkPreflightSettings(config, options);
+  if (!settings.enabled || !Array.isArray(plans) || !plans.length) {
+    return { ok: true, enabled: settings.enabled, skipped: true, checks: [] };
+  }
+
+  const checks = captureNetworkPreflightChecks(plans, options);
+  if (!checks.length) {
+    return { ok: true, enabled: settings.enabled, checks: [] };
+  }
+
+  let lastAttempt = null;
+  for (let attempt = 1; attempt <= settings.attempts; attempt += 1) {
+    const results = [];
+    for (const check of checks) {
+      results.push(await runNetworkPreflightCheck(check, settings));
+    }
+    lastAttempt = { attempt, checks: results };
+    if (results.every((result) => result.ok)) {
+      return {
+        ok: true,
+        enabled: true,
+        attempts: attempt,
+        checks: results,
+        retryDelayMs: settings.retryDelayMs
+      };
+    }
+    if (attempt < settings.attempts) {
+      await settings.sleep(settings.retryDelayMs);
+    }
+  }
+
+  return {
+    ok: false,
+    enabled: true,
+    attempts: settings.attempts,
+    retryDelayMs: settings.retryDelayMs,
+    checks: lastAttempt?.checks || [],
+    reason: "network-unavailable",
+    message: networkPreflightFailureMessage(lastAttempt?.checks || [])
+  };
+}
+
+function captureNetworkPreflightSettings(config = {}, options = {}) {
+  const env = options.env || process.env;
+  return {
+    enabled: booleanOption(options.networkPreflightEnabled ?? env.CAPTURE_NETWORK_PREFLIGHT_ENABLED, true),
+    attempts: clampInteger(
+      options.networkPreflightAttempts ?? config.networkPreflightAttempts ?? env.CAPTURE_NETWORK_PREFLIGHT_ATTEMPTS,
+      1,
+      10,
+      3
+    ),
+    retryDelayMs: clampInteger(
+      options.networkPreflightRetryDelayMs ?? config.networkPreflightRetryDelayMs ?? env.CAPTURE_NETWORK_PREFLIGHT_RETRY_DELAY_MS,
+      0,
+      30 * 60 * 1000,
+      5 * 60 * 1000
+    ),
+    timeoutMs: clampInteger(
+      options.networkPreflightTimeoutMs ?? config.networkPreflightTimeoutMs ?? env.CAPTURE_NETWORK_PREFLIGHT_TIMEOUT_MS,
+      1000,
+      120000,
+      15000
+    ),
+    fetchImpl: options.fetchImpl || globalThis.fetch,
+    probe: options.networkPreflightProbe || null,
+    sleep: options.networkPreflightSleep || sleep
+  };
+}
+
+function captureNetworkPreflightChecks(plans, options = {}) {
+  const checks = [];
+  const seenOrigins = new Set();
+  for (const plan of plans) {
+    const url = stringOrNull(plan?.target?.url || plan?.url);
+    if (!url) {
+      continue;
+    }
+    try {
+      const parsed = new URL(url);
+      const key = parsed.origin.toLowerCase();
+      if (seenOrigins.has(key)) {
+        continue;
+      }
+      seenOrigins.add(key);
+      checks.push({
+        type: "capture-target",
+        label: parsed.hostname,
+        url: `${parsed.origin}/`
+      });
+    } catch {
+      checks.push({
+        type: "capture-target",
+        label: url,
+        url
+      });
+    }
+  }
+
+  const notificationConfig = resolveChangeNotificationConfig(options.env || process.env, options.changeNotification || {});
+  if (notificationConfig.enabled && notificationConfig.webhook) {
+    try {
+      const webhookUrl = new URL(notificationConfig.webhook);
+      checks.push({
+        type: "dingtalk-webhook",
+        label: webhookUrl.hostname,
+        url: webhookUrl.origin
+      });
+    } catch {
+      checks.push({
+        type: "dingtalk-webhook",
+        label: "DingTalk webhook",
+        url: notificationConfig.webhook
+      });
+    }
+  }
+
+  return checks;
+}
+
+async function runNetworkPreflightCheck(check, settings) {
+  if (typeof settings.probe === "function") {
+    return normalizeNetworkPreflightResult(check, await settings.probe(check, settings));
+  }
+  if (typeof settings.fetchImpl !== "function") {
+    return { ...check, ok: false, error: "fetch-unavailable" };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), settings.timeoutMs);
+  try {
+    const response = await settings.fetchImpl(check.url, {
+      method: "HEAD",
+      redirect: "follow",
+      signal: controller.signal
+    });
+    return {
+      ...check,
+      ok: Boolean(response?.ok),
+      status: Number(response?.status || 0) || null,
+      error: response?.ok ? null : `HTTP ${response?.status || "unknown"}`
+    };
+  } catch (error) {
+    return {
+      ...check,
+      ok: false,
+      error: error?.name === "AbortError" ? `timeout after ${settings.timeoutMs}ms` : error?.message || String(error)
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function normalizeNetworkPreflightResult(check, result = {}) {
+  return {
+    ...check,
+    ok: Boolean(result.ok),
+    status: Number.isFinite(Number(result.status)) ? Number(result.status) : null,
+    error: result.ok ? null : stringOrNull(result.error) || "network check failed"
+  };
+}
+
+async function skipCaptureRunForNetworkPreflight(plans, config, options, preflight) {
+  const run = createCaptureRunRecord(plans, options);
+  const finishedAt = new Date();
+  const message = preflight.message || "Network preflight failed; capture skipped.";
+  run.status = "skipped";
+  run.finishedAt = finishedAt.toISOString();
+  run.durationMs = finishedAt.getTime() - new Date(run.startedAt).getTime();
+  run.totalCount = plans.length;
+  run.successCount = 0;
+  run.failureCount = 0;
+  run.skippedCount = plans.length;
+  run.concurrency = 0;
+  run.jobQueue = {
+    totalCount: plans.length,
+    concurrency: 0,
+    durationMs: run.durationMs,
+    maxActiveCount: 0
+  };
+  run.changeRefresh = {
+    ok: true,
+    skipped: true,
+    reason: preflight.reason || "network-unavailable"
+  };
+  run.seoRefresh = { ok: true, skipped: true };
+  run.textQualityRefresh = { ok: true, skipped: true };
+  run.networkPreflight = preflight;
+  for (const item of run.items) {
+    item.status = "skipped";
+    item.ok = null;
+    item.startedAt = run.startedAt;
+    item.finishedAt = run.finishedAt;
+    item.durationMs = run.durationMs;
+    item.error = message;
+  }
+  await appendCaptureRun(run, { filePath: options.captureRunsFilePath }).catch(() => null);
+
+  const results = plans.map((plan, index) => ({
+    ok: true,
+    skipped: true,
+    error: message,
+    networkPreflight: preflight,
+    targetId: plan.targetId || plan.target?.id || null,
+    targetLabel: plan.target?.label || null,
+    displayUrl: plan.target?.label || plan.target?.url || null,
+    url: plan.target?.url || null,
+    platform: plan.platform || null,
+    deviceProfileId: plan.deviceProfileId || plan.deviceProfile?.id || null,
+    capturePlanId: plan.id || null,
+    runId: run.id,
+    runItemId: run.items[index]?.id || null,
+    runIndex: index + 1,
+    runTotal: plans.length
+  }));
+  Object.defineProperty(results, "captureRun", { value: run, enumerable: false });
+  Object.defineProperty(results, "changeRefresh", { value: run.changeRefresh, enumerable: false });
+  Object.defineProperty(results, "seoRefresh", { value: run.seoRefresh, enumerable: false });
+  Object.defineProperty(results, "textQualityRefresh", { value: run.textQualityRefresh, enumerable: false });
+  return results;
+}
+
+function networkPreflightFailureMessage(checks) {
+  const failed = checks
+    .filter((check) => !check.ok)
+    .map((check) => `${check.label || check.url}: ${check.error || "unavailable"}`);
+  return failed.length
+    ? `Network preflight failed; capture skipped. ${failed.join("; ")}`
+    : "Network preflight failed; capture skipped.";
 }
 
 async function persistPreparedCaptureResult(result) {
@@ -1086,6 +1324,35 @@ function createSeoSnapshotsForCapture(capture, snapshots) {
 function stringOrNull(value) {
   const text = String(value || "").trim();
   return text || null;
+}
+
+function booleanOption(value, fallback = false) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+  if (typeof value === "boolean") {
+    return value;
+  }
+  const text = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(text)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(text)) {
+    return false;
+  }
+  return fallback;
+}
+
+function clampInteger(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, Math.trunc(number)));
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
 }
 
 function findHomeOverviewTile(snapshot, tileKey) {
@@ -2230,6 +2497,8 @@ export const __testOnly = {
   relatedCaptureModeForTarget,
   relatedCaptureConcurrency,
   captureRetryAttempts,
+  runCaptureNetworkPreflight,
+  skipCaptureRunForNetworkPreflight,
   shouldRetryCaptureResult,
   resolveAdHocCaptureExecution,
   createCaptureRunRecord,

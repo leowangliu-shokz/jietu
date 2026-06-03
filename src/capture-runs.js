@@ -43,6 +43,9 @@ function normalizeCaptureRun(run = {}) {
     concurrency: numberOrDefault(run.concurrency, 1),
     jobQueue: normalizeCaptureRunJobQueue(run.jobQueue),
     changeRefresh: run.changeRefresh || null,
+    seoRefresh: run.seoRefresh || null,
+    textQualityRefresh: run.textQualityRefresh || null,
+    networkPreflight: run.networkPreflight || null,
     items: items.map(normalizeCaptureRunItem)
   };
 }
@@ -63,7 +66,7 @@ function normalizeCaptureRunItem(item = {}) {
   return {
     id: stringOrDefault(item.id, item.capturePlanId || "capture-item"),
     status: stringOrDefault(item.status, item.ok === false ? "failed" : "unknown"),
-    ok: item.ok === undefined ? null : Boolean(item.ok),
+    ok: item.ok === undefined || item.ok === null ? null : Boolean(item.ok),
     targetId: stringOrNull(item.targetId),
     targetLabel: stringOrNull(item.targetLabel),
     url: stringOrNull(item.url || item.requestedUrl),

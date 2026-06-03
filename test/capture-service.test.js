@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { __testOnly, relatedShotLabelForCaptureItem } from "../src/capture-service.js";
 
@@ -86,4 +89,76 @@ test("resolves replacement capture modes for non-home related screenshots", () =
     ),
     "shokz-landing-related"
   );
+});
+
+test("network preflight retries capture target and DingTalk checks before succeeding", async () => {
+  const plans = [{
+    id: "plan-home-pc",
+    platform: "pc",
+    target: {
+      id: "home",
+      label: "Home",
+      url: "https://shokz.com/"
+    }
+  }];
+  let attempt = 0;
+
+  const result = await __testOnly.runCaptureNetworkPreflight(plans, {}, {
+    env: {
+      CHANGE_NOTIFY_ENABLED: "1",
+      DINGTALK_WEBHOOK: "https://oapi.dingtalk.com/robot/send?access_token=test"
+    },
+    networkPreflightAttempts: 3,
+    networkPreflightRetryDelayMs: 0,
+    networkPreflightSleep: async () => {},
+    networkPreflightProbe: async (check) => {
+      if (check.type === "capture-target") {
+        attempt += 1;
+      }
+      return attempt >= 2
+        ? { ok: true, status: 200 }
+        : { ok: false, error: "offline" };
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.attempts, 2);
+  assert.deepEqual(result.checks.map((check) => check.type), ["capture-target", "dingtalk-webhook"]);
+});
+
+test("network preflight skip records a skipped run without failed items", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jietu-capture-runs-"));
+  const captureRunsFilePath = path.join(dir, "capture-runs.json");
+  const plans = [{
+    id: "plan-home-pc",
+    platform: "pc",
+    deviceProfileId: "pc-default",
+    deviceProfile: { id: "pc-default", devicePresetId: "pc-hd" },
+    target: {
+      id: "home",
+      label: "Home",
+      url: "https://shokz.com/"
+    }
+  }];
+  const results = await __testOnly.skipCaptureRunForNetworkPreflight(plans, {}, {
+    runId: "run-network-skip",
+    captureRunsFilePath
+  }, {
+    ok: false,
+    reason: "network-unavailable",
+    message: "Network preflight failed; capture skipped.",
+    checks: [{ type: "capture-target", label: "shokz.com", ok: false, error: "offline" }]
+  });
+  const storedRuns = JSON.parse(await fs.readFile(captureRunsFilePath, "utf8"));
+
+  assert.equal(results.length, 1);
+  assert.equal(results[0].ok, true);
+  assert.equal(results[0].skipped, true);
+  assert.equal(results.captureRun.status, "skipped");
+  assert.equal(results.captureRun.failureCount, 0);
+  assert.equal(results.captureRun.skippedCount, 1);
+  assert.equal(storedRuns[0].status, "skipped");
+  assert.equal(storedRuns[0].items[0].status, "skipped");
+  assert.equal(storedRuns[0].items[0].ok, null);
+  await fs.rm(dir, { recursive: true, force: true });
 });
