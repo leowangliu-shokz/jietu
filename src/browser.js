@@ -3180,12 +3180,18 @@ async function restoreShokzNavigationHover(client, state, captureContext = null)
     await hoverShokzTopNavigationLabel(client, "Products");
     const activated = await hoverShokzProductsSecondaryLabel(client, state.hoverItemLabel);
     if (activated?.ok) {
+      if (captureContext && !isMobileCaptureContext(captureContext)) {
+        await waitForShokzDesktopProductsNavigationReady(client);
+      }
       return;
     }
     if (captureContext) {
       await openShokzProductsNavigation(client, captureContext);
       const openedActivation = await hoverShokzProductsSecondaryLabel(client, state.hoverItemLabel);
       if (openedActivation?.ok) {
+        if (!isMobileCaptureContext(captureContext)) {
+          await waitForShokzDesktopProductsNavigationReady(client);
+        }
         return;
       }
     }
@@ -3644,6 +3650,14 @@ async function readShokzProductsNavigationCategoryItems(client, topItem) {
     expression: `(() => {
       const topItem = ${JSON.stringify(topItem)};
       const allowedLabels = ${JSON.stringify(shokzProductsNavigationCategoryLabels)};
+      const desktopMinCategoryLeft = () => Math.max(120, window.innerWidth * 0.12);
+      const desktopCategoryLayoutIssue = (rect) => {
+        if (!rect) return "Desktop Products navigation category column was not found.";
+        if (rect.left < desktopMinCategoryLeft()) {
+          return "Desktop Products navigation category column was too close to the left edge.";
+        }
+        return "";
+      };
       const visible = (element) => {
         if (!element || !(element instanceof Element)) return false;
         const rect = element.getBoundingClientRect();
@@ -3714,7 +3728,16 @@ async function readShokzProductsNavigationCategoryItems(client, topItem) {
         )
         .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left)[0];
       if (!root) {
-        return { ok: true, items: [] };
+        return { ok: false, reason: "Desktop Products navigation category column was not found.", items: [] };
+      }
+      const layoutIssue = desktopCategoryLayoutIssue(root.rect);
+      if (layoutIssue) {
+        return {
+          ok: false,
+          reason: layoutIssue,
+          panelRect: root.rect,
+          items: []
+        };
       }
       const rejectText = /product$|compare products|all products|shop now|learn more|view all|search|account|cart|close|feedback/i;
       const raw = Array.from(root.element.querySelectorAll(".ga4-pc-nav-title, a, button, [role='button'], div, span"))
@@ -4005,6 +4028,37 @@ async function readShokzNavigationSnapshotState(client, state) {
           height: Math.round(rect.height)
         };
       };
+      const desktopProductsCategoryRootIssue = (rect) => {
+        if (!rect) return "Desktop Products navigation category column was not found.";
+        const minLeft = Math.max(120, window.innerWidth * 0.12);
+        if (rect.left < minLeft) {
+          return "Desktop Products navigation category column was too close to the left edge.";
+        }
+        return "";
+      };
+      const findDesktopProductsCategoryRoot = () => {
+        const labels = ${JSON.stringify(shokzProductsNavigationCategoryLabels)};
+        return Array.from(document.querySelectorAll([
+          ".mega-menu__content .left-wrapper",
+          ".product_mega_menu .left-wrapper",
+          ".product_mega_menu-wrapper .left-wrapper",
+          "[class*='mega'] [class*='left']"
+        ].join(",")))
+          .filter(visible)
+          .map((element) => ({
+            element,
+            rect: rectOf(element),
+            text: textOf(element)
+          }))
+          .filter((item) =>
+            item.text.length > 20 &&
+            item.rect.top >= 90 &&
+            item.rect.height >= 180 &&
+            item.rect.width >= 160 &&
+            labels.every((label) => comparable(item.text).includes(comparable(label)))
+          )
+          .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left)[0] || null;
+      };
       const findPanel = () => {
         if (mobileTap) {
           const syntheticPanel = Array.from(document.querySelectorAll("[data-page-shot-nav-secondary='true']"))
@@ -4097,6 +4151,24 @@ async function readShokzNavigationSnapshotState(client, state) {
       if (!panel) {
         return { ok: false, reason: "No visible navigation panel was found." };
       }
+      const desktopProductsSecondary = !mobileTap &&
+        state.navigationLevel === "secondary" &&
+        comparable(state.topLevelLabel || state.tabLabel).includes("products");
+      const desktopProductsCategoryRoot = desktopProductsSecondary
+        ? findDesktopProductsCategoryRoot()
+        : null;
+      const desktopProductsCategoryRootRect = desktopProductsCategoryRoot?.rect || null;
+      const desktopProductsCategoryIssue = desktopProductsSecondary
+        ? desktopProductsCategoryRootIssue(desktopProductsCategoryRootRect)
+        : "";
+      if (desktopProductsCategoryIssue) {
+        return {
+          ok: false,
+          reason: desktopProductsCategoryIssue,
+          panelRect: panel.rect,
+          categoryPanelRect: desktopProductsCategoryRootRect
+        };
+      }
       const text = panel.text.replace(/\\s+/g, " ").trim();
       if (mobileTap) {
         const expectedLabels = [
@@ -4185,6 +4257,7 @@ async function readShokzNavigationSnapshotState(client, state) {
         visibleItemCount: visibleItems.length,
         hoverItemRect: state.hoverItemRect || null,
         panelRect: panel.rect,
+        categoryPanelRect: desktopProductsCategoryRootRect,
         panelSignature: comparable(text).slice(0, 240)
       };
     })()`,
@@ -16148,6 +16221,12 @@ async function openShokzProductsNavigation(client, captureContext) {
       await hoverShokzProductsMenu(client);
     }
     state = await waitForShokzProductsNavigation(client, false);
+    if (state.ok) {
+      const ready = await waitForShokzDesktopProductsNavigationReady(client);
+      if (!ready.ok) {
+        state = { ...state, ok: false, reason: ready.reason };
+      }
+    }
   }
 
   if (!state.ok || (mobile && !state.drawerVisible)) {
@@ -16155,9 +16234,21 @@ async function openShokzProductsNavigation(client, captureContext) {
       for (let attempt = 0; attempt < 2 && !state.ok; attempt += 1) {
         await hoverShokzTopNavigationLabel(client, "Products");
         state = await waitForShokzProductsNavigation(client, false);
+        if (state.ok) {
+          const ready = await waitForShokzDesktopProductsNavigationReady(client);
+          if (!ready.ok) {
+            state = { ...state, ok: false, reason: ready.reason };
+          }
+        }
         if (state.ok) break;
         await hoverShokzProductsMenu(client);
         state = await waitForShokzProductsNavigation(client, false);
+        if (state.ok) {
+          const ready = await waitForShokzDesktopProductsNavigationReady(client);
+          if (!ready.ok) {
+            state = { ...state, ok: false, reason: ready.reason };
+          }
+        }
       }
     }
   }
@@ -16166,9 +16257,145 @@ async function openShokzProductsNavigation(client, captureContext) {
     const visibleText = state.visibleText ? ` Visible text: ${state.visibleText}` : "";
     const clickText = mobileClick ? ` click=${mobileClick.clickMethod || "unknown"} "${String(mobileClick.text || mobileClick.meta || "").slice(0, 120)}"` : "";
     const drawerText = state.drawerText ? ` drawer="${state.drawerText}"` : "";
-    const details = ` hits=${state.categoryHits || 0}/${state.taxonomyHits || 0} search=${Boolean(state.searchOpen)} cart=${Boolean(state.cartOpen)} drawer=${Boolean(state.drawerVisible)} scrollY=${Math.round(state.scrollY || 0)}${clickText}${drawerText}`;
+    const reasonText = state.reason ? ` reason=${state.reason}` : "";
+    const details = ` hits=${state.categoryHits || 0}/${state.taxonomyHits || 0} search=${Boolean(state.searchOpen)} cart=${Boolean(state.cartOpen)} drawer=${Boolean(state.drawerVisible)} scrollY=${Math.round(state.scrollY || 0)}${reasonText}${clickText}${drawerText}`;
     throw new Error(`Shokz products navigation did not open.${details}${visibleText}`);
   }
+}
+
+async function waitForShokzDesktopProductsNavigationReady(client) {
+  let lastReason = "";
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    await primeLazyImages(client);
+    const categoryPlan = await readShokzProductsNavigationCategoryItems(client, {
+      index: 1,
+      label: "Products"
+    });
+    if (!categoryPlan.ok || categoryPlan.items?.length < shokzProductsNavigationCategoryLabels.length) {
+      lastReason = categoryPlan.reason ||
+        `Only found ${categoryPlan.items?.length || 0}/${shokzProductsNavigationCategoryLabels.length} Products category items.`;
+      await sleep(350);
+      continue;
+    }
+
+    const imageState = await waitForShokzProductsNavigationPanelImages(client);
+    if (imageState.ok) {
+      return { ok: true, categoryPlan, imageState };
+    }
+    lastReason = imageState.reason || `Only loaded ${imageState.readyCount || 0}/${imageState.imageCount || 0} Products menu images.`;
+    await sleep(350);
+  }
+  return {
+    ok: false,
+    reason: lastReason || "Desktop Products navigation did not reach a stable layout."
+  };
+}
+
+async function waitForShokzProductsNavigationPanelImages(client) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          rect.bottom > 0 &&
+          rect.right > 0 &&
+          rect.top < window.innerHeight &&
+          rect.left < window.innerWidth &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const textOf = (element) => element ? [
+        element.innerText || element.textContent,
+        element.getAttribute?.("aria-label"),
+        element.getAttribute?.("title")
+      ].filter(Boolean).join(" ").replace(/\\s+/g, " ").trim() : "";
+      const comparable = (value) => String(value || "")
+        .toLowerCase()
+        .replace(/&/g, "and")
+        .replace(/[^a-z0-9]+/g, "");
+      const labels = ${JSON.stringify(shokzProductsNavigationCategoryLabels)};
+      const panel = Array.from(document.querySelectorAll([
+        ".mega-menu__content",
+        ".product_mega_menu",
+        ".product_mega_menu-wrapper",
+        "[class*='mega-menu']"
+      ].join(",")))
+        .filter(visible)
+        .map((element) => ({
+          element,
+          text: textOf(element),
+          rect: element.getBoundingClientRect()
+        }))
+        .filter((item) =>
+          comparable(item.text).includes("products") &&
+          labels.every((label) => comparable(item.text).includes(comparable(label))) &&
+          item.rect.top < Math.max(220, window.innerHeight * 0.3) &&
+          item.rect.height >= 260
+        )
+        .sort((a, b) => a.rect.top - b.rect.top || b.rect.width * b.rect.height - a.rect.width * a.rect.height)[0];
+      if (!panel) {
+        return { ok: false, reason: "Desktop Products navigation panel was not found for image readiness.", imageCount: 0, readyCount: 0 };
+      }
+      const images = Array.from(panel.element.querySelectorAll("img"))
+        .filter(visible)
+        .filter((img) => img.currentSrc || img.src || img.getAttribute("data-src") || img.getAttribute("data-original") || img.getAttribute("data-lazy-src"));
+      for (const img of images) {
+        img.loading = "eager";
+        for (const attr of ["data-src", "data-original", "data-lazy-src"]) {
+          const value = img.getAttribute(attr);
+          if (value && !img.getAttribute("src")) img.setAttribute("src", value);
+        }
+        for (const attr of ["data-srcset", "data-lazy-srcset"]) {
+          const value = img.getAttribute(attr);
+          if (value && !img.getAttribute("srcset")) img.setAttribute("srcset", value);
+        }
+      }
+      return Promise.all(images.map((img) => {
+        if (img.decode && (img.currentSrc || img.src)) {
+          return img.decode().catch(() => true);
+        }
+        if (img.complete && img.naturalWidth > 0) return true;
+        return new Promise((resolve) => {
+          const done = () => resolve(true);
+          img.addEventListener("load", done, { once: true });
+          img.addEventListener("error", done, { once: true });
+          setTimeout(done, 2200);
+        });
+      })).then(() => {
+        const readyCount = images.filter((img) => img.complete && img.naturalWidth > 0 && img.naturalHeight > 0).length;
+        const expectedReady = Math.min(images.length, 3);
+        return {
+          ok: images.length >= 3 && readyCount >= expectedReady,
+          imageCount: images.length,
+          readyCount,
+          reason: images.length < 3
+            ? "Desktop Products navigation panel had too few visible images."
+            : "Only loaded " + readyCount + "/" + images.length + " Products menu images."
+        };
+      });
+    })()`,
+    awaitPromise: true,
+    returnByValue: true
+  }).catch((error) => ({
+    result: {
+      value: {
+        ok: false,
+        reason: error.message || "Could not wait for Products navigation images.",
+        imageCount: 0,
+        readyCount: 0
+      }
+    }
+  }));
+  return result.result?.value || {
+    ok: false,
+    reason: "Could not wait for Products navigation images.",
+    imageCount: 0,
+    readyCount: 0
+  };
 }
 
 async function hoverShokzProductsMenu(client) {
