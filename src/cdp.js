@@ -3,6 +3,7 @@ export class CdpClient {
     this.nextId = 1;
     this.pending = new Map();
     this.eventWaiters = new Map();
+    this.eventListeners = new Map();
     this.socket = new WebSocket(webSocketUrl);
     this.ready = new Promise((resolve, reject) => {
       this.socket.addEventListener("open", resolve, { once: true });
@@ -24,11 +25,22 @@ export class CdpClient {
         return;
       }
 
-      if (payload.method && this.eventWaiters.has(payload.method)) {
-        const waiters = this.eventWaiters.get(payload.method);
-        this.eventWaiters.delete(payload.method);
-        for (const resolve of waiters) {
-          resolve(payload.params || {});
+      if (payload.method) {
+        if (this.eventListeners.has(payload.method)) {
+          for (const listener of this.eventListeners.get(payload.method)) {
+            try {
+              listener(payload.params || {});
+            } catch {
+              // Event listeners are observational; they must not break CDP command handling.
+            }
+          }
+        }
+        if (this.eventWaiters.has(payload.method)) {
+          const waiters = this.eventWaiters.get(payload.method);
+          this.eventWaiters.delete(payload.method);
+          for (const resolve of waiters) {
+            resolve(payload.params || {});
+          }
         }
       }
     });
@@ -68,6 +80,21 @@ export class CdpClient {
       waiters.push(wrappedResolve);
       this.eventWaiters.set(method, waiters);
     });
+  }
+
+  on(method, listener) {
+    const listeners = this.eventListeners.get(method) || [];
+    listeners.push(listener);
+    this.eventListeners.set(method, listeners);
+    return () => {
+      const current = this.eventListeners.get(method) || [];
+      const next = current.filter((item) => item !== listener);
+      if (next.length) {
+        this.eventListeners.set(method, next);
+      } else {
+        this.eventListeners.delete(method);
+      }
+    };
   }
 
   close() {

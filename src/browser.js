@@ -240,10 +240,14 @@ async function driveCapture(client, url, outputPath, options) {
   };
   const cleanShokzKnownPopups = shouldCleanShokzKnownPopups(url, options);
   const deferShokzMobileNavDismiss = options.captureMode === "shokz-products-nav" && mobile;
+  const trackingNetworkRequests = [];
   let stage = "initializing";
   try {
   await client.send("Page.enable");
   await client.send("Runtime.enable");
+  await client.send("Network.enable").catch(() => null);
+  watchTrackingNetworkRequests(client, trackingNetworkRequests);
+  await installTrackingAuditHooks(client);
   // The preset width/height are CSS pixels: keep the screenshot output at
   // that same visible size, otherwise high-DPI mobile DPR crops the left edge.
   await client.send("Emulation.setDeviceMetricsOverride", {
@@ -426,11 +430,13 @@ async function driveCapture(client, url, outputPath, options) {
     }
     const finalUrl = await verifyCurrentUrl(client, url, "after related capture", urlCheck);
     urlCheck.ok = true;
+    const trackingAudit = await readTrackingAudit(client, trackingNetworkRequests);
     return {
       requestedUrl: url,
       finalUrl,
       urlCheck,
       title: titleResult,
+      trackingAudit,
       width: relatedCapture.width,
       height: relatedCapture.height,
       fullPageHeight: relatedCapture.height,
@@ -691,6 +697,7 @@ async function driveCapture(client, url, outputPath, options) {
   urlCheck.ok = true;
   const visualHash = captureBuffer ? visualHashForBuffer(captureBuffer) : null;
   const visualAudit = captureBuffer && visualHash ? visualAuditForBuffer(captureBuffer, visualHash) : null;
+  const trackingAudit = await readTrackingAudit(client, trackingNetworkRequests);
 
   return {
     requestedUrl: url,
@@ -698,6 +705,7 @@ async function driveCapture(client, url, outputPath, options) {
     urlCheck,
     title: titleResult,
     seoSnapshot,
+    trackingAudit,
     width: clipWidth,
     height: captureHeight,
     fullPageHeight: pageHeight,
@@ -723,7 +731,7 @@ async function readPageTitle(client) {
 
 async function readSeoSnapshot(client) {
   const result = await client.send("Runtime.evaluate", {
-    expression: `(() => {
+    expression: `(async () => {
       const clean = (value, max = 500) => String(value || "").replace(/\\s+/g, " ").trim().slice(0, max);
       const dedupe = (values, max = 80) => {
         const seen = new Set();
@@ -740,6 +748,41 @@ async function readSeoSnapshot(client) {
         return list;
       };
       const metaContent = (selector) => clean(document.querySelector(selector)?.getAttribute("content"), 1200);
+      const linkHref = (link) => {
+        const href = clean(link?.getAttribute?.("href"), 1200);
+        if (!href) return "";
+        try {
+          return new URL(href, location.href).href;
+        } catch {
+          return href;
+        }
+      };
+      const canonicalLink = document.querySelector("link[rel='canonical' i]");
+      const canonical = linkHref(canonicalLink);
+      const checkUrlStatus = async (href) => {
+        if (!href) return null;
+        try {
+          const response = await fetch(href, {
+            method: "HEAD",
+            redirect: "follow",
+            cache: "no-store"
+          });
+          return {
+            ok: response.ok,
+            status: response.status,
+            finalUrl: response.url || href,
+            checkedAt: new Date().toISOString()
+          };
+        } catch (error) {
+          return {
+            ok: false,
+            status: 0,
+            finalUrl: href,
+            checkedAt: new Date().toISOString(),
+            error: clean(error?.message || error, 240)
+          };
+        }
+      };
       const visible = (element) => {
         if (!element || !(element instanceof Element)) return false;
         const style = getComputedStyle(element);
@@ -788,6 +831,25 @@ async function readSeoSnapshot(client) {
         })
         .filter(Boolean);
       const images = Array.from(document.querySelectorAll("img"));
+      const hreflangs = [];
+      const seenHreflangs = new Set();
+      for (const link of Array.from(document.querySelectorAll("link[rel]"))) {
+        const rel = clean(link.getAttribute("rel"), 240).toLowerCase().split(/\\s+/);
+        const hreflang = clean(link.getAttribute("hreflang"), 80);
+        if (!rel.includes("alternate") || !hreflang) continue;
+        const href = linkHref(link);
+        const key = hreflang.toLowerCase() + "::" + href.toLowerCase();
+        if (!href || seenHreflangs.has(key)) continue;
+        seenHreflangs.add(key);
+        hreflangs.push({ hreflang, href });
+        if (hreflangs.length >= 40) break;
+      }
+      const technicalNotes = dedupe(
+        Array.from(document.scripts)
+          .flatMap((script) => Array.from(String(script.textContent || "").matchAll(/(?:\\/\\/|\\/\\*)\\s*TODO:?\\s*[^\\r\\n*]{0,180}/ig)))
+          .map((match) => match[0]),
+        20
+      );
       const jsonLdTypes = dedupe(
         Array.from(document.querySelectorAll("script[type*='ld+json' i]"))
           .flatMap((script) => {
@@ -814,7 +876,8 @@ async function readSeoSnapshot(client) {
         },
         metaDescription: metaContent("meta[name='description' i]"),
         metaKeywords,
-        canonical: clean(document.querySelector("link[rel='canonical' i]")?.href, 1200),
+        canonical,
+        canonicalStatus: await checkUrlStatus(canonical),
         robots: metaContent("meta[name='robots' i]"),
         viewport: metaContent("meta[name='viewport' i]"),
         language: clean(document.documentElement?.lang, 80),
@@ -837,6 +900,8 @@ async function readSeoSnapshot(client) {
           card: metaContent("meta[name='twitter:card' i]")
         },
         jsonLdTypes,
+        hreflangs,
+        technicalNotes,
         imageAlt: {
           total: images.length,
           missing: images.filter((image) => !clean(image.getAttribute("alt"), 300)).length
@@ -848,9 +913,377 @@ async function readSeoSnapshot(client) {
         }
       };
     })()`,
-    returnByValue: true
+    returnByValue: true,
+    awaitPromise: true
   }).catch(() => ({ result: { value: null } }));
   return result.result?.value && typeof result.result.value === "object" ? result.result.value : null;
+}
+
+async function installTrackingAuditHooks(client) {
+  const expression = `(${pageShotTrackingAuditBootstrap.toString()})();`;
+  await client.send("Page.addScriptToEvaluateOnNewDocument", { source: expression }).catch(() => null);
+  await client.send("Runtime.evaluate", {
+    expression,
+    returnByValue: true
+  }).catch(() => null);
+}
+
+function watchTrackingNetworkRequests(client, requests) {
+  if (typeof client.on !== "function") {
+    return null;
+  }
+  return client.on("Network.requestWillBeSent", (params = {}) => {
+    const request = params.request || {};
+    const url = String(request.url || "");
+    if (!isTrackingNetworkUrl(url)) {
+      return;
+    }
+    requests.push({
+      id: params.requestId || "",
+      source: "cdp-network",
+      method: request.method || "GET",
+      url,
+      postData: request.postData || "",
+      timestamp: Math.round(Date.now())
+    });
+    if (requests.length > 800) {
+      requests.splice(0, requests.length - 800);
+    }
+  });
+}
+
+async function readTrackingAudit(client, networkRequests = []) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const audit = window.__pageShotTrackingAudit;
+      if (!audit) return null;
+      if (typeof audit.flush === "function") {
+        audit.flush();
+      }
+      return {
+        capturedAt: new Date().toISOString(),
+        url: location.href,
+        title: document.title,
+        events: Array.isArray(audit.events) ? audit.events.slice(-800) : [],
+        interactions: Array.isArray(audit.interactions) ? audit.interactions.slice(-500) : [],
+        network: Array.isArray(audit.network) ? audit.network.slice(-800) : []
+      };
+    })()`,
+    returnByValue: true
+  }).catch(() => ({ result: { value: null } }));
+  const value = result.result?.value && typeof result.result.value === "object"
+    ? result.result.value
+    : {};
+  return {
+    ...value,
+    networkRequests: Array.isArray(networkRequests) ? networkRequests.slice(-800) : []
+  };
+}
+
+function isTrackingNetworkUrl(url) {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./, "");
+    return /(^|\.)google-analytics\.com$/i.test(host) &&
+      (/\/g\/collect$|\/collect$|\/mp\/collect$/i.test(parsed.pathname) || parsed.searchParams.has("en"));
+  } catch {
+    return false;
+  }
+}
+
+function pageShotTrackingAuditBootstrap() {
+  if (window.__pageShotTrackingAudit?.installed) {
+    return;
+  }
+
+  const state = {
+    installed: true,
+    seq: 0,
+    events: [],
+    interactions: [],
+    network: [],
+    currentInteractionId: "",
+    maxEvents: 800,
+    maxInteractions: 500,
+    maxNetwork: 800,
+    scrollDepths: new Set()
+  };
+  window.__pageShotTrackingAudit = state;
+
+  const now = () => Date.now();
+  const clean = (value, max = 500) => String(value || "").replace(/\s+/g, " ").trim().slice(0, max);
+  const pushLimited = (list, item, max) => {
+    list.push(item);
+    if (list.length > max) {
+      list.splice(0, list.length - max);
+    }
+  };
+  const safeSerialize = (value, depth = 0, seen = new WeakSet()) => {
+    if (value === null || value === undefined) return value;
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+    if (typeof value === "function") return `[function ${value.name || "anonymous"}]`;
+    if (depth > 2) return "[object]";
+    if (typeof value !== "object") return String(value);
+    if (seen.has(value)) return "[circular]";
+    seen.add(value);
+    if (Array.isArray(value) || Object.prototype.toString.call(value) === "[object Arguments]") {
+      return Array.from(value).slice(0, 20).map((item) => safeSerialize(item, depth + 1, seen));
+    }
+    const output = {};
+    for (const [key, item] of Object.entries(value).slice(0, 60)) {
+      output[key] = safeSerialize(item, depth + 1, seen);
+    }
+    return output;
+  };
+  const locationContext = () => ({
+    url: location.href,
+    pagePath: `${location.pathname}${location.search}`,
+    scrollY: Math.round(window.scrollY || 0)
+  });
+  const isTrackingUrl = (url) => {
+    try {
+      const parsed = new URL(String(url || ""), location.href);
+      const host = parsed.hostname.replace(/^www\./, "");
+      return /(^|\.)google-analytics\.com$/i.test(host) &&
+        (/\/g\/collect$|\/collect$|\/mp\/collect$/i.test(parsed.pathname) || parsed.searchParams.has("en"));
+    } catch {
+      return false;
+    }
+  };
+  const eventNameFrom = (payload, args) => {
+    if (Array.isArray(args) && clean(args[0]) === "event") return clean(args[1]);
+    if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+      return clean(payload.event || payload.event_name || payload.en);
+    }
+    return "";
+  };
+  const paramsFrom = (payload, args) => {
+    if (Array.isArray(args) && clean(args[0]) === "event" && args[2] && typeof args[2] === "object") {
+      return safeSerialize(args[2]);
+    }
+    if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+      return safeSerialize(payload);
+    }
+    return {};
+  };
+  const recordEvent = (source, payload, args = []) => {
+    const serializedPayload = safeSerialize(payload);
+    const serializedArgs = Array.isArray(args) ? safeSerialize(args) : [];
+    pushLimited(state.events, {
+      id: `event-${++state.seq}`,
+      source,
+      name: eventNameFrom(serializedPayload, serializedArgs),
+      command: Array.isArray(serializedArgs) ? clean(serializedArgs[0]) : "",
+      parameters: paramsFrom(serializedPayload, serializedArgs),
+      payload: serializedPayload,
+      args: serializedArgs,
+      interactionId: state.currentInteractionId,
+      timestamp: now(),
+      ...locationContext()
+    }, state.maxEvents);
+  };
+  const wrapDataLayer = (value) => {
+    if (!Array.isArray(value) || value.__pageShotTrackingWrapped) {
+      return value;
+    }
+    for (const item of value.slice(0, 80)) {
+      recordEvent("dataLayer.initial", item, Array.from(item || []));
+    }
+    const originalPush = value.push;
+    Object.defineProperty(value, "__pageShotTrackingWrapped", { value: true });
+    value.push = function pageShotDataLayerPush(...items) {
+      for (const item of items) {
+        recordEvent("dataLayer.push", item, Array.from(item || []));
+      }
+      return originalPush.apply(this, items);
+    };
+    return value;
+  };
+
+  let dataLayerValue = wrapDataLayer(window.dataLayer || []);
+  try {
+    Object.defineProperty(window, "dataLayer", {
+      configurable: true,
+      get() {
+        return dataLayerValue;
+      },
+      set(value) {
+        dataLayerValue = wrapDataLayer(Array.isArray(value) ? value : []);
+      }
+    });
+    window.dataLayer = dataLayerValue;
+  } catch {
+    window.dataLayer = wrapDataLayer(window.dataLayer || []);
+  }
+
+  let gtagValue = typeof window.gtag === "function" ? window.gtag : null;
+  const wrapGtag = (fn) => function pageShotGtagWrapper(...args) {
+    recordEvent("gtag", null, args);
+    return typeof fn === "function" ? fn.apply(this, args) : undefined;
+  };
+  try {
+    Object.defineProperty(window, "gtag", {
+      configurable: true,
+      get() {
+        return gtagValue;
+      },
+      set(value) {
+        gtagValue = typeof value === "function" ? wrapGtag(value) : value;
+      }
+    });
+    if (gtagValue) {
+      window.gtag = gtagValue;
+    }
+  } catch {
+    if (typeof window.gtag === "function" && !window.gtag.__pageShotTrackingWrapped) {
+      const wrapped = wrapGtag(window.gtag);
+      wrapped.__pageShotTrackingWrapped = true;
+      window.gtag = wrapped;
+    }
+  }
+
+  const recordNetwork = (source, method, url, body = "") => {
+    const targetUrl = clean(url, 1800);
+    if (!targetUrl || !isTrackingUrl(targetUrl)) {
+      return;
+    }
+    pushLimited(state.network, {
+      id: `network-${++state.seq}`,
+      source,
+      method,
+      url: targetUrl,
+      postData: typeof body === "string" ? body.slice(0, 1800) : clean(body, 1800),
+      timestamp: now(),
+      ...locationContext()
+    }, state.maxNetwork);
+  };
+
+  if (navigator.sendBeacon) {
+    const originalSendBeacon = navigator.sendBeacon.bind(navigator);
+    navigator.sendBeacon = (url, data) => {
+      recordNetwork("sendBeacon", "POST", url, data);
+      return originalSendBeacon(url, data);
+    };
+  }
+  if (window.fetch) {
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = (input, init = {}) => {
+      const url = typeof input === "string" ? input : input?.url;
+      recordNetwork("fetch", clean(init?.method || "GET").toUpperCase(), url, init?.body || "");
+      return originalFetch(input, init);
+    };
+  }
+  if (window.XMLHttpRequest) {
+    const originalOpen = XMLHttpRequest.prototype.open;
+    const originalSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function pageShotXhrOpen(method, url, ...args) {
+      this.__pageShotTrackingMethod = method;
+      this.__pageShotTrackingUrl = url;
+      return originalOpen.call(this, method, url, ...args);
+    };
+    XMLHttpRequest.prototype.send = function pageShotXhrSend(body) {
+      recordNetwork("xhr", clean(this.__pageShotTrackingMethod || "GET").toUpperCase(), this.__pageShotTrackingUrl || "", body || "");
+      return originalSend.call(this, body);
+    };
+  }
+  if (window.PerformanceObserver) {
+    try {
+      const observer = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          recordNetwork("performance-resource", "GET", entry.name || "", "");
+        }
+      });
+      observer.observe({ entryTypes: ["resource"] });
+    } catch {
+      // Resource timing is optional.
+    }
+  }
+
+  const visibleText = (element) => clean(
+    element?.innerText ||
+    element?.textContent ||
+    element?.getAttribute?.("aria-label") ||
+    element?.getAttribute?.("title") ||
+    element?.getAttribute?.("value") ||
+    "",
+    240
+  );
+  const selectorFor = (element) => {
+    if (!element || !(element instanceof Element)) return "";
+    const tag = clean(element.tagName).toLowerCase();
+    const id = clean(element.id);
+    if (id) return `${tag}#${id}`;
+    const dataAction = clean(element.getAttribute("data-action"));
+    if (dataAction) return `${tag}[data-action="${dataAction}"]`;
+    const className = clean(element.className).split(/\s+/).filter(Boolean).slice(0, 2).join(".");
+    return className ? `${tag}.${className}` : tag;
+  };
+  const clickTargetFor = (target) =>
+    target?.closest?.("button, a, [role='button'], input[type='button'], input[type='submit'], summary, label, [tabindex]") ||
+    target;
+
+  document.addEventListener("click", (event) => {
+    const target = clickTargetFor(event.target);
+    const interaction = {
+      id: `click-${++state.seq}`,
+      type: "click",
+      timestamp: now(),
+      labelBefore: visibleText(target),
+      tagName: clean(target?.tagName).toLowerCase(),
+      selector: selectorFor(target),
+      href: clean(target?.href || target?.getAttribute?.("href") || "", 1000),
+      ariaExpandedBefore: clean(target?.getAttribute?.("aria-expanded")),
+      ...locationContext()
+    };
+    state.currentInteractionId = interaction.id;
+    pushLimited(state.interactions, interaction, state.maxInteractions);
+    setTimeout(() => {
+      interaction.labelAfter = visibleText(target);
+      interaction.ariaExpandedAfter = clean(target?.getAttribute?.("aria-expanded"));
+      if (state.currentInteractionId === interaction.id) {
+        state.currentInteractionId = "";
+      }
+    }, 900);
+  }, true);
+
+  const recordScroll = () => {
+    const scrollHeight = Math.max(
+      document.documentElement?.scrollHeight || 0,
+      document.body?.scrollHeight || 0
+    );
+    const viewportHeight = window.innerHeight || document.documentElement?.clientHeight || 1;
+    const maxScrollable = Math.max(1, scrollHeight - viewportHeight);
+    const depth = Math.max(0, Math.min(100, Math.round(((window.scrollY || 0) / maxScrollable) * 100)));
+    const milestone = [25, 50, 75, 90, 100].find((value) => depth >= value && !state.scrollDepths.has(value));
+    if (!milestone) {
+      return;
+    }
+    state.scrollDepths.add(milestone);
+    const interaction = {
+      id: `scroll-${++state.seq}`,
+      type: "scroll",
+      timestamp: now(),
+      scrollY: Math.round(window.scrollY || 0),
+      depthPercent: milestone,
+      ...locationContext()
+    };
+    state.currentInteractionId = interaction.id;
+    pushLimited(state.interactions, interaction, state.maxInteractions);
+    setTimeout(() => {
+      if (state.currentInteractionId === interaction.id) {
+        state.currentInteractionId = "";
+      }
+    }, 1000);
+  };
+  let scrollTimer = null;
+  window.addEventListener("scroll", () => {
+    if (scrollTimer) return;
+    scrollTimer = setTimeout(() => {
+      scrollTimer = null;
+      recordScroll();
+    }, 250);
+  }, { passive: true });
+  state.flush = recordScroll;
 }
 
 function shouldGuardShokzSearchOverlay(url, viewport, options = {}) {

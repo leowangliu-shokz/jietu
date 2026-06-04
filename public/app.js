@@ -17,6 +17,10 @@ const elements = {
   woodpeckerCount: document.querySelector("#woodpeckerCount"),
   woodpeckerIssueCount: document.querySelector("#woodpeckerIssueCount"),
   latestWoodpeckerTime: document.querySelector("#latestWoodpeckerTime"),
+  trackingAuditRecordCount: document.querySelector("#trackingAuditRecordCount"),
+  trackingAuditIssueCount: document.querySelector("#trackingAuditIssueCount"),
+  trackingAuditEventCount: document.querySelector("#trackingAuditEventCount"),
+  latestTrackingAuditTime: document.querySelector("#latestTrackingAuditTime"),
   latestShotTime: document.querySelector("#latestShotTime"),
   deviceFilter: document.querySelector("#deviceFilter"),
   deviceFilterButton: document.querySelector("#deviceFilterButton"),
@@ -40,6 +44,7 @@ const elements = {
   changesStatus: document.querySelector("#changesStatus"),
   seoUrlFilter: document.querySelector("#seoUrlFilter"),
   woodpeckerUrlFilter: document.querySelector("#woodpeckerUrlFilter"),
+  trackingAuditUrlFilter: document.querySelector("#trackingAuditUrlFilter"),
   bulkActions: document.querySelector("#bulkActions"),
   bulkSelectionCount: document.querySelector("#bulkSelectionCount"),
   bulkSelectVisible: document.querySelector("#bulkSelectVisible"),
@@ -58,6 +63,8 @@ const elements = {
   seoEmpty: document.querySelector("#seoEmpty"),
   woodpeckerList: document.querySelector("#woodpeckerList"),
   woodpeckerEmpty: document.querySelector("#woodpeckerEmpty"),
+  trackingAuditList: document.querySelector("#trackingAuditList"),
+  trackingAuditEmpty: document.querySelector("#trackingAuditEmpty"),
   imagePreview: document.querySelector("#imagePreview"),
   imagePreviewViewport: document.querySelector("#imagePreviewViewport"),
   imagePreviewLongView: document.querySelector("#imagePreviewLongView"),
@@ -116,6 +123,7 @@ let state = null;
 let changes = [];
 let seoState = { snapshots: [], changes: [] };
 let woodpeckerState = { records: [] };
+let trackingAuditState = { records: [] };
 let activePlatform = "pc";
 let imagePreviewReturnFocus = null;
 let imagePreviewPreviousOverflow = "";
@@ -145,6 +153,7 @@ const archiveFiltersByPlatform = createPlatformFilterMap();
 const changesFiltersByPlatform = createPlatformFilterMap();
 const seoFiltersByPlatform = createPlatformFilterMap();
 const woodpeckerFiltersByPlatform = createPlatformFilterMap();
+const trackingAuditFiltersByPlatform = createPlatformFilterMap();
 const selectedSnapshotIds = new Set();
 const pendingSnapshotDeletes = new Set();
 const selectedChangeIds = new Set();
@@ -216,6 +225,10 @@ elements.woodpeckerUrlFilter.addEventListener("change", () => {
   activeWoodpeckerFilters().url = elements.woodpeckerUrlFilter.value;
   renderWoodpeckerSummary();
 });
+elements.trackingAuditUrlFilter.addEventListener("change", () => {
+  activeTrackingAuditFilters().url = elements.trackingAuditUrlFilter.value;
+  renderTrackingAuditSummary();
+});
 elements.bulkSelectVisible.addEventListener("click", handleBulkSelectVisibleClick);
 elements.bulkClearSelection.addEventListener("click", handleBulkClearSelectionClick);
 elements.bulkDeleteSelected.addEventListener("click", () => void handleBulkDeleteSelectedClick());
@@ -277,6 +290,10 @@ function activeSeoFilters() {
 
 function activeWoodpeckerFilters() {
   return woodpeckerFiltersByPlatform[activePlatform];
+}
+
+function activeTrackingAuditFilters() {
+  return trackingAuditFiltersByPlatform[activePlatform];
 }
 
 function setActivePlatform(platform, options = {}) {
@@ -351,6 +368,7 @@ function syncActivePlatformFilterInputs() {
   const changeFilters = activeChangesFilters();
   const seoFilters = activeSeoFilters();
   const woodpeckerFilters = activeWoodpeckerFilters();
+  const trackingAuditFilters = activeTrackingAuditFilters();
   elements.urlFilter.value = archiveFilters.url;
   elements.dateStartFilter.value = archiveFilters.dateStart;
   elements.dateEndFilter.value = archiveFilters.dateEnd;
@@ -359,6 +377,7 @@ function syncActivePlatformFilterInputs() {
   elements.changesDateEndFilter.value = changeFilters.dateEnd;
   elements.seoUrlFilter.value = seoFilters.url;
   elements.woodpeckerUrlFilter.value = woodpeckerFilters.url;
+  elements.trackingAuditUrlFilter.value = trackingAuditFilters.url;
 }
 
 function closePlatformMenus() {
@@ -367,11 +386,11 @@ function closePlatformMenus() {
 
 function activeTabForPlatform(platform = activePlatform) {
   const activeTab = activeTabByPlatform[resolveActivePlatformValue(platform)];
-  return ["archive", "changes", "seo", "woodpecker"].includes(activeTab) ? activeTab : "archive";
+  return ["archive", "changes", "seo", "woodpecker", "tracking-audit"].includes(activeTab) ? activeTab : "archive";
 }
 
 function resolveActiveTabValue(tabName) {
-  return ["changes", "seo", "woodpecker"].includes(tabName) ? tabName : "archive";
+  return ["changes", "seo", "woodpecker", "tracking-audit"].includes(tabName) ? tabName : "archive";
 }
 
 function setActiveTab(tabName, options = {}) {
@@ -431,11 +450,12 @@ function handleTabKeydown(event) {
 }
 
 async function refreshState(options = {}) {
-  const [stateResponse, changesResponse, seoResponse, woodpeckerResponse] = await Promise.all([
+  const [stateResponse, changesResponse, seoResponse, woodpeckerResponse, trackingAuditResponse] = await Promise.all([
     fetch("/api/state"),
     fetch("/api/changes"),
     fetch("/api/seo"),
-    fetch("/api/woodpecker")
+    fetch("/api/woodpecker"),
+    fetch("/api/tracking-audit")
   ]);
   state = await stateResponse.json();
   const loadedChanges = await changesResponse.json();
@@ -454,6 +474,13 @@ async function refreshState(options = {}) {
       summary: loadedWoodpeckerState.summary || {}
     }
     : { records: [], summary: {} };
+  const loadedTrackingAuditState = await trackingAuditResponse.json();
+  trackingAuditState = loadedTrackingAuditState && typeof loadedTrackingAuditState === "object"
+    ? {
+      records: Array.isArray(loadedTrackingAuditState.records) ? loadedTrackingAuditState.records : [],
+      summary: loadedTrackingAuditState.summary || {}
+    }
+    : { records: [], summary: {} };
   setActivePlatform(resolveAvailablePlatform(state, activePlatform), { render: false });
   render(options);
 }
@@ -469,11 +496,22 @@ function render(options = {}) {
   elements.woodpeckerCount.textContent = currentWoodpeckerRecords.length;
   elements.woodpeckerIssueCount.textContent = currentWoodpeckerRecords
     .reduce((sum, record) => sum + Number(record.issueCount || 0), 0);
+  const currentTrackingAuditRecords = latestTrackingAuditRecordsByKey(platformTrackingAuditRecords());
+  elements.trackingAuditRecordCount.textContent = currentTrackingAuditRecords.length;
+  elements.trackingAuditIssueCount.textContent = currentTrackingAuditRecords
+    .reduce((sum, record) => sum + Number(record.issueCount || 0), 0);
+  elements.trackingAuditEventCount.textContent = [
+    currentTrackingAuditRecords.reduce((sum, record) => sum + Number(record.eventCount || 0), 0),
+    currentTrackingAuditRecords.reduce((sum, record) => sum + Number(record.ga4RequestCount || 0), 0)
+  ].join(" / ");
   elements.latestSeoTime.textContent = latestSeoCapturedAt()
     ? formatDate(latestSeoCapturedAt())
     : "-";
   elements.latestWoodpeckerTime.textContent = latestWoodpeckerCheckedAt()
     ? formatDate(latestWoodpeckerCheckedAt())
+    : "-";
+  elements.latestTrackingAuditTime.textContent = latestTrackingAuditAuditedAt()
+    ? formatDate(latestTrackingAuditAuditedAt())
     : "-";
   elements.captureState.textContent = state.capture.running ? "截图中" : "空闲";
   elements.browserState.textContent = state.browser.ok ? browserName(state.browser.path) : "未找到";
@@ -493,6 +531,7 @@ function render(options = {}) {
   renderChangesFilterOptions();
   renderSeoFilterOptions();
   renderWoodpeckerFilterOptions();
+  renderTrackingAuditFilterOptions();
   renderDeviceFilterOptions();
   renderChangesDevicePreset();
   renderArchiveStatus();
@@ -500,6 +539,7 @@ function render(options = {}) {
   renderChangesSummary();
   renderSeoSummary();
   renderWoodpeckerSummary();
+  renderTrackingAuditSummary();
   renderGallery({ preserveScroll: options.preserveScroll !== false });
 }
 
@@ -529,6 +569,12 @@ function platformSeoChanges() {
 
 function platformWoodpeckerRecords() {
   return (woodpeckerState?.records || []).filter((record) =>
+    (record.platform || "pc") === activePlatform
+  );
+}
+
+function platformTrackingAuditRecords() {
+  return (trackingAuditState?.records || []).filter((record) =>
     (record.platform || "pc") === activePlatform
   );
 }
@@ -606,6 +652,11 @@ function latestWoodpeckerCheckedAt() {
   return Number.isFinite(latest) ? new Date(latest).toISOString() : null;
 }
 
+function latestTrackingAuditAuditedAt() {
+  const latest = Math.max(...platformTrackingAuditRecords().map((record) => timestamp(record.auditedAt || record.capturedAt)));
+  return Number.isFinite(latest) ? new Date(latest).toISOString() : null;
+}
+
 function renderFilterOptions() {
   renderUrlFilterOptions(elements.urlFilter, urlFilterOptions(), activeArchiveFilters().url);
 }
@@ -620,6 +671,10 @@ function renderSeoFilterOptions() {
 
 function renderWoodpeckerFilterOptions() {
   renderUrlFilterOptions(elements.woodpeckerUrlFilter, woodpeckerUrlFilterOptions(), activeWoodpeckerFilters().url);
+}
+
+function renderTrackingAuditFilterOptions() {
+  renderUrlFilterOptions(elements.trackingAuditUrlFilter, trackingAuditUrlFilterOptions(), activeTrackingAuditFilters().url);
 }
 
 function renderUrlFilterOptions(select, urls, currentValue = "") {
@@ -2792,6 +2847,91 @@ function renderWoodpeckerSummary() {
   elements.woodpeckerList.append(table);
 }
 
+function renderTrackingAuditSummary() {
+  const records = latestTrackingAuditRecordsByKey(platformTrackingAuditRecords().filter(matchesTrackingAuditFilters)).slice(0, 60);
+  elements.trackingAuditList.innerHTML = "";
+  elements.trackingAuditEmpty.classList.toggle("visible", records.length === 0);
+
+  if (!records.length) {
+    return;
+  }
+
+  const table = document.createElement("div");
+  table.className = "changes-table-wrap tracking-audit-table-wrap";
+  table.innerHTML = `
+    <table class="changes-table tracking-audit-table">
+      <thead>
+        <tr>
+          <th scope="col">状态</th>
+          <th scope="col">URL</th>
+          <th scope="col">事件</th>
+          <th scope="col">GA4 请求</th>
+          <th scope="col">交互</th>
+          <th scope="col">问题摘要</th>
+          <th scope="col">审计时间</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${records.map(renderTrackingAuditRecordRow).join("")}
+      </tbody>
+    </table>
+  `;
+  elements.trackingAuditList.append(table);
+}
+
+function renderTrackingAuditRecordRow(record) {
+  const issues = Array.isArray(record.issues) ? record.issues : [];
+  const status = issues.length
+    ? highestTrackingIssueLevel(issues)
+    : "OK";
+  return `
+    <tr>
+      <td>${renderTrackingAuditStatus(status)}</td>
+      <td>${escapeHtml(truncateDisplayText(canonicalDisplayUrlForTrackingAuditRecord(record), 140))}</td>
+      <td>${escapeHtml(String(record.eventCount || 0))}</td>
+      <td>${escapeHtml(String(record.ga4RequestCount || 0))}</td>
+      <td>${escapeHtml(String(record.interactionCount || 0))}</td>
+      <td>${renderTrackingAuditIssueSummary(record)}</td>
+      <td>${escapeHtml(formatOptionalDate(record.auditedAt || record.capturedAt))}</td>
+    </tr>
+  `;
+}
+
+function renderTrackingAuditStatus(status) {
+  if (status === "OK") {
+    return "<span class=\"woodpecker-status-pill is-ok\">未发现问题</span>";
+  }
+  return `
+    <span class="change-level change-level-${escapeHtml(status.toLowerCase())}">
+      ${escapeHtml(status)}
+    </span>
+  `;
+}
+
+function renderTrackingAuditIssueSummary(record) {
+  const issues = Array.isArray(record.issues) ? record.issues : [];
+  if (!issues.length) {
+    return "<span class=\"change-style-empty\">事件与 GA4 请求已捕获</span>";
+  }
+  return issues.slice(0, 4).map((issue) => `
+    <div class="tracking-audit-issue">
+      <strong>${escapeHtml(issue.message || issue.type || "埋点问题")}</strong>
+      <small>${escapeHtml(truncateDisplayText([
+        issue.eventName,
+        issue.parameterName,
+        issue.expected && issue.actual ? `${issue.expected} → ${issue.actual}` : "",
+        issue.context
+      ].filter(Boolean).join(" / "), 220))}</small>
+    </div>
+  `).join("");
+}
+
+function highestTrackingIssueLevel(issues) {
+  if (issues.some((issue) => issue.level === "P0")) return "P0";
+  if (issues.some((issue) => issue.level === "P1")) return "P1";
+  return "P2";
+}
+
 function renderWoodpeckerRecordRows(record) {
   const issues = Array.isArray(record.issues) ? record.issues : [];
   if (!issues.length) {
@@ -2947,6 +3087,24 @@ function latestWoodpeckerRecordsByKey(records) {
     });
 }
 
+function latestTrackingAuditRecordsByKey(records) {
+  const seen = new Set();
+  return [...records]
+    .sort((a, b) => timestamp(b.auditedAt || b.capturedAt) - timestamp(a.auditedAt || a.capturedAt))
+    .filter((record) => {
+      const key = [
+        record.platform || activePlatform,
+        record.targetId || "",
+        canonicalDisplayUrlForTrackingAuditRecord(record)
+      ].join("::");
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+}
+
 function matchesSeoFilters(snapshot) {
   const selectedUrl = activeSeoFilters().url;
   return selectedUrl ? canonicalDisplayUrlForSeoSnapshot(snapshot) === selectedUrl : true;
@@ -2960,6 +3118,11 @@ function matchesSeoChangeFilters(change) {
 function matchesWoodpeckerFilters(record) {
   const selectedUrl = activeWoodpeckerFilters().url;
   return selectedUrl ? canonicalDisplayUrlForWoodpeckerRecord(record) === selectedUrl : true;
+}
+
+function matchesTrackingAuditFilters(record) {
+  const selectedUrl = activeTrackingAuditFilters().url;
+  return selectedUrl ? canonicalDisplayUrlForTrackingAuditRecord(record) === selectedUrl : true;
 }
 
 function matchesChangeFilters(change) {
@@ -4105,6 +4268,11 @@ function woodpeckerUrlFilterOptions() {
   return [...new Set(records.filter(Boolean))];
 }
 
+function trackingAuditUrlFilterOptions() {
+  const records = platformTrackingAuditRecords().map(canonicalDisplayUrlForTrackingAuditRecord);
+  return [...new Set(records.filter(Boolean))];
+}
+
 function canonicalDisplayUrlForSnapshot(snapshot) {
   if (isProductsNavSnapshot(snapshot)) {
     return navDisplayUrl();
@@ -4135,6 +4303,10 @@ function canonicalDisplayUrlForSeoChange(change) {
 
 function canonicalDisplayUrlForWoodpeckerRecord(record) {
   return record.displayUrl || record.targetLabel || record.finalUrl || record.url || "啄木鸟检查页面";
+}
+
+function canonicalDisplayUrlForTrackingAuditRecord(record) {
+  return record.displayUrl || record.targetLabel || record.finalUrl || record.url || "埋点审计页面";
 }
 
 function isHomeSnapshot(snapshot) {

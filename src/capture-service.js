@@ -36,6 +36,7 @@ import {
   saveSnapshots
 } from "./store.js";
 import { rebuildTextQuality } from "./text-quality.js";
+import { appendTrackingAuditRecords, createTrackingAuditRecordsForSnapshots } from "./tracking-audit.js";
 
 const mobileCollectionRelatedSectionTimeoutMs = 25 * 60 * 1000;
 const mobileComparisonProductMapTimeoutMs = 55 * 60 * 1000;
@@ -727,6 +728,10 @@ async function persistPreparedCaptureResult(result) {
   if (seoSnapshots.length) {
     await appendSeoSnapshots(seoSnapshots);
   }
+  const trackingAuditRecords = captureResultTrackingAuditRecords(result);
+  if (trackingAuditRecords.length) {
+    await appendTrackingAuditRecords(trackingAuditRecords);
+  }
 }
 
 function createCaptureRunRecord(plans, options = {}) {
@@ -930,6 +935,13 @@ function captureResultSeoSnapshots(result) {
   return result.seoSnapshots;
 }
 
+function captureResultTrackingAuditRecords(result) {
+  if (!result?.ok || !Array.isArray(result.trackingAuditRecords)) {
+    return [];
+  }
+  return result.trackingAuditRecords;
+}
+
 async function runCaptureExecution(execution, config, options = {}) {
   const runner = execution.platform === "mobile"
     ? captureMobilePlan
@@ -1048,11 +1060,19 @@ async function capturePlanExecution(execution, config, options = {}) {
     }
 
     const seoSnapshots = createSeoSnapshotsForCapture(capture, snapshots);
+    const trackingAuditRecords = createTrackingAuditRecordsForSnapshots({
+      snapshots,
+      capture,
+      relatedTrackingAudits: relatedCapture.trackingAudits || []
+    });
 
     if (!options.deferSnapshotSave) {
       await appendSnapshots(snapshots);
       if (seoSnapshots.length) {
         await appendSeoSnapshots(seoSnapshots);
+      }
+      if (trackingAuditRecords.length) {
+        await appendTrackingAuditRecords(trackingAuditRecords);
       }
     }
     const changeRefresh = options.deferChangeRefresh
@@ -1069,6 +1089,7 @@ async function capturePlanExecution(execution, config, options = {}) {
       ok: true,
       snapshotCount: snapshots.length,
       seoSnapshotCount: seoSnapshots.length,
+      trackingAuditRecordCount: trackingAuditRecords.length,
       relatedShotCount: relatedShots.length,
       lowConfidenceSnapshots: snapshots
         .filter((snapshot) => snapshot.captureConfidence?.baselineEligible === false)
@@ -1093,6 +1114,7 @@ async function capturePlanExecution(execution, config, options = {}) {
       requestedUrl: normalizedUrl,
       snapshotCount: snapshots.length,
       seoSnapshotCount: seoSnapshots.length,
+      trackingAuditRecordCount: trackingAuditRecords.length,
       relatedShotCount: relatedShots.length,
       lowConfidenceSnapshotCount: snapshots.filter((snapshot) => snapshot.captureConfidence?.baselineEligible === false).length,
       lowConfidenceRelatedShotCount: relatedShots.filter((shot) => shot.captureConfidence?.baselineEligible === false).length,
@@ -1109,6 +1131,7 @@ async function capturePlanExecution(execution, config, options = {}) {
       snapshot: snapshots[0],
       snapshots,
       seoSnapshots,
+      trackingAuditRecords,
       changeRefresh,
       seoRefresh,
       textQualityRefresh
@@ -1669,7 +1692,7 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
 
   const relatedMode = relatedCaptureModeForTarget(target, captureConfig);
   if (!relatedMode) {
-    return { shots: [], validation: null };
+    return { shots: [], validation: null, trackingAudits: [] };
   }
 
   let relatedCapture;
@@ -1693,6 +1716,7 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
     });
     return {
       shots: [],
+      trackingAudits: [],
       validation: {
         status: "warning",
         warnings: [{
@@ -1801,6 +1825,7 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
   });
   return {
     shots: sortedShots,
+    trackingAudits: [relatedCapture.trackingAudit].filter(Boolean),
     homeOverview: overview.homeOverview,
     validation: validationWithOverview
   };
@@ -1820,7 +1845,7 @@ async function captureShokzHomeRelatedShotsIsolated(normalizedUrl, baseOutputPat
       sectionCaptureKey: definition.key
     }))
   ], captureConfig);
-  const { shots, warnings, sections } = await captureIsolatedRelatedSections(
+  const { shots, warnings, sections, trackingAudits } = await captureIsolatedRelatedSections(
     normalizedUrl,
     baseOutputPath,
     captureConfig,
@@ -1842,6 +1867,7 @@ async function captureShokzHomeRelatedShotsIsolated(normalizedUrl, baseOutputPat
 
   return {
     shots: sortedShots,
+    trackingAudits,
     homeOverview: overview.homeOverview,
     validation: {
       status: warnings.length ? "warning" : "ok",
@@ -2006,7 +2032,7 @@ function relatedValidationWithOverviewWarnings(validation, overviewWarnings = []
 
 async function captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun) {
   const descriptors = collectionRelatedDescriptorsForCaptureConfig(captureConfig);
-  const { shots, warnings, sections } = await captureIsolatedRelatedSections(
+  const { shots, warnings, sections, trackingAudits } = await captureIsolatedRelatedSections(
     normalizedUrl,
     baseOutputPath,
     captureConfig,
@@ -2024,6 +2050,7 @@ async function captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOut
 
   return {
     shots: sortedShots,
+    trackingAudits,
     homeOverview: overview.homeOverview,
     validation: {
       status: warnings.length ? "warning" : "ok",
@@ -2035,7 +2062,7 @@ async function captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOut
 
 async function captureShokzComparisonRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun) {
   const descriptors = comparisonRelatedDescriptorsForCaptureConfig(captureConfig);
-  const { shots, warnings, sections } = await captureIsolatedRelatedSections(
+  const { shots, warnings, sections, trackingAudits } = await captureIsolatedRelatedSections(
     normalizedUrl,
     baseOutputPath,
     captureConfig,
@@ -2053,6 +2080,7 @@ async function captureShokzComparisonRelatedShotsIsolated(normalizedUrl, baseOut
 
   return {
     shots: sortedShots,
+    trackingAudits,
     homeOverview: overview.homeOverview,
     validation: {
       status: warnings.length ? "warning" : "ok",
@@ -2066,6 +2094,7 @@ async function captureIsolatedRelatedSections(normalizedUrl, baseOutputPath, cap
   const shots = [];
   const warnings = [];
   const sections = [];
+  const trackingAudits = [];
   const queue = await runJobQueue(descriptors, (descriptor) =>
     captureIsolatedRelatedSection(normalizedUrl, baseOutputPath, captureConfig, descriptor, diagnosticRun), {
       concurrency: relatedCaptureConcurrency(captureConfig),
@@ -2093,6 +2122,7 @@ async function captureIsolatedRelatedSections(normalizedUrl, baseOutputPath, cap
       continue;
     }
     shots.push(...result.shots);
+    trackingAudits.push(...(result.trackingAudits || []));
     warnings.push(...(result.validation?.warnings || []));
     sections.push(...(result.validation?.sections || []));
   }
@@ -2101,6 +2131,7 @@ async function captureIsolatedRelatedSections(normalizedUrl, baseOutputPath, cap
     shots,
     warnings,
     sections,
+    trackingAudits,
     queue
   };
 }
@@ -2200,6 +2231,7 @@ async function captureIsolatedRelatedSection(normalizedUrl, baseOutputPath, capt
     });
     return {
       shots: [],
+      trackingAudits: [],
       validation: {
         status: "warning",
         warnings: [{
@@ -2235,7 +2267,7 @@ async function captureIsolatedRelatedSection(normalizedUrl, baseOutputPath, capt
     lowConfidenceShotCount: shots.filter((shot) => shot.captureConfidence?.baselineEligible === false).length,
     captureValidation: summarizeCaptureValidationEntries(relatedCapture.captures || [])
   });
-  return { shots, validation };
+  return { shots, trackingAudits: [relatedCapture.trackingAudit].filter(Boolean), validation };
 }
 
 async function relatedShotsFromCaptureResult(relatedCapture, normalizedUrl, validation) {

@@ -9,5 +9,6 @@ data/change-notifications.json
 data/capture-runs.json
 data/capture-issues.json
 data/text-quality.json
+data/tracking-audit.json
 npm-debug.log*
 *.tmp

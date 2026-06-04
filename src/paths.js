@@ -15,3 +15,4 @@ export const changeNotificationsPath = path.join(dataDir, "change-notifications.
 export const captureRunsPath = path.join(dataDir, "capture-runs.json");
 export const captureIssuesPath = path.join(dataDir, "capture-issues.json");
 export const textQualityPath = path.join(dataDir, "text-quality.json");
+export const trackingAuditPath = path.join(dataDir, "tracking-audit.json");

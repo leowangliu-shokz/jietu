@@ -13,6 +13,7 @@ import { buildSeoSummary, loadSeoChanges, loadSeoSnapshots } from "./seo-snapsho
 import { deleteSnapshotAction, deleteSnapshotsAction, viewerModeErrorMessage } from "./snapshot-admin.js";
 import { ensureStorage, loadConfig, loadSnapshots, saveConfig } from "./store.js";
 import { buildTextQualitySummary, loadTextQualityRecords } from "./text-quality.js";
+import { buildTrackingAuditSummary, loadTrackingAuditRecords } from "./tracking-audit.js";
 
 const host = "127.0.0.1";
 const port = Number(process.env.PORT || 4173);
@@ -75,6 +76,14 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, {
         records,
         summary: buildTextQualitySummary(records)
+      });
+    }
+
+    if (request.method === "GET" && pathname === "/api/tracking-audit") {
+      const records = await loadTrackingAuditRecords();
+      return sendJson(response, {
+        records,
+        summary: buildTrackingAuditSummary(records)
       });
     }
 

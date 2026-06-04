@@ -85,6 +85,18 @@
             >
               啄木鸟
             </button>
+            <button
+              id="tabTrackingAudit"
+              class="tab"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="trackingAuditPanel"
+              data-tab="tracking-audit"
+              tabindex="-1"
+            >
+              埋点审计
+            </button>
           </nav>
         </div>
         <div class="actions">
@@ -303,6 +315,50 @@
             </div>
             <div id="woodpeckerList" class="changes-list woodpecker-list"></div>
             <p id="woodpeckerEmpty" class="empty">暂无啄木鸟检查结果。</p>
+          </section>
+        </section>
+
+        <section
+          id="trackingAuditPanel"
+          class="tab-panel"
+          role="tabpanel"
+          aria-labelledby="tabTrackingAudit"
+          data-tab-panel="tracking-audit"
+          hidden
+        >
+          <section class="status-grid changes-status tracking-audit-status" aria-label="埋点审计状态">
+            <div class="stat">
+              <span>审计页面</span>
+              <strong id="trackingAuditRecordCount">0</strong>
+            </div>
+            <div class="stat">
+              <span>发现问题</span>
+              <strong id="trackingAuditIssueCount">0</strong>
+            </div>
+            <div class="stat">
+              <span>事件 / 请求</span>
+              <strong id="trackingAuditEventCount">0 / 0</strong>
+            </div>
+            <div class="stat">
+              <span>最近审计</span>
+              <strong id="latestTrackingAuditTime">-</strong>
+            </div>
+          </section>
+
+          <section class="changes-panel tracking-audit-panel" aria-label="GA4 埋点审计">
+            <div class="timeline-head">
+              <div>
+                <h2>埋点审计 · GA4</h2>
+                <p>检查 dataLayer、gtag、GA4 请求、点击和滚动交互是否一致</p>
+              </div>
+              <div class="timeline-filters">
+                <select id="trackingAuditUrlFilter" aria-label="按 URL 过滤埋点审计结果">
+                  <option value="">全部 URL</option>
+                </select>
+              </div>
+            </div>
+            <div id="trackingAuditList" class="changes-list tracking-audit-list"></div>
+            <p id="trackingAuditEmpty" class="empty">暂无埋点审计结果。</p>
           </section>
         </section>
       </section>

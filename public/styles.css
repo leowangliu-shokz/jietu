@@ -220,6 +220,7 @@ h2 {
   grid-template-columns: repeat(auto-fit, minmax(180px, 280px));
 }
 
+
 .stat {
   min-height: 86px;
   border: 1px solid var(--line);
@@ -551,8 +552,13 @@ select:focus {
   min-width: 980px;
 }
 
+
 .woodpecker-table {
   min-width: 1120px;
+}
+
+.tracking-audit-table {
+  min-width: 1180px;
 }
 
 .changes-table th,
@@ -597,6 +603,22 @@ select:focus {
   color: var(--muted);
   line-height: 1.45;
 }
+
+.tracking-audit-issue + .tracking-audit-issue {
+  margin-top: 8px;
+}
+
+.tracking-audit-issue strong,
+.tracking-audit-issue small {
+  display: block;
+}
+
+.tracking-audit-issue small {
+  margin-top: 4px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
 
 .woodpecker-status-pill {
   display: inline-flex;
