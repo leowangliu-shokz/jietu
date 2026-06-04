@@ -8,6 +8,8 @@ const trackedSeoFields = [
   { key: "metaDescription", label: "Meta description", level: "P1", required: true },
   { key: "metaKeywords", label: "Meta keywords", level: "P1" },
   { key: "canonical", label: "Canonical", level: "P1", required: true },
+  { key: "canonicalStatus", label: "Canonical status", level: "P1" },
+  { key: "hreflangs", label: "Hreflang", level: "P1" },
   { key: "robots", label: "Robots", level: "P1" },
   { key: "language", label: "HTML language", level: "P2" },
   { key: "h1", label: "H1", level: "P1", required: true },
@@ -114,7 +116,22 @@ export function buildSeoSummary(snapshots = [], changes = []) {
   return {
     snapshotCount: normalizedSnapshots.length,
     changeCount: normalizedChanges.length,
+    issueCount: normalizedSnapshots.reduce((sum, snapshot) => sum + Number(snapshot.issueCount || 0), 0),
+    criticalIssueCount: normalizedSnapshots.reduce((sum, snapshot) =>
+      sum + snapshot.issues.filter((issue) => issue.level === "P0").length, 0),
     latestSnapshot: normalizedSnapshots[0] || null,
+    recentIssues: normalizedSnapshots.flatMap((snapshot) =>
+      snapshot.issues.map((issue) => ({
+        ...issue,
+        snapshotId: snapshot.snapshotId,
+        capturedAt: snapshot.capturedAt,
+        url: snapshot.url,
+        finalUrl: snapshot.finalUrl,
+        displayUrl: snapshot.displayUrl,
+        targetId: snapshot.targetId,
+        platform: snapshot.platform
+      }))
+    ).slice(0, 12),
     recentChanges: normalizedChanges.slice(0, 6)
   };
 }
@@ -237,6 +254,9 @@ export function normalizeSeoSnapshotRecord(input) {
   const twitter = content.twitter && typeof content.twitter === "object" ? content.twitter : {};
   const imageAlt = content.imageAlt && typeof content.imageAlt === "object" ? content.imageAlt : {};
   const linkCounts = content.linkCounts && typeof content.linkCounts === "object" ? content.linkCounts : {};
+  const hreflangChecked = Object.hasOwn(content, "hreflangChecked")
+    ? Boolean(content.hreflangChecked)
+    : Object.hasOwn(content, "hreflangs") || Object.hasOwn(content, "hreflang");
   const metaKeywords = cleanText(content.metaKeywords ?? meta.keywords);
   const record = {
     id: cleanText(input.id),
@@ -256,6 +276,7 @@ export function normalizeSeoSnapshotRecord(input) {
     metaDescription: cleanText(content.metaDescription ?? meta.description),
     metaKeywords,
     canonical: cleanText(content.canonical),
+    canonicalStatus: normalizeUrlStatus(content.canonicalStatus),
     robots: cleanText(content.robots ?? meta.robots),
     viewport: cleanText(content.viewport ?? meta.viewport),
     language: cleanText(content.language),
@@ -281,6 +302,9 @@ export function normalizeSeoSnapshotRecord(input) {
       card: cleanText(twitter.card)
     },
     jsonLdTypes: normalizeTextList(content.jsonLdTypes),
+    hreflangs: normalizeHreflangs(content.hreflangs),
+    hreflangChecked,
+    technicalNotes: normalizeTextList(content.technicalNotes),
     imageAlt: {
       total: nonNegativeInteger(imageAlt.total),
       missing: nonNegativeInteger(imageAlt.missing)
@@ -303,7 +327,115 @@ export function normalizeSeoSnapshotRecord(input) {
     });
   }
 
+  record.issues = buildSeoIssues(record);
+  record.issueCount = record.issues.length;
+  record.highestIssueLevel = record.issues.length ? highestSeoLevel(record.issues) : "";
+
   return record;
+}
+
+export function buildSeoIssues(snapshot = {}) {
+  const record = snapshot && typeof snapshot === "object" ? snapshot : {};
+  const issues = [];
+  const title = cleanText(record.title);
+  const canonical = cleanText(record.canonical);
+  const canonicalStatus = normalizeUrlStatus(record.canonicalStatus);
+  const robots = cleanText(record.robots);
+
+  if (containsNoindex(robots)) {
+    issues.push(seoIssue(record, {
+      code: "robots-noindex",
+      field: "robots",
+      level: "P0",
+      title: "Page is marked noindex",
+      message: "Robots meta contains noindex.",
+      detail: robots
+    }));
+  }
+
+  if (!canonical) {
+    issues.push(seoIssue(record, {
+      code: "canonical-missing",
+      field: "canonical",
+      level: "P0",
+      title: "Canonical is missing",
+      message: "Search engines cannot see a canonical target for this page."
+    }));
+  } else if (Number(canonicalStatus.status || 0) >= 400) {
+    issues.push(seoIssue(record, {
+      code: "canonical-http-error",
+      field: "canonical",
+      level: "P0",
+      title: "Canonical target is not reachable",
+      message: `Canonical returns HTTP ${canonicalStatus.status}.`,
+      detail: canonicalStatus.finalUrl || canonical,
+      expected: "Canonical should point to a live 2xx/3xx URL."
+    }));
+  }
+
+  const repeatedTitle = repeatedLeadingTitlePhrase(title);
+  if (repeatedTitle) {
+    issues.push(seoIssue(record, {
+      code: "title-leading-duplicate",
+      field: "title",
+      level: "P1",
+      title: "Title starts with duplicated text",
+      message: "The document title appears to repeat the page name at the beginning.",
+      detail: title,
+      expected: "Keep one clean page title and one SEO title, not a concatenated duplicate."
+    }));
+  }
+
+  const missingHreflangs = record.hreflangChecked ? missingExpectedHreflangs(record) : [];
+  if (missingHreflangs.length) {
+    issues.push(seoIssue(record, {
+      code: "hreflang-missing-region-pair",
+      field: "hreflangs",
+      level: "P1",
+      title: "US/CA hreflang pair is missing",
+      message: `Missing hreflang: ${missingHreflangs.join(", ")}.`,
+      detail: hreflangSummary(record.hreflangs),
+      expected: "Include en-US and en-CA alternates for paired Shokz regional pages."
+    }));
+  }
+
+  const todoNotes = normalizeTextList(record.technicalNotes).filter((note) => /\bTODO\b/i.test(note));
+  if (todoNotes.length) {
+    issues.push(seoIssue(record, {
+      code: "technical-todo-comment",
+      field: "technicalNotes",
+      level: "P2",
+      title: "Development TODO comment remains",
+      message: "Inline page script still contains a TODO comment.",
+      detail: todoNotes.slice(0, 2).join(" | "),
+      expected: "Remove temporary development comments before release."
+    }));
+  }
+
+  return issues;
+}
+
+function seoIssue(snapshot, issue) {
+  const normalized = {
+    code: cleanText(issue.code),
+    field: cleanText(issue.field),
+    level: ["P0", "P1", "P2"].includes(issue.level) ? issue.level : "P2",
+    title: cleanText(issue.title),
+    message: cleanText(issue.message),
+    detail: cleanText(issue.detail),
+    expected: cleanText(issue.expected)
+  };
+  return {
+    id: hashJson({
+      snapshotId: snapshot.snapshotId,
+      capturedAt: snapshot.capturedAt,
+      url: snapshot.finalUrl || snapshot.url,
+      code: normalized.code,
+      field: normalized.field,
+      detail: normalized.detail
+    }),
+    ...normalized
+  };
 }
 
 function seoFieldValue(snapshot, key) {
@@ -312,6 +444,12 @@ function seoFieldValue(snapshot, key) {
   }
   if (key === "openGraphDescription") {
     return snapshot.openGraph.description;
+  }
+  if (key === "canonicalStatus") {
+    return displayUrlStatus(snapshot.canonicalStatus);
+  }
+  if (key === "hreflangs") {
+    return snapshot.hreflangs.map((item) => `${item.hreflang}:${item.href}`);
   }
   if (key === "imageAltMissingCount") {
     return snapshot.imageAlt.missing;
@@ -327,6 +465,9 @@ function seoFieldValue(snapshot, key) {
 
 function seoFieldLevel(field, beforeValue, afterValue) {
   if (field.key === "robots" && !containsNoindex(beforeValue) && containsNoindex(afterValue)) {
+    return "P0";
+  }
+  if (field.key === "canonicalStatus" && /\b[45]\d\d\b/.test(displaySeoValue(afterValue))) {
     return "P0";
   }
   if (field.required && hasComparableValue(beforeValue) && !hasComparableValue(afterValue)) {
@@ -378,7 +519,11 @@ function seoSnapshotReference(snapshot) {
     title: snapshot.title,
     metaDescription: snapshot.metaDescription,
     h1: snapshot.h1,
-    canonical: snapshot.canonical
+    canonical: snapshot.canonical,
+    canonicalStatus: snapshot.canonicalStatus,
+    hreflangs: snapshot.hreflangs,
+    issueCount: snapshot.issueCount,
+    highestIssueLevel: snapshot.highestIssueLevel
   };
 }
 
@@ -488,6 +633,112 @@ function normalizeUrlKey(value) {
     return url.toString().replace(/\/$/, "");
   } catch {
     return cleanText(value).replace(/\/$/, "");
+  }
+}
+
+function normalizeUrlStatus(input) {
+  if (!input || typeof input !== "object") {
+    return {
+      ok: false,
+      status: 0,
+      finalUrl: "",
+      checkedAt: "",
+      error: ""
+    };
+  }
+  const status = Number(input.status || 0);
+  return {
+    ok: Boolean(input.ok),
+    status: Number.isFinite(status) && status >= 0 ? Math.round(status) : 0,
+    finalUrl: cleanText(input.finalUrl || input.url),
+    checkedAt: normalizeIso(input.checkedAt),
+    error: cleanText(input.error)
+  };
+}
+
+function normalizeHreflangs(values) {
+  const seen = new Set();
+  const list = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const hreflang = cleanText(value?.hreflang || value?.lang);
+    const href = cleanText(value?.href || value?.url);
+    if (!hreflang || !href) {
+      continue;
+    }
+    const key = `${hreflang.toLowerCase()}::${normalizeUrlKey(href).toLowerCase()}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    list.push({ hreflang, href });
+    if (list.length >= 80) {
+      break;
+    }
+  }
+  return list;
+}
+
+function displayUrlStatus(status) {
+  const normalized = normalizeUrlStatus(status);
+  if (!normalized.status && !normalized.error && !normalized.finalUrl) {
+    return "";
+  }
+  return [
+    normalized.status ? `HTTP ${normalized.status}` : normalized.error ? "check failed" : "",
+    normalized.finalUrl,
+    normalized.error
+  ].filter(Boolean).join(" ");
+}
+
+function missingExpectedHreflangs(snapshot = {}) {
+  const expected = expectedRegionalHreflangs(snapshot);
+  if (!expected.length) {
+    return [];
+  }
+  const present = new Set(normalizeHreflangs(snapshot.hreflangs).map((item) => item.hreflang.toLowerCase()));
+  return expected.filter((item) => !present.has(item.toLowerCase()));
+}
+
+function expectedRegionalHreflangs(snapshot = {}) {
+  const url = parseHttpUrl(snapshot.finalUrl || snapshot.url || snapshot.canonical || snapshot.displayUrl);
+  if (!url || !["shokz.com", "ca.shokz.com"].includes(url.hostname.toLowerCase())) {
+    return [];
+  }
+  if (!/^\/(?:pages|products)\//i.test(url.pathname)) {
+    return [];
+  }
+  return ["en-US", "en-CA"];
+}
+
+function hreflangSummary(values) {
+  const normalized = normalizeHreflangs(values);
+  return normalized.length
+    ? normalized.map((item) => `${item.hreflang}: ${item.href}`).join(" | ")
+    : "(none)";
+}
+
+function repeatedLeadingTitlePhrase(title) {
+  const text = cleanText(title)
+    .replace(/&amp;/gi, "&")
+    .replace(/&ndash;/gi, "-")
+    .replace(/&mdash;/gi, "-");
+  const compact = text.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const maxLength = Math.min(48, Math.floor(compact.length / 2));
+  for (let length = 6; length <= maxLength; length += 1) {
+    const phrase = compact.slice(0, length);
+    if (phrase === compact.slice(length, length * 2)) {
+      return phrase;
+    }
+  }
+  return "";
+}
+
+function parseHttpUrl(value) {
+  try {
+    const url = new URL(cleanText(value));
+    return ["http:", "https:"].includes(url.protocol) ? url : null;
+  } catch {
+    return null;
   }
 }
 

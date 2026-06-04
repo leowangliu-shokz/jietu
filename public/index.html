@@ -246,10 +246,14 @@
           data-tab-panel="seo"
           hidden
         >
-          <section class="status-grid changes-status" aria-label="SEO status">
+          <section class="status-grid changes-status seo-status" aria-label="SEO status">
             <div class="stat">
               <span>SEO snapshots</span>
               <strong id="seoCount">0</strong>
+            </div>
+            <div class="stat">
+              <span>SEO issues</span>
+              <strong id="seoIssueCount">0</strong>
             </div>
             <div class="stat">
               <span>SEO changes</span>
@@ -264,8 +268,8 @@
           <section class="changes-panel seo-panel" aria-label="SEO snapshots and changes">
             <div class="timeline-head">
               <div>
-                <h2>SEO Snapshot</h2>
-                <p>Title, meta, headings, navigation, table headers, keywords, and structured data.</p>
+                <h2>SEO Audit</h2>
+                <p>Canonical, title, hreflang, meta, headings, navigation, table headers, keywords, and structured data.</p>
               </div>
               <div class="timeline-filters">
                 <select id="seoUrlFilter" aria-label="Filter SEO by URL">

@@ -220,6 +220,9 @@ h2 {
   grid-template-columns: repeat(auto-fit, minmax(180px, 280px));
 }
 
+.seo-status {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 280px));
+}
 
 .stat {
   min-height: 86px;
@@ -552,6 +555,9 @@ select:focus {
   min-width: 980px;
 }
 
+.seo-issue-table {
+  min-width: 1120px;
+}
 
 .woodpecker-table {
   min-width: 1120px;
@@ -619,6 +625,20 @@ select:focus {
   line-height: 1.45;
 }
 
+.seo-issue-message strong,
+.seo-issue-message small,
+.seo-issue-detail strong,
+.seo-issue-detail small {
+  display: block;
+}
+
+.seo-issue-message small,
+.seo-issue-detail small {
+  margin-top: 4px;
+  color: var(--muted);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
 
 .woodpecker-status-pill {
   display: inline-flex;

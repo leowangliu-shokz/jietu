@@ -12,6 +12,7 @@ const elements = {
   captureState: document.querySelector("#captureState"),
   changeCount: document.querySelector("#changeCount"),
   seoCount: document.querySelector("#seoCount"),
+  seoIssueCount: document.querySelector("#seoIssueCount"),
   seoChangeCount: document.querySelector("#seoChangeCount"),
   latestSeoTime: document.querySelector("#latestSeoTime"),
   woodpeckerCount: document.querySelector("#woodpeckerCount"),
@@ -491,6 +492,7 @@ function render(options = {}) {
   elements.shotCount.textContent = platformSnapshots().length;
   elements.changeCount.textContent = platformChanges().length;
   elements.seoCount.textContent = platformSeoSnapshots().length;
+  elements.seoIssueCount.textContent = latestSeoIssueRows().length;
   elements.seoChangeCount.textContent = platformSeoChanges().length;
   const currentWoodpeckerRecords = latestWoodpeckerRecordsByKey(platformWoodpeckerRecords());
   elements.woodpeckerCount.textContent = currentWoodpeckerRecords.length;
@@ -2767,9 +2769,32 @@ function changeChangesPage(delta) {
 
 function renderSeoSummary() {
   const snapshots = latestSeoSnapshotsByKey(platformSeoSnapshots().filter(matchesSeoFilters)).slice(0, 20);
+  const issueRows = latestSeoIssueRows(snapshots);
   const changes = platformSeoChanges().filter(matchesSeoChangeFilters).slice(0, 20);
   elements.seoList.innerHTML = "";
-  elements.seoEmpty.classList.toggle("visible", snapshots.length === 0 && changes.length === 0);
+  elements.seoEmpty.classList.toggle("visible", snapshots.length === 0 && issueRows.length === 0 && changes.length === 0);
+
+  if (issueRows.length) {
+    const issueTable = document.createElement("div");
+    issueTable.className = "changes-table-wrap seo-table-wrap";
+    issueTable.innerHTML = `
+      <table class="changes-table seo-table seo-issue-table">
+        <thead>
+          <tr>
+            <th scope="col">Level</th>
+            <th scope="col">Issue</th>
+            <th scope="col">URL</th>
+            <th scope="col">Evidence</th>
+            <th scope="col">Checked</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${issueRows.map(renderSeoIssueRow).join("")}
+        </tbody>
+      </table>
+    `;
+    elements.seoList.append(issueTable);
+  }
 
   if (snapshots.length) {
     const snapshotTable = document.createElement("div");
@@ -3006,6 +3031,30 @@ function woodpeckerSourceLabel(issue) {
   return issue.sourceLabel || issue.source || "页面文案";
 }
 
+function renderSeoIssueRow(row) {
+  const issue = row.issue || {};
+  const level = issue.level || row.highestIssueLevel || "P2";
+  return `
+    <tr>
+      <td>
+        <span class="change-level change-level-${escapeHtml(level.toLowerCase())}">
+          ${escapeHtml(level)}
+        </span>
+      </td>
+      <td class="seo-issue-message">
+        <strong>${escapeHtml(issue.title || issue.message || "SEO issue")}</strong>
+        <small>${escapeHtml(issue.message || "")}</small>
+      </td>
+      <td>${escapeHtml(truncateDisplayText(canonicalDisplayUrlForSeoSnapshot(row.snapshot), 140))}</td>
+      <td class="seo-issue-detail">
+        <strong>${escapeHtml(truncateDisplayText(issue.detail || "-", 220))}</strong>
+        <small>${escapeHtml(truncateDisplayText(issue.expected || "", 220))}</small>
+      </td>
+      <td>${escapeHtml(formatOptionalDate(row.snapshot.capturedAt))}</td>
+    </tr>
+  `;
+}
+
 function renderSeoSnapshotRow(snapshot) {
   const h1 = Array.isArray(snapshot.h1) && snapshot.h1.length ? snapshot.h1.join(" | ") : "";
   const headings = Array.isArray(snapshot.headings)
@@ -3049,6 +3098,33 @@ function renderSeoChangeRows(change) {
       <td>${escapeHtml(truncateDisplayText(change.to?.title || "", 180))}</td>
     </tr>
   `];
+}
+
+function latestSeoIssueRows(inputSnapshots = null) {
+  return latestSeoSnapshotsByKey(inputSnapshots || platformSeoSnapshots())
+    .flatMap((snapshot) => {
+      const issues = Array.isArray(snapshot.issues) ? snapshot.issues : [];
+      return issues.map((issue) => ({
+        snapshot,
+        issue,
+        highestIssueLevel: snapshot.highestIssueLevel || issue.level || "P2"
+      }));
+    })
+    .sort((left, right) =>
+      seoLevelSort(left.issue.level) - seoLevelSort(right.issue.level) ||
+      timestamp(right.snapshot.capturedAt) - timestamp(left.snapshot.capturedAt) ||
+      canonicalDisplayUrlForSeoSnapshot(left.snapshot).localeCompare(canonicalDisplayUrlForSeoSnapshot(right.snapshot))
+    );
+}
+
+function seoLevelSort(level) {
+  if (level === "P0") {
+    return 0;
+  }
+  if (level === "P1") {
+    return 1;
+  }
+  return 2;
 }
 
 function latestSeoSnapshotsByKey(snapshots) {
