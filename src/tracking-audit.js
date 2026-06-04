@@ -24,7 +24,6 @@ const clickEventNames = new Set([
   "gtm.click",
   "select_content",
   "select_item",
-  "view_item",
   "add_to_cart",
   "begin_checkout",
   "login",
@@ -367,11 +366,12 @@ function normalizeTrackingEvent(event) {
   const source = cleanText(event.source || "dataLayer");
   const command = cleanText(event.command);
   const rawParameters = objectFrom(event.parameters || event.payload || event.params);
-  const name = cleanText(event.name || event.eventName || event.event || rawParameters.event || rawParameters.event_name || rawParameters.en || gtagEventName(event));
   const parameters = normalizeParameters({
     ...rawParameters,
+    ...wrappedEventParameters(rawParameters),
     ...(event.args && command === "event" && typeof event.args[2] === "object" ? event.args[2] : {})
   });
+  const name = trackingEventName(event, rawParameters, parameters);
   return {
     id: cleanText(event.id),
     source,
@@ -568,6 +568,16 @@ function normalizeEventName(value) {
   return cleanText(value).trim().toLowerCase();
 }
 
+function trackingEventName(event, rawParameters, parameters) {
+  const eventName = cleanText(event.name);
+  const rawEvent = cleanText(rawParameters.event || parameters.event);
+  const wrappedName = cleanText(rawParameters.event_name || rawParameters.en || parameters.event_name || parameters.en);
+  if ((normalizeEventName(eventName) === "ga4event" || normalizeEventName(rawEvent) === "ga4event") && wrappedName) {
+    return wrappedName;
+  }
+  return cleanText(eventName || event.eventName || event.event || rawEvent || wrappedName || gtagEventName(event));
+}
+
 function gtagEventName(event) {
   const args = Array.isArray(event.args) ? event.args : [];
   return cleanText(args[0]) === "event" ? cleanText(args[1]) : "";
@@ -575,6 +585,26 @@ function gtagEventName(event) {
 
 function objectFrom(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function wrappedEventParameters(parameters) {
+  const raw = objectFrom(parameters).event_parameters;
+  if (!raw) {
+    return {};
+  }
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    return raw;
+  }
+  const text = cleanText(raw, 5000);
+  if (!text || !text.startsWith("{")) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(text);
+    return objectFrom(parsed);
+  } catch {
+    return {};
+  }
 }
 
 function normalizeParameters(parameters) {

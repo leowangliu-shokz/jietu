@@ -92,6 +92,58 @@ test("normalizes GA4 request event parameters into audit records", () => {
   assert.equal(record.ga4Requests[0].parameters.button_name, "View Less");
 });
 
+test("unwraps Shokz ga4Event payloads before checking click labels", () => {
+  const record = createTrackingAuditRecord({
+    id: "snapshot-shokz-wrapper",
+    capturedAt: "2026-06-04T09:00:00.000Z",
+    url: "https://shokz.com/products/opendots-2",
+    finalUrl: "https://shokz.com/products/opendots-2",
+    targetId: "shokz-opendots-2-product",
+    targetLabel: "OpenDots 2 PDP",
+    displayUrl: "OpenDots 2 PDP",
+    platform: "pc",
+    devicePresetId: "pc-hd",
+    capturePlanId: "plan-pc"
+  }, {
+    events: [{
+      source: "dataLayer.push",
+      name: "ga4Event",
+      timestamp: 1100,
+      interactionId: "click-1",
+      parameters: {
+        event: "ga4Event",
+        event_name: "select_content",
+        event_parameters: JSON.stringify({
+          button_name: "View More",
+          content_type: "product card",
+          content_name: "BE_PDP"
+        })
+      }
+    }],
+    networkRequests: [{
+      source: "cdp-network",
+      method: "POST",
+      timestamp: 1200,
+      url: "https://www.google-analytics.com/g/collect?en=select_content&ep.button_name=View%20More&ep.content_name=BE_PDP"
+    }],
+    interactions: [{
+      id: "click-1",
+      type: "click",
+      timestamp: 1000,
+      labelBefore: "View More",
+      labelAfter: "View Less"
+    }]
+  }, {
+    auditedAt: "2026-06-04T09:01:00.000Z"
+  });
+
+  assert.equal(record.events[0].name, "select_content");
+  assert.equal(record.events[0].parameters.button_name, "View More");
+  const mismatch = record.issues.find((issue) => issue.type === "button-label-mismatch");
+  assert.ok(mismatch);
+  assert.equal(mismatch.level, "P0");
+});
+
 test("flags meaningful clicks without matching tracking events", () => {
   const issues = buildTrackingIssues({
     interactions: [{
