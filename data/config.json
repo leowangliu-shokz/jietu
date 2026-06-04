@@ -32,6 +32,26 @@
       "id": "shokz-explore-sports-headphones",
       "url": "https://shokz.com/pages/explore-sports-headphones",
       "label": "运动PP页"
+    },
+    {
+      "id": "shokz-opendots-2-product",
+      "url": "https://shokz.com/products/opendots-2",
+      "label": "https://shokz.com/products/opendots-2 (product page)"
+    },
+    {
+      "id": "shokz-opendots-2-page",
+      "url": "https://shokz.com/pages/opendots-2",
+      "label": "https://shokz.com/pages/opendots-2 (landing page)"
+    },
+    {
+      "id": "shokz-opendots-air-page",
+      "url": "https://shokz.com/pages/opendots-air",
+      "label": "https://shokz.com/pages/opendots-air (landing page)"
+    },
+    {
+      "id": "shokz-opendots-air-product",
+      "url": "https://shokz.com/products/opendots-air",
+      "label": "https://shokz.com/products/opendots-air (product page)"
     }
   ],
   "deviceProfiles": [
@@ -128,6 +148,54 @@
       "deviceProfileId": "mobile-default",
       "enabled": true,
       "captureMode": "shokz-landing-page"
+    },
+    {
+      "id": "plan-shokz-opendots-2-product-pc-default",
+      "targetId": "shokz-opendots-2-product",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-opendots-2-product-mobile-default",
+      "targetId": "shokz-opendots-2-product",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-opendots-2-page-pc-default",
+      "targetId": "shokz-opendots-2-page",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-opendots-2-page-mobile-default",
+      "targetId": "shokz-opendots-2-page",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-opendots-air-page-pc-default",
+      "targetId": "shokz-opendots-air-page",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-opendots-air-page-mobile-default",
+      "targetId": "shokz-opendots-air-page",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-opendots-air-product-pc-default",
+      "targetId": "shokz-opendots-air-product",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-opendots-air-product-mobile-default",
+      "targetId": "shokz-opendots-air-product",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
     }
   ],
   "intervalMinutes": 0,

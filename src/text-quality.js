@@ -4,23 +4,33 @@ import path from "node:path";
 import { checkText, getDefaultBundledSettingsAsync, suggestionsForWord } from "cspell-lib";
 import { parse } from "parse5";
 import { textQualityPath } from "./paths.js";
-import { loadSnapshots } from "./store.js";
+import { loadConfig, loadSnapshots, resolveConfiguredCapturePlans } from "./store.js";
 
 const maxIssuesPerRecord = 120;
 const maxSuggestions = 3;
 const maxHtmlAttributeBlocks = 180;
+const maxHtmlTextBlocks = 240;
 const htmlFetchTimeoutMs = 12000;
 const customDictionaryWords = [
   "Aeropex",
   "AfterShokz",
+  "Bassphere",
   "Bluetooth",
+  "beamforming",
+  "Deutsch",
   "DingTalk",
   "Dakotah",
+  "digitaltrends",
   "Dryland",
   "Eliud",
   "Ironman",
+  "italiana",
+  "Kelaigh",
   "Kipchoge",
   "Mantz",
+  "multipoint",
+  "Nederland",
+  "Nederlands",
   "Obiri",
   "OpenComm",
   "OpenDots",
@@ -29,14 +39,21 @@ const customDictionaryWords = [
   "OpenMove",
   "OpenRun",
   "OpenSwim",
+  "pearlescent",
   "Philipp",
+  "Pianokeys",
+  "Polska",
   "Popehn",
+  "polski",
+  "Rossany",
   "Shokz",
   "Shopify",
   "Sweatproof",
   "Swimproof",
+  "Tawnya",
   "Topbar",
   "USB",
+  "wearability",
   "WebPage",
   "Welman"
 ];
@@ -66,7 +83,9 @@ const ignoredHtmlTags = new Set([
   "linearGradient",
   "radialGradient",
   "stop",
-  "source"
+  "source",
+  "template",
+  "noscript"
 ]);
 
 let settingsPromise = null;
@@ -94,11 +113,17 @@ export async function rebuildTextQuality(options = {}) {
   const targetSnapshots = options.latestOnly === false
     ? snapshots
     : latestSnapshotsByPage(snapshots);
+  const configuredSnapshots = (!Array.isArray(options.snapshots) || options.includeConfiguredTargets === true)
+    ? await configuredTargetSnapshotsWithoutRecords(targetSnapshots, options)
+    : [];
   const checkedAt = new Date().toISOString();
   const settings = await textQualitySettings();
   const suggestionCache = new Map();
   const htmlFetchCache = options.htmlFetchCache || new Map();
-  const htmlAttributeOwnerIds = htmlAttributeOwnerSnapshotIds(targetSnapshots);
+  const htmlAttributeOwnerIds = htmlAttributeOwnerSnapshotIds([
+    ...targetSnapshots,
+    ...configuredSnapshots
+  ]);
   const sharedOptions = {
     ...options,
     checkedAt,
@@ -109,7 +134,7 @@ export async function rebuildTextQuality(options = {}) {
   };
   const records = [];
 
-  for (const snapshot of targetSnapshots) {
+  for (const snapshot of [...targetSnapshots, ...configuredSnapshots]) {
     const htmlUrl = snapshotHtmlUrl(snapshot);
     const htmlUrlKey = htmlUrl ? `${normalizedPlatform(snapshot.platform)}::${htmlUrl}` : "";
     const shouldFetchHtmlAttributes = Boolean(sharedOptions.fetchHtmlAttributes && htmlUrlKey && htmlAttributeOwnerIds.has(snapshot.id));
@@ -445,6 +470,48 @@ function latestSnapshotsByPage(snapshots) {
     });
 }
 
+async function configuredTargetSnapshotsWithoutRecords(existingSnapshots, options = {}) {
+  if (options.includeConfiguredTargets === false) {
+    return [];
+  }
+  const config = options.config || await loadConfig().catch(() => null);
+  if (!config) {
+    return [];
+  }
+  const existingKeys = new Set((Array.isArray(existingSnapshots) ? existingSnapshots : [])
+    .map((snapshot) => textQualityPageKey(snapshot)));
+  return resolveConfiguredCapturePlans(config)
+    .filter((plan) => plan?.target?.url)
+    .filter((plan) => !existingKeys.has(textQualityPageKey({
+      platform: plan.platform,
+      targetId: plan.target.id,
+      displayUrl: plan.target.label || plan.target.url
+    })))
+    .map((plan) => ({
+      id: `configured-${plan.platform}-${plan.target.id}-${plan.deviceProfile.id}`,
+      url: plan.target.url,
+      requestedUrl: plan.target.url,
+      finalUrl: plan.target.url,
+      targetId: plan.target.id,
+      targetLabel: plan.target.label || plan.target.url,
+      displayUrl: plan.target.label || plan.target.url,
+      platform: plan.platform,
+      devicePresetId: plan.devicePreset?.id || plan.deviceProfile.devicePresetId,
+      deviceProfileId: plan.deviceProfile.id,
+      capturePlanId: plan.id,
+      title: plan.target.label || plan.target.url,
+      capturedAt: ""
+    }));
+}
+
+function textQualityPageKey(snapshot = {}) {
+  return [
+    normalizedPlatform(snapshot.platform),
+    cleanText(snapshot.targetId),
+    cleanText(snapshot.displayUrl || snapshot.finalUrl || snapshot.url)
+  ].join("::");
+}
+
 function htmlAttributeOwnerSnapshotIds(snapshots) {
   const owners = new Map();
   for (const snapshot of Array.isArray(snapshots) ? snapshots : []) {
@@ -629,6 +696,58 @@ function htmlAttributeBlocksFromHtml(html, snapshot = {}) {
   };
 
   visit(document);
+  return [
+    ...htmlTextBlocksFromDocument(document, snapshot),
+    ...blocks
+  ];
+}
+
+function htmlTextBlocksFromDocument(document, snapshot = {}) {
+  const blocks = [];
+  const seen = new Set();
+
+  const addTextBlock = (text, nodeStack) => {
+    const cleaned = cleanHtmlTextValue(text);
+    if (!shouldCheckHtmlTextValue(cleaned)) {
+      return;
+    }
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    blocks.push({
+      text: cleaned,
+      source: "html-text",
+      sourceLabel: "HTML text",
+      location: htmlTextLocation(nodeStack),
+      sectionKey: "html-source",
+      sectionLabel: "HTML source",
+      imageUrl: snapshot.imageUrl
+    });
+  };
+
+  const visit = (node, stack = []) => {
+    const tagName = cleanText(node?.tagName || node?.nodeName).toLowerCase();
+    if (ignoredHtmlTags.has(tagName)) {
+      return;
+    }
+    if (node?.nodeName === "#text") {
+      addTextBlock(node.value, stack);
+      return;
+    }
+    const nextStack = tagName && tagName !== "#document"
+      ? [...stack, node]
+      : stack;
+    for (const child of Array.isArray(node?.childNodes) ? node.childNodes : []) {
+      if (blocks.length >= maxHtmlTextBlocks) {
+        return;
+      }
+      visit(child, nextStack);
+    }
+  };
+
+  visit(document);
   return blocks;
 }
 
@@ -714,6 +833,22 @@ function cleanAttributeValue(value) {
     .slice(0, 500);
 }
 
+function cleanHtmlTextValue(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 360);
+}
+
+function shouldCheckHtmlTextValue(value) {
+  const cleaned = cleanText(value);
+  return cleaned.length >= 3 &&
+    cleaned.length <= 360 &&
+    /[A-Za-z]{3,}/.test(cleaned) &&
+    !/^[{}[\]():,.;\d\s$€£¥+-]+$/.test(cleaned) &&
+    !/^https?:\/\//i.test(cleaned);
+}
+
 function htmlAttributeLocation(node, name) {
   const tagName = cleanText(node?.tagName || node?.nodeName).toLowerCase() || "element";
   const attrs = new Map((Array.isArray(node?.attrs) ? node.attrs : [])
@@ -726,6 +861,26 @@ function htmlAttributeLocation(node, name) {
       ? `<${tagName}.${className.split(/\s+/)[0]}>`
       : `<${tagName}>`;
   return `${elementHint} @${name}`;
+}
+
+function htmlTextLocation(nodeStack = []) {
+  const node = [...nodeStack].reverse()
+    .find((candidate) => {
+      const tagName = cleanText(candidate?.tagName || candidate?.nodeName).toLowerCase();
+      return tagName && tagName !== "#document" && !ignoredHtmlTags.has(tagName);
+    });
+  const tagName = cleanText(node?.tagName || node?.nodeName).toLowerCase() || "text";
+  const attrs = new Map((Array.isArray(node?.attrs) ? node.attrs : [])
+    .map((attr) => [cleanText(attr?.name).toLowerCase(), cleanText(attr?.value)]));
+  const id = attrs.get("id");
+  const className = attrs.get("class");
+  if (id) {
+    return `<${tagName}#${id}> text`;
+  }
+  if (className) {
+    return `<${tagName}.${className.split(/\s+/)[0]}> text`;
+  }
+  return `<${tagName}> text`;
 }
 
 function snapshotHtmlUrl(snapshot = {}) {

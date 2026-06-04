@@ -85,6 +85,36 @@ test("detects known typos in HTML source attributes", async () => {
   assert.equal(classIssue.element, "section");
 });
 
+test("detects spelling issues in HTML body text", async () => {
+  const record = await createTextQualityRecord({
+    id: "snap-html-text",
+    url: "https://example.com/",
+    finalUrl: "https://example.com/",
+    displayUrl: "Example",
+    platform: "mobile",
+    devicePresetId: "iphone-15",
+    capturedAt: "2026-06-02T08:00:00.000Z",
+    title: "Example page"
+  }, {
+    checkedAt: "2026-06-02T08:05:00.000Z",
+    htmlSource: `
+      <main>
+        <h1>OpenDots 2</h1>
+        <p>This sentense is visible page copy.</p>
+      </main>
+    `
+  });
+
+  const htmlTextIssue = record.issues.find((issue) =>
+    issue.type === "spelling" &&
+    issue.source === "html-text" &&
+    issue.wrong === "sentense"
+  );
+
+  assert.ok(htmlTextIssue);
+  assert.ok(htmlTextIssue.expected.includes("sentence"));
+});
+
 test("assigns fetched HTML attribute issues once per platform URL", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "jietu-text-quality-"));
   const textQualityFilePath = path.join(tempDir, "text-quality.json");
@@ -105,6 +135,39 @@ test("assigns fetched HTML attribute issues once per platform URL", async () => 
 
   assert.ok(homeRecord.issues.some((issue) => issue.source === "html-attribute-technical" && issue.wrong === "regiter"));
   assert.equal(navRecord.issueCount, 0);
+});
+
+test("can build text quality records for configured targets without snapshots", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "jietu-text-quality-"));
+  const textQualityFilePath = path.join(tempDir, "text-quality.json");
+
+  const records = await rebuildTextQuality({
+    textQualityFilePath,
+    snapshots: [],
+    includeConfiguredTargets: true,
+    config: {
+      targets: [{
+        id: "configured-page",
+        url: "https://example.com/new",
+        label: "Configured page"
+      }],
+      deviceProfiles: [
+        { id: "pc-default", platform: "pc", devicePresetId: "pc-hd", enabled: true },
+        { id: "mobile-default", platform: "mobile", devicePresetId: "iphone-15", enabled: true }
+      ],
+      capturePlans: [
+        { id: "configured-page-pc", targetId: "configured-page", deviceProfileId: "pc-default", enabled: true },
+        { id: "configured-page-mobile", targetId: "configured-page", deviceProfileId: "mobile-default", enabled: true }
+      ]
+    },
+    htmlFetcher: async () => "<main><p>This sentense came from configured HTML.</p></main>"
+  });
+
+  assert.equal(records.length, 2);
+  assert.deepEqual(new Set(records.map((record) => record.platform)), new Set(["pc", "mobile"]));
+  assert.ok(records.every((record) =>
+    record.issues.some((issue) => issue.source === "html-text" && issue.wrong === "sentense")
+  ));
 });
 
 test("stores text quality records and deletes them by source snapshot id", async () => {
