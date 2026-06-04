@@ -640,6 +640,247 @@ select:focus {
   overflow-wrap: anywhere;
 }
 
+.seo-audit-workspace {
+  display: grid;
+  gap: 16px;
+}
+
+.seo-action-board {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.seo-action-column,
+.seo-audit-results {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 16px;
+}
+
+.seo-action-column-critical {
+  border-color: rgba(180, 35, 24, 0.28);
+  background: #fffafa;
+}
+
+.seo-section-title {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.seo-section-title h3 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.25;
+}
+
+.seo-section-title p {
+  max-width: 620px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.seo-action-list,
+.seo-audit-card-grid,
+.seo-card-issues {
+  display: grid;
+  gap: 10px;
+}
+
+.seo-action-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 12px;
+}
+
+.seo-action-item-head,
+.seo-card-issue-title,
+.seo-audit-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.seo-action-item-head {
+  justify-content: flex-start;
+}
+
+.seo-action-item p,
+.seo-card-issue p {
+  margin: 8px 0;
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+.seo-action-item dl {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+
+.seo-action-item dl div {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.seo-action-item dt {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.seo-action-item dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.seo-empty-action {
+  margin: 0;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  padding: 12px;
+}
+
+.seo-audit-card-grid {
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+
+.seo-audit-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 14px;
+}
+
+.seo-audit-card-critical {
+  border-color: rgba(180, 35, 24, 0.38);
+}
+
+.seo-audit-card-warning {
+  border-color: rgba(161, 92, 0, 0.34);
+}
+
+.seo-audit-card-pending {
+  border-color: rgba(100, 112, 107, 0.34);
+}
+
+.seo-audit-card-head h4 {
+  margin: 4px 0 0;
+  font-size: 18px;
+}
+
+.seo-page-kind {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.seo-audit-url {
+  margin: 0;
+  color: var(--accent-dark);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.seo-audit-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.seo-status-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  border-radius: 999px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.seo-status-pill-critical {
+  background: #fff1f0;
+  color: #b42318;
+}
+
+.seo-status-pill-warning {
+  background: #fff7e6;
+  color: #a15c00;
+}
+
+.seo-status-pill-pending {
+  background: #f3f7f6;
+  color: var(--muted);
+}
+
+.seo-status-pill-ok {
+  background: rgba(15, 118, 110, 0.12);
+  color: var(--accent-dark);
+}
+
+.seo-card-issue {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.seo-card-issue-title {
+  justify-content: flex-start;
+}
+
+.seo-fix-box,
+.seo-card-ok {
+  display: grid;
+  gap: 4px;
+  border-radius: 8px;
+  background: #f8fbfa;
+  padding: 10px;
+}
+
+.seo-fix-box strong,
+.seo-card-ok strong {
+  color: var(--accent-dark);
+}
+
+.seo-card-issue small,
+.seo-card-ok span {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.seo-facts {
+  display: grid;
+  grid-template-columns: 118px minmax(0, 1fr);
+  gap: 7px 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+  font-size: 12px;
+}
+
+.seo-facts span {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.seo-facts strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .woodpecker-status-pill {
   display: inline-flex;
   align-items: center;
@@ -1832,6 +2073,10 @@ select:focus {
   .status-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .seo-action-board {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 640px) {
@@ -1880,7 +2125,18 @@ select:focus {
   }
 
   .status-grid,
-  .form-row {
+  .form-row,
+  .seo-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .seo-section-title,
+  .seo-audit-card-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .seo-action-item dl div {
     grid-template-columns: 1fr;
   }
 

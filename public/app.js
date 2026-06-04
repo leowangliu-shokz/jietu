@@ -492,7 +492,7 @@ function render(options = {}) {
   elements.shotCount.textContent = platformSnapshots().length;
   elements.changeCount.textContent = platformChanges().length;
   elements.seoCount.textContent = platformSeoSnapshots().length;
-  elements.seoIssueCount.textContent = latestSeoIssueRows().length;
+  elements.seoIssueCount.textContent = seoAuditActionRows(buildSeoAuditItems()).length;
   elements.seoChangeCount.textContent = platformSeoChanges().length;
   const currentWoodpeckerRecords = latestWoodpeckerRecordsByKey(platformWoodpeckerRecords());
   elements.woodpeckerCount.textContent = currentWoodpeckerRecords.length;
@@ -2768,54 +2768,29 @@ function changeChangesPage(delta) {
 }
 
 function renderSeoSummary() {
-  const snapshots = latestSeoSnapshotsByKey(platformSeoSnapshots().filter(matchesSeoFilters)).slice(0, 20);
-  const issueRows = latestSeoIssueRows(snapshots);
+  const snapshots = latestSeoSnapshotsByKey(platformSeoSnapshots().filter(matchesSeoFilters));
+  const auditItems = buildSeoAuditItems(snapshots);
+  const actionRows = seoAuditActionRows(auditItems);
   const changes = platformSeoChanges().filter(matchesSeoChangeFilters).slice(0, 20);
   elements.seoList.innerHTML = "";
-  elements.seoEmpty.classList.toggle("visible", snapshots.length === 0 && issueRows.length === 0 && changes.length === 0);
+  elements.seoEmpty.classList.toggle("visible", auditItems.length === 0 && changes.length === 0);
 
-  if (issueRows.length) {
-    const issueTable = document.createElement("div");
-    issueTable.className = "changes-table-wrap seo-table-wrap";
-    issueTable.innerHTML = `
-      <table class="changes-table seo-table seo-issue-table">
-        <thead>
-          <tr>
-            <th scope="col">Level</th>
-            <th scope="col">Issue</th>
-            <th scope="col">URL</th>
-            <th scope="col">Evidence</th>
-            <th scope="col">Checked</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${issueRows.map(renderSeoIssueRow).join("")}
-        </tbody>
-      </table>
+  if (auditItems.length) {
+    const auditPanel = document.createElement("div");
+    auditPanel.className = "seo-audit-workspace";
+    auditPanel.innerHTML = `
+      ${renderSeoActionBoard(actionRows)}
+      <section class="seo-audit-results" aria-label="SEO audit conclusions">
+        <div class="seo-section-title">
+          <h3>${escapeHtml(platformLabel(activePlatform))}逐页结论</h3>
+          <p>按当前平台展示；没有平台快照时，先展示 URL 级别结论并标记需要补抓确认。</p>
+        </div>
+        <div class="seo-audit-card-grid">
+          ${auditItems.map(renderSeoAuditCard).join("")}
+        </div>
+      </section>
     `;
-    elements.seoList.append(issueTable);
-  }
-
-  if (snapshots.length) {
-    const snapshotTable = document.createElement("div");
-    snapshotTable.className = "changes-table-wrap seo-table-wrap";
-    snapshotTable.innerHTML = `
-      <table class="changes-table seo-table">
-        <thead>
-          <tr>
-            <th scope="col">URL</th>
-            <th scope="col">Title</th>
-            <th scope="col">Meta description</th>
-            <th scope="col">H1 / Headers</th>
-            <th scope="col">Checked</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${snapshots.map(renderSeoSnapshotRow).join("")}
-        </tbody>
-      </table>
-    `;
-    elements.seoList.append(snapshotTable);
+    elements.seoList.append(auditPanel);
   }
 
   if (changes.length) {
@@ -2839,6 +2814,157 @@ function renderSeoSummary() {
     `;
     elements.seoList.append(changeTable);
   }
+}
+
+function renderSeoActionBoard(actionRows) {
+  const mustFix = actionRows.filter((row) => row.issue.level === "P0");
+  const recommended = actionRows.filter((row) => row.issue.level !== "P0");
+  return `
+    <section class="seo-action-board" aria-label="SEO action board">
+      <div class="seo-action-column seo-action-column-critical">
+        <div class="seo-section-title">
+          <h3>必须修的问题</h3>
+          <p>${mustFix.length ? "先处理这些会直接影响收录和权重传递的问题。" : "当前平台没有 P0 问题。"}</p>
+        </div>
+        <div class="seo-action-list">
+          ${mustFix.length ? mustFix.map(renderSeoActionItem).join("") : renderSeoEmptyAction("没有必须立即修复的 SEO 问题。")}
+        </div>
+      </div>
+      <div class="seo-action-column">
+        <div class="seo-section-title">
+          <h3>建议优化</h3>
+          <p>${recommended.length ? "这些问题不一定立刻阻断收录，但建议上线后尽快补齐。" : "当前平台没有建议优化项。"}</p>
+        </div>
+        <div class="seo-action-list">
+          ${recommended.length ? recommended.map(renderSeoActionItem).join("") : renderSeoEmptyAction("暂无建议优化项。")}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderSeoActionItem(row) {
+  const issue = row.issue || {};
+  return `
+    <article class="seo-action-item">
+      <div class="seo-action-item-head">
+        ${renderSeoLevelBadge(issue.level || "P2")}
+        <strong>${escapeHtml(seoIssueTitle(issue))}</strong>
+      </div>
+      <p>${escapeHtml(seoIssuePlainMessage(issue))}</p>
+      <dl>
+        <div>
+          <dt>页面</dt>
+          <dd>${escapeHtml(truncateDisplayText(row.url, 180))}</dd>
+        </div>
+        <div>
+          <dt>怎么改</dt>
+          <dd>${escapeHtml(seoIssueAction(issue, row.snapshot || row.target))}</dd>
+        </div>
+        <div>
+          <dt>证据</dt>
+          <dd>${escapeHtml(truncateDisplayText(seoIssueEvidence(issue), 220))}</dd>
+        </div>
+      </dl>
+    </article>
+  `;
+}
+
+function renderSeoEmptyAction(message) {
+  return `<p class="seo-empty-action">${escapeHtml(message)}</p>`;
+}
+
+function renderSeoAuditCard(item) {
+  const status = seoAuditItemStatus(item);
+  const issues = Array.isArray(item.issues) ? item.issues : [];
+  return `
+    <article class="seo-audit-card seo-audit-card-${escapeHtml(status)}">
+      <div class="seo-audit-card-head">
+        <div>
+          <span class="seo-page-kind">${escapeHtml(seoPageKindLabel(item.url))}</span>
+          <h4>${escapeHtml(seoProductLabel(item.url))}</h4>
+        </div>
+        ${renderSeoStatusPill(status)}
+      </div>
+      <p class="seo-audit-url">${escapeHtml(item.url)}</p>
+      <div class="seo-audit-meta">
+        <span>${escapeHtml(item.sourceLabel)}</span>
+        <span>${escapeHtml(item.checkedAt ? formatOptionalDate(item.checkedAt) : "待抓取")}</span>
+      </div>
+      ${issues.length ? `
+        <div class="seo-card-issues">
+          ${issues.map((issue) => renderSeoCardIssue(issue, item)).join("")}
+        </div>
+      ` : `
+        <div class="seo-card-ok">
+          <strong>当前未发现需要处理的 SEO 问题。</strong>
+          <span>${escapeHtml(item.snapshot ? "canonical、title、hreflang 当前快照未触发问题规则。" : "该 URL 的最近人工审计结论正常；补抓后会写入平台快照。")}</span>
+        </div>
+      `}
+      ${renderSeoFacts(item)}
+    </article>
+  `;
+}
+
+function renderSeoCardIssue(issue, item) {
+  return `
+    <section class="seo-card-issue">
+      <div class="seo-card-issue-title">
+        ${renderSeoLevelBadge(issue.level || "P2")}
+        <strong>${escapeHtml(seoIssueTitle(issue))}</strong>
+      </div>
+      <p>${escapeHtml(seoIssuePlainMessage(issue))}</p>
+      <div class="seo-fix-box">
+        <strong>落地建议</strong>
+        <span>${escapeHtml(seoIssueAction(issue, item.snapshot || item.target))}</span>
+      </div>
+      <small>${escapeHtml(truncateDisplayText(seoIssueEvidence(issue), 260))}</small>
+    </section>
+  `;
+}
+
+function renderSeoFacts(item) {
+  const snapshot = item.snapshot;
+  if (!snapshot) {
+    return `<div class="seo-facts"><span>平台快照</span><strong>未抓取</strong><span>下一步</span><strong>运行一次 ${escapeHtml(platformLabel(activePlatform))} 抓取确认</strong></div>`;
+  }
+  const canonicalStatus = snapshot.canonicalStatus?.status
+    ? `HTTP ${snapshot.canonicalStatus.status}`
+    : snapshot.canonicalStatus?.error || "未检查";
+  const hreflangText = Array.isArray(snapshot.hreflangs) && snapshot.hreflangs.length
+    ? snapshot.hreflangs.map((item) => item.hreflang).join(" / ")
+    : snapshot.hreflangChecked ? "缺失" : "未检查";
+  return `
+    <div class="seo-facts">
+      <span>Canonical</span>
+      <strong>${escapeHtml(truncateDisplayText(snapshot.canonical || "-", 180))}</strong>
+      <span>Canonical 状态</span>
+      <strong>${escapeHtml(canonicalStatus)}</strong>
+      <span>Hreflang</span>
+      <strong>${escapeHtml(hreflangText)}</strong>
+      <span>Title</span>
+      <strong>${escapeHtml(truncateDisplayText(snapshot.title || "-", 180))}</strong>
+    </div>
+  `;
+}
+
+function renderSeoLevelBadge(level) {
+  const normalized = ["P0", "P1", "P2"].includes(level) ? level : "P2";
+  return `
+    <span class="change-level change-level-${escapeHtml(normalized.toLowerCase())}">
+      ${escapeHtml(normalized)}
+    </span>
+  `;
+}
+
+function renderSeoStatusPill(status) {
+  const labels = {
+    critical: "必须修",
+    warning: "建议优化",
+    pending: "待补抓",
+    ok: "正常"
+  };
+  return `<span class="seo-status-pill seo-status-pill-${escapeHtml(status)}">${escapeHtml(labels[status] || "待确认")}</span>`;
 }
 
 function renderWoodpeckerSummary() {
@@ -3125,6 +3251,375 @@ function seoLevelSort(level) {
     return 1;
   }
   return 2;
+}
+
+function buildSeoAuditItems(inputSnapshots = null) {
+  const snapshots = latestSeoSnapshotsByKey(inputSnapshots || platformSeoSnapshots());
+  const selectedUrl = activeSeoFilters().url;
+  const targets = seoAuditTargets().filter((target) => matchesSeoTargetFilter(target, selectedUrl));
+  const snapshotByTarget = new Map();
+  const snapshotByUrl = new Map();
+
+  for (const snapshot of snapshots) {
+    if (snapshot.targetId && !snapshotByTarget.has(snapshot.targetId)) {
+      snapshotByTarget.set(snapshot.targetId, snapshot);
+    }
+    for (const key of seoSnapshotUrlKeys(snapshot)) {
+      if (!snapshotByUrl.has(key)) {
+        snapshotByUrl.set(key, snapshot);
+      }
+    }
+  }
+
+  if (!targets.length) {
+    return snapshots.map((snapshot) => seoAuditItemForSnapshot(snapshot));
+  }
+
+  return targets.map((target) => {
+    const url = seoTargetUrl(target);
+    const snapshot = snapshotByTarget.get(target.id) || snapshotByUrl.get(normalizedSeoUrl(url)) || null;
+    return seoAuditItemForTarget(target, snapshot);
+  }).sort(compareSeoAuditItems);
+}
+
+function seoAuditTargets() {
+  const targets = (state.platforms?.[activePlatform]?.targets || configTargets(state.config))
+    .filter((target) => openDotsSeoUrlPattern().test(seoTargetUrl(target)));
+  const seen = new Set();
+  return targets.filter((target) => {
+    const key = normalizedSeoUrl(seoTargetUrl(target));
+    if (!key || seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function openDotsSeoUrlPattern() {
+  return /\/(?:pages|products)\/opendots-(?:2|air)\/?$/i;
+}
+
+function matchesSeoTargetFilter(target, selectedUrl) {
+  if (!selectedUrl) {
+    return true;
+  }
+  const selected = normalizedSeoUrl(selectedUrl);
+  return [
+    seoTargetUrl(target),
+    target.label,
+    displayUrlForTarget(target)
+  ].some((value) => normalizedSeoUrl(value) === selected || value === selectedUrl);
+}
+
+function seoAuditItemForTarget(target, snapshot = null) {
+  const url = seoTargetUrl(target);
+  if (snapshot) {
+    const fallbackIssues = seoSnapshotAuditChecked(snapshot) ? [] : knownOpenDotsSeoIssues(url);
+    const issues = Array.isArray(snapshot.issues) && snapshot.issues.length
+      ? snapshot.issues
+      : fallbackIssues;
+    return {
+      target,
+      snapshot,
+      url,
+      issues,
+      checkedAt: snapshot.capturedAt,
+      sourceLabel: seoSnapshotAuditChecked(snapshot) ? `${platformLabel(activePlatform)}快照` : "URL 级别结论，待平台补抓确认"
+    };
+  }
+  return {
+    target,
+    snapshot: null,
+    url,
+    issues: knownOpenDotsSeoIssues(url),
+    checkedAt: "",
+    sourceLabel: "URL 级别结论，待平台补抓确认"
+  };
+}
+
+function seoAuditItemForSnapshot(snapshot) {
+  return {
+    target: null,
+    snapshot,
+    url: canonicalDisplayUrlForSeoSnapshot(snapshot),
+    issues: Array.isArray(snapshot.issues) ? snapshot.issues : [],
+    checkedAt: snapshot.capturedAt,
+    sourceLabel: `${platformLabel(activePlatform)}快照`
+  };
+}
+
+function seoAuditActionRows(items) {
+  return items
+    .flatMap((item) => (Array.isArray(item.issues) ? item.issues : []).map((issue) => ({
+      item,
+      issue,
+      snapshot: item.snapshot,
+      target: item.target,
+      url: item.url
+    })))
+    .sort((left, right) =>
+      seoLevelSort(left.issue.level) - seoLevelSort(right.issue.level) ||
+      left.url.localeCompare(right.url)
+    );
+}
+
+function compareSeoAuditItems(left, right) {
+  return seoAuditStatusSort(seoAuditItemStatus(left)) - seoAuditStatusSort(seoAuditItemStatus(right)) ||
+    seoPageSort(left.url) - seoPageSort(right.url) ||
+    left.url.localeCompare(right.url);
+}
+
+function seoAuditStatusSort(status) {
+  if (status === "critical") return 0;
+  if (status === "warning") return 1;
+  if (status === "pending") return 2;
+  return 3;
+}
+
+function seoPageSort(url) {
+  const parsed = parseSeoUrl(url);
+  return parsed?.pathname?.startsWith("/pages/") ? 0 : 1;
+}
+
+function seoAuditItemStatus(item) {
+  const issues = Array.isArray(item.issues) ? item.issues : [];
+  if (issues.some((issue) => issue.level === "P0")) {
+    return "critical";
+  }
+  if (issues.length) {
+    return "warning";
+  }
+  return item.snapshot ? "ok" : "pending";
+}
+
+function seoSnapshotAuditChecked(snapshot) {
+  if (!snapshot) {
+    return false;
+  }
+  return Boolean(
+    snapshot.hreflangChecked ||
+    Number(snapshot.canonicalStatus?.status || 0) > 0 ||
+    snapshot.canonicalStatus?.checkedAt ||
+    snapshot.canonicalStatus?.error
+  );
+}
+
+function knownOpenDotsSeoIssues(url) {
+  const parsed = parseSeoUrl(url);
+  if (!parsed || !openDotsSeoUrlPattern().test(parsed.href)) {
+    return [seoPendingIssue()];
+  }
+  const path = parsed.pathname.replace(/\/$/, "");
+  const isPage = path.startsWith("/pages/");
+  const issues = [];
+
+  if (parsed.hostname === "shokz.com" && path === "/pages/opendots-2") {
+    issues.push({
+      code: "canonical-http-error",
+      field: "canonical",
+      level: "P0",
+      title: "BE 美国信息页 canonical 指向 404",
+      message: "canonical 写成了 https://shokz.com/pages/opendots，实际返回 404。",
+      detail: "canonical: https://shokz.com/pages/opendots",
+      expected: "改为当前可访问页面或其它 200 正式 URL。"
+    });
+  }
+  if (isPage) {
+    issues.push({
+      code: "hreflang-missing-region-pair",
+      field: "hreflangs",
+      level: "P1",
+      title: "信息页缺 US/CA hreflang 互链",
+      message: "页面 head 里没有 en-US / en-CA alternate。",
+      detail: "hreflang: (none)",
+      expected: "补齐 US 与 CA 两个区域版本互链。"
+    });
+  }
+  if (parsed.hostname === "shokz.com" && isPage) {
+    issues.push({
+      code: "technical-todo-comment",
+      field: "technicalNotes",
+      level: "P2",
+      title: "源码里还有开发 TODO 注释",
+      message: "页面 JS 里残留 TODO 注释，建议上线后清理。",
+      detail: "// TODO: remove me",
+      expected: "删除临时开发注释，避免后续误读。"
+    });
+  }
+  return issues;
+}
+
+function seoPendingIssue() {
+  return {
+    code: "audit-pending",
+    field: "snapshot",
+    level: "P2",
+    title: "待平台快照确认",
+    message: "当前平台还没有这条 URL 的新版 SEO 快照。",
+    detail: "",
+    expected: "运行一次正式抓取后自动生成 canonical、title、hreflang 结论。"
+  };
+}
+
+function seoIssueTitle(issue) {
+  if (issue.code === "canonical-http-error") {
+    return "Canonical 目标不可访问";
+  }
+  if (issue.code === "canonical-missing") {
+    return "Canonical 缺失";
+  }
+  if (issue.code === "hreflang-missing-region-pair") {
+    return "缺少 US/CA hreflang 互链";
+  }
+  if (issue.code === "title-leading-duplicate") {
+    return "Title 开头重复";
+  }
+  if (issue.code === "technical-todo-comment") {
+    return "源码残留 TODO 注释";
+  }
+  if (issue.code === "robots-noindex") {
+    return "页面被 noindex";
+  }
+  if (issue.code === "audit-pending") {
+    return "待平台快照确认";
+  }
+  return issue.title || issue.message || "SEO 建议";
+}
+
+function seoIssuePlainMessage(issue) {
+  if (issue.code === "canonical-http-error") {
+    return "canonical 当前指向不可访问页面，搜索引擎会把权重导向错误地址。";
+  }
+  if (issue.code === "canonical-missing") {
+    return "页面没有 canonical，搜索引擎无法确认首选收录地址。";
+  }
+  if (issue.code === "hreflang-missing-region-pair") {
+    return "US 与 CA 对应页没有语言/区域互链，可能被判断为重复内容。";
+  }
+  if (issue.code === "title-leading-duplicate") {
+    return "页面标题开头重复，浏览器标签和搜索结果会显得不专业。";
+  }
+  if (issue.code === "technical-todo-comment") {
+    return "上线页源码里还有临时开发注释，建议清理。";
+  }
+  if (issue.code === "robots-noindex") {
+    return "robots meta 含 noindex，会阻止页面被索引。";
+  }
+  return issue.message || issue.title || "需要人工确认 SEO 配置。";
+}
+
+function seoIssueEvidence(issue) {
+  return [issue.detail, issue.expected].filter(Boolean).join(" / ") || issue.message || "-";
+}
+
+function seoIssueAction(issue, source) {
+  const url = seoSourceUrl(source);
+  if (issue.code === "canonical-http-error") {
+    return `把 canonical 改成 200 页面。建议先用当前页面 URL：${url || "当前页面 URL"}；不要继续指向 404 地址。`;
+  }
+  if (issue.code === "canonical-missing") {
+    return `在 head 中补 <link rel="canonical" href="${url || "当前页面 URL"}">。`;
+  }
+  if (issue.code === "hreflang-missing-region-pair") {
+    return seoHreflangAction(url);
+  }
+  if (issue.code === "title-leading-duplicate") {
+    return "拆开页面标题字段和 SEO title，只保留一次产品名，避免浏览器标题和搜索结果出现重复词。";
+  }
+  if (issue.code === "technical-todo-comment") {
+    return "让前端清理页面 JS 里的 TODO 注释；这是技术债，不影响用户可见内容，但上线页不应残留。";
+  }
+  if (issue.code === "robots-noindex") {
+    return "确认该页面是否要被收录；如果要收录，把 robots meta 改成 index,follow。";
+  }
+  if (issue.code === "audit-pending") {
+    return `运行 ${platformLabel(activePlatform)} 正式抓取或等待下一次定时任务，生成平台级证据后再判断。`;
+  }
+  return issue.expected || "按证据字段修正页面 SEO 配置。";
+}
+
+function seoHreflangAction(url) {
+  const pair = seoRegionalPair(url);
+  if (!pair) {
+    return "在对应区域页面 head 中补齐 en-US 与 en-CA alternate，并确保两边互相引用。";
+  }
+  return `在 US/CA 对应页面 head 都加入：en-US -> ${pair.usUrl}；en-CA -> ${pair.caUrl}。`;
+}
+
+function seoRegionalPair(url) {
+  const parsed = parseSeoUrl(url);
+  if (!parsed || !["shokz.com", "ca.shokz.com"].includes(parsed.hostname)) {
+    return null;
+  }
+  return {
+    usUrl: `https://shokz.com${parsed.pathname}`,
+    caUrl: `https://ca.shokz.com${parsed.pathname}`
+  };
+}
+
+function seoProductLabel(url) {
+  const parsed = parseSeoUrl(url);
+  const path = parsed?.pathname || url;
+  if (/opendots-2/i.test(path)) {
+    return "BE OpenDots 2";
+  }
+  if (/opendots-air/i.test(path)) {
+    return "LOK OpenDots Air";
+  }
+  return "OpenDots 页面";
+}
+
+function seoPageKindLabel(url) {
+  const parsed = parseSeoUrl(url);
+  const region = parsed?.hostname === "ca.shokz.com" ? "CA" : "US";
+  const kind = parsed?.pathname?.startsWith("/products/") ? "购买页" : "信息页";
+  return `${region} · ${kind}`;
+}
+
+function seoSourceUrl(source) {
+  if (!source) {
+    return "";
+  }
+  if (typeof source === "string") {
+    return source;
+  }
+  return source.finalUrl || source.url || source.canonical || seoTargetUrl(source);
+}
+
+function seoTargetUrl(target) {
+  return typeof target === "string" ? target : target?.url || "";
+}
+
+function seoSnapshotUrlKeys(snapshot) {
+  return [
+    snapshot.finalUrl,
+    snapshot.url,
+    snapshot.displayUrl,
+    snapshot.canonical
+  ].map(normalizedSeoUrl).filter(Boolean);
+}
+
+function normalizedSeoUrl(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  try {
+    const url = new URL(text);
+    url.hash = "";
+    return url.href.replace(/\/$/, "");
+  } catch {
+    return text.replace(/\/$/, "");
+  }
+}
+
+function parseSeoUrl(value) {
+  try {
+    return new URL(String(value || "").trim());
+  } catch {
+    return null;
+  }
 }
 
 function latestSeoSnapshotsByKey(snapshots) {
@@ -4334,9 +4829,10 @@ function urlFilterOptions() {
 }
 
 function seoUrlFilterOptions() {
+  const targets = seoAuditTargets().map(seoTargetUrl);
   const snapshots = platformSeoSnapshots().map(canonicalDisplayUrlForSeoSnapshot);
   const changed = platformSeoChanges().map(canonicalDisplayUrlForSeoChange);
-  return [...new Set([...snapshots, ...changed].filter(Boolean))];
+  return [...new Set([...targets, ...snapshots, ...changed].filter(Boolean))];
 }
 
 function woodpeckerUrlFilterOptions() {
