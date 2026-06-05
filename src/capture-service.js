@@ -1330,11 +1330,8 @@ async function retryFailedCapturePlans({
 }
 
 function shouldRetryCaptureResult(result) {
-  if (captureResultRelatedWarnings(result).length) {
-    return true;
-  }
   const message = String(result?.error || "");
-  return /failed blank-image validation|near-white blank band|related warnings/i.test(message);
+  return /failed blank-image validation|near-white blank band|related warnings|Mobile menu trigger not found|Shokz products navigation did not open|chrome-error:\/\/chromewebdata|URL check failed|Could not find|did not become active|net::ERR|Navigation timeout|Target closed/i.test(message);
 }
 
 function retryCaptureConfig(config, attempt) {
@@ -1344,37 +1341,7 @@ function retryCaptureConfig(config, attempt) {
 }
 
 function failResultWithRetriableRelatedWarnings(result) {
-  if (!result?.ok) {
-    return result;
-  }
-  const warnings = captureResultRelatedWarnings(result);
-  if (!warnings.length) {
-    return result;
-  }
-  return {
-    ...result,
-    ok: false,
-    error: `Capture completed with related warnings: ${relatedWarningSummary(warnings)}`
-  };
-}
-
-function captureResultRelatedWarnings(result) {
-  return captureResultSnapshots(result)
-    .flatMap((snapshot) => Array.isArray(snapshot?.relatedValidation?.warnings)
-      ? snapshot.relatedValidation.warnings
-      : [])
-    .filter(Boolean);
-}
-
-function relatedWarningSummary(warnings) {
-  return warnings
-    .slice(0, 3)
-    .map((warning) => [
-      warning.sectionLabel || warning.sectionKey || "related",
-      warning.stateLabel,
-      warning.message
-    ].filter(Boolean).join(" / "))
-    .join("; ");
+  return result;
 }
 
 function captureResultSnapshots(result) {

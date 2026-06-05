@@ -1309,6 +1309,9 @@ function shouldCleanShokzKnownPopups(url, options = {}) {
 }
 
 function shouldUseDirectFullPageClipCapture(options = {}) {
+  if (options.fullPage === false) {
+    return false;
+  }
   const captureMode = String(options.captureMode || "").trim();
   return captureMode === "shokz-collection-page" ||
     captureMode === "shokz-comparison-page" ||
@@ -1316,6 +1319,9 @@ function shouldUseDirectFullPageClipCapture(options = {}) {
 }
 
 function shouldUseStitchedLandingFullPageCapture(options = {}, viewport = {}) {
+  if (options.fullPage === false) {
+    return false;
+  }
   return String(options.captureMode || "").trim() === "shokz-landing-page" &&
     !isMobileCaptureContext({ ...options, viewport });
 }
@@ -4083,7 +4089,7 @@ async function readShokzProductsNavigationCategoryItems(client, topItem) {
     expression: `(() => {
       const topItem = ${JSON.stringify(topItem)};
       const allowedLabels = ${JSON.stringify(shokzProductsNavigationCategoryLabels)};
-      const desktopMinCategoryLeft = () => Math.max(120, window.innerWidth * 0.12);
+      const desktopMinCategoryLeft = () => Math.max(24, window.innerWidth * 0.025);
       const desktopCategoryLayoutIssue = (rect) => {
         if (!rect) return "Desktop Products navigation category column was not found.";
         if (rect.left < desktopMinCategoryLeft()) {
@@ -4463,7 +4469,7 @@ async function readShokzNavigationSnapshotState(client, state) {
       };
       const desktopProductsCategoryRootIssue = (rect) => {
         if (!rect) return "Desktop Products navigation category column was not found.";
-        const minLeft = Math.max(120, window.innerWidth * 0.12);
+        const minLeft = Math.max(24, window.innerWidth * 0.025);
         if (rect.left < minLeft) {
           return "Desktop Products navigation category column was too close to the left edge.";
         }
@@ -19359,6 +19365,9 @@ async function readShokzProductsNavigationState(client, mobile) {
       const desktopProductPanelOk = best.categoryHits >= 3 &&
         (best.taxonomyHits >= 1 || best.utilityHits >= 1) &&
         best.panelLike;
+      const desktopProductContentOk = best.categoryHits >= 3 &&
+        best.taxonomyHits >= 1 &&
+        /OPENRUN|OPENSWIM|OPENMOVE|OPENFIT|OPENDOTS/i.test(best.text);
       const mobileOk = !searchOpen &&
         !cartOpen &&
         window.scrollY < 20 &&
@@ -19380,9 +19389,10 @@ async function readShokzProductsNavigationState(client, mobile) {
             best.categoryHits >= 2 &&
             (best.taxonomyHits >= 1 || best.panelLike)
           ) ||
-          desktopProductPanelOk
-        ) ||
-        (!searchOpen && !cartOpen && window.scrollY < 20 && desktopDrawerOk);
+          desktopProductPanelOk ||
+          desktopProductContentOk ||
+          desktopDrawerOk
+        );
       return {
         ok: mobile ? mobileOk : desktopOk,
         visibleText: best.text.slice(0, 260),

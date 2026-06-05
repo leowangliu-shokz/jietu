@@ -1,6 +1,152 @@
 {
   "version": 2,
-  "targets": [],
+  "targets": [
+    {
+      "id": "shokz-home",
+      "url": "https://shokz.com/",
+      "label": "首页（https://shokz.com/）"
+    },
+    {
+      "id": "shokz-products-nav",
+      "url": "https://shokz.com/",
+      "label": "导航栏（https://shokz.com/）",
+      "captureMode": "shokz-products-nav",
+      "fullPage": false
+    },
+    {
+      "id": "shokz-headphones-accessories",
+      "url": "https://shokz.com/collections/headphones-accessories",
+      "label": "产品集合页（https://shokz.com/collections/headphones-accessories）",
+      "fullPage": false
+    },
+    {
+      "id": "shokz-product-comparison",
+      "url": "https://shokz.com/pages/product-comparison",
+      "label": "产品对比页（https://shokz.com/pages/product-comparison）"
+    },
+    {
+      "id": "shokz-open-ear-headphones-collection",
+      "url": "https://shokz.com/collections/open-ear-earbuds",
+      "label": "开耳集合页（https://shokz.com/collections/open-ear-headphones）",
+      "fullPage": false
+    },
+    {
+      "id": "shokz-open-ear-series",
+      "url": "https://shokz.com/pages/open-ear-series",
+      "label": "气导集合页（https://shokz.com/pages/open-ear-series）"
+    },
+    {
+      "id": "shokz-bone-conduction-series",
+      "url": "https://shokz.com/pages/bone-conduction-series",
+      "label": "骨导集合页（https://shokz.com/pages/bone-conduction-series）"
+    },
+    {
+      "id": "shokz-explore-open-ear-headphones",
+      "url": "https://shokz.com/pages/explore-open-ear-headphones",
+      "label": "PP页（https://shokz.com/pages/explore-open-ear-headphones）"
+    },
+    {
+      "id": "shokz-explore-sports-headphones",
+      "url": "https://shokz.com/pages/explore-sports-headphones",
+      "label": "运动PP页（https://shokz.com/pages/explore-sports-headphones）"
+    },
+    {
+      "id": "shokz-openrunpro2-page",
+      "url": "https://shokz.com/pages/openrunpro2",
+      "label": "BOS信息页（https://shokz.com/pages/openrunpro2）",
+      "fullPage": false
+    },
+    {
+      "id": "shokz-openrunpro2-product",
+      "url": "https://shokz.com/products/openrunpro2",
+      "label": "BOS购买页（https://shokz.com/products/openrunpro2）",
+      "fullPage": false
+    },
+    {
+      "id": "shokz-openswimpro-page",
+      "url": "https://shokz.com/pages/openswimpro",
+      "label": "Seal信息页（https://shokz.com/pages/openswimpro）",
+      "fullPage": false
+    },
+    {
+      "id": "shokz-openswimpro-product",
+      "url": "https://shokz.com/products/openswimpro",
+      "label": "Seal购买页（https://shokz.com/products/openswimpro）",
+      "fullPage": false
+    },
+    {
+      "id": "shokz-openrun-page",
+      "url": "https://shokz.com/pages/openrun",
+      "label": "OpenRun信息页（https://shokz.com/pages/openrun）",
+      "fullPage": false
+    },
+    {
+      "id": "shokz-openrun-product",
+      "url": "https://shokz.com/products/openrun",
+      "label": "OpenRun购买页（https://shokz.com/products/openrun）",
+      "fullPage": false
+    },
+    {
+      "id": "shokz-opendots-2-page",
+      "url": "https://shokz.com/pages/opendots-2",
+      "label": "Being信息页（https://shokz.com/pages/opendots-2）",
+      "fullPage": false
+    },
+    {
+      "id": "shokz-opendots-2-product",
+      "url": "https://shokz.com/products/opendots-2",
+      "label": "Being购买页（https://shokz.com/products/opendots-2）",
+      "fullPage": false
+    },
+    {
+      "id": "shokz-opendots-air-page",
+      "url": "https://shokz.com/pages/opendots-air",
+      "label": "Looking信息页（https://shokz.com/pages/opendots-air）",
+      "fullPage": false
+    },
+    {
+      "id": "shokz-opendots-air-product",
+      "url": "https://shokz.com/products/opendots-air",
+      "label": "Looking购买页（https://shokz.com/products/opendots-air）",
+      "fullPage": false
+    },
+    {
+      "id": "shokz-openfit-pro-page",
+      "url": "https://shokz.com/pages/openfit-pro",
+      "label": "NT信息页（https://shokz.com/pages/openfit-pro）",
+      "fullPage": false
+    },
+    {
+      "id": "shokz-openfit-pro-product",
+      "url": "https://shokz.com/products/openfit-pro",
+      "label": "NT购买页（https://shokz.com/products/openfit-pro）",
+      "fullPage": false
+    },
+    {
+      "id": "shokz-openfit2-page",
+      "url": "https://shokz.com/pages/openfit2",
+      "label": "UCS信息页（https://shokz.com/pages/openfit2）",
+      "fullPage": false
+    },
+    {
+      "id": "shokz-openfit2plus-product",
+      "url": "https://shokz.com/products/openfit2plus",
+      "label": "UCS购买页（https://shokz.com/products/openfit2plus）",
+      "fullPage": false
+    },
+    {
+      "id": "shokz-openfitair-page",
+      "url": "https://shokz.com/pages/openfitair",
+      "label": "CCT信息页（https://shokz.com/pages/openfitair）",
+      "fullPage": false
+    },
+    {
+      "id": "shokz-openfitair-product",
+      "url": "https://shokz.com/products/openfitair",
+      "label": "CCT购买页（https://shokz.com/products/openfitair）",
+      "fullPage": false
+    }
+  ],
   "deviceProfiles": [
     {
       "id": "pc-default",
@@ -15,7 +161,318 @@
       "enabled": true
     }
   ],
-  "capturePlans": [],
+  "capturePlans": [
+    {
+      "id": "plan-shokz-home-pc-default",
+      "targetId": "shokz-home",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-home-mobile-default",
+      "targetId": "shokz-home",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-products-nav-pc-default",
+      "targetId": "shokz-products-nav",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-products-nav-mobile-default",
+      "targetId": "shokz-products-nav",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-headphones-accessories-pc-default",
+      "targetId": "shokz-headphones-accessories",
+      "deviceProfileId": "pc-default",
+      "enabled": true,
+      "relatedCaptureMode": "shokz-collection-page",
+      "fullPage": false
+    },
+    {
+      "id": "plan-shokz-headphones-accessories-mobile-default",
+      "targetId": "shokz-headphones-accessories",
+      "deviceProfileId": "mobile-default",
+      "enabled": true,
+      "captureMode": "shokz-collection-page",
+      "fullPage": false
+    },
+    {
+      "id": "plan-shokz-product-comparison-pc-default",
+      "targetId": "shokz-product-comparison",
+      "deviceProfileId": "pc-default",
+      "enabled": true,
+      "relatedCaptureMode": "shokz-comparison-page"
+    },
+    {
+      "id": "plan-shokz-product-comparison-mobile-default",
+      "targetId": "shokz-product-comparison",
+      "deviceProfileId": "mobile-default",
+      "enabled": true,
+      "captureMode": "shokz-comparison-page"
+    },
+    {
+      "id": "plan-shokz-open-ear-headphones-collection-pc-default",
+      "targetId": "shokz-open-ear-headphones-collection",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-open-ear-headphones-collection-mobile-default",
+      "targetId": "shokz-open-ear-headphones-collection",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-open-ear-series-pc-default",
+      "targetId": "shokz-open-ear-series",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-open-ear-series-mobile-default",
+      "targetId": "shokz-open-ear-series",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-bone-conduction-series-pc-default",
+      "targetId": "shokz-bone-conduction-series",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-bone-conduction-series-mobile-default",
+      "targetId": "shokz-bone-conduction-series",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-explore-open-ear-headphones-pc-default",
+      "targetId": "shokz-explore-open-ear-headphones",
+      "deviceProfileId": "pc-default",
+      "enabled": true,
+      "relatedCaptureMode": "shokz-landing-page"
+    },
+    {
+      "id": "plan-shokz-explore-open-ear-headphones-mobile-default",
+      "targetId": "shokz-explore-open-ear-headphones",
+      "deviceProfileId": "mobile-default",
+      "enabled": true,
+      "captureMode": "shokz-landing-page"
+    },
+    {
+      "id": "plan-shokz-explore-sports-headphones-pc-default",
+      "targetId": "shokz-explore-sports-headphones",
+      "deviceProfileId": "pc-default",
+      "enabled": true,
+      "relatedCaptureMode": "shokz-landing-page"
+    },
+    {
+      "id": "plan-shokz-explore-sports-headphones-mobile-default",
+      "targetId": "shokz-explore-sports-headphones",
+      "deviceProfileId": "mobile-default",
+      "enabled": true,
+      "captureMode": "shokz-landing-page"
+    },
+    {
+      "id": "plan-shokz-openrunpro2-page-pc-default",
+      "targetId": "shokz-openrunpro2-page",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-openrunpro2-page-mobile-default",
+      "targetId": "shokz-openrunpro2-page",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-openrunpro2-product-pc-default",
+      "targetId": "shokz-openrunpro2-product",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-openrunpro2-product-mobile-default",
+      "targetId": "shokz-openrunpro2-product",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-openswimpro-page-pc-default",
+      "targetId": "shokz-openswimpro-page",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-openswimpro-page-mobile-default",
+      "targetId": "shokz-openswimpro-page",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-openswimpro-product-pc-default",
+      "targetId": "shokz-openswimpro-product",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-openswimpro-product-mobile-default",
+      "targetId": "shokz-openswimpro-product",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-openrun-page-pc-default",
+      "targetId": "shokz-openrun-page",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-openrun-page-mobile-default",
+      "targetId": "shokz-openrun-page",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-openrun-product-pc-default",
+      "targetId": "shokz-openrun-product",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-openrun-product-mobile-default",
+      "targetId": "shokz-openrun-product",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-opendots-2-page-pc-default",
+      "targetId": "shokz-opendots-2-page",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-opendots-2-page-mobile-default",
+      "targetId": "shokz-opendots-2-page",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-opendots-2-product-pc-default",
+      "targetId": "shokz-opendots-2-product",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-opendots-2-product-mobile-default",
+      "targetId": "shokz-opendots-2-product",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-opendots-air-page-pc-default",
+      "targetId": "shokz-opendots-air-page",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-opendots-air-page-mobile-default",
+      "targetId": "shokz-opendots-air-page",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-opendots-air-product-pc-default",
+      "targetId": "shokz-opendots-air-product",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-opendots-air-product-mobile-default",
+      "targetId": "shokz-opendots-air-product",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-openfit-pro-page-pc-default",
+      "targetId": "shokz-openfit-pro-page",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-openfit-pro-page-mobile-default",
+      "targetId": "shokz-openfit-pro-page",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-openfit-pro-product-pc-default",
+      "targetId": "shokz-openfit-pro-product",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-openfit-pro-product-mobile-default",
+      "targetId": "shokz-openfit-pro-product",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-openfit2-page-pc-default",
+      "targetId": "shokz-openfit2-page",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-openfit2-page-mobile-default",
+      "targetId": "shokz-openfit2-page",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-openfit2plus-product-pc-default",
+      "targetId": "shokz-openfit2plus-product",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-openfit2plus-product-mobile-default",
+      "targetId": "shokz-openfit2plus-product",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-openfitair-page-pc-default",
+      "targetId": "shokz-openfitair-page",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-openfitair-page-mobile-default",
+      "targetId": "shokz-openfitair-page",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-openfitair-product-pc-default",
+      "targetId": "shokz-openfitair-product",
+      "deviceProfileId": "pc-default",
+      "enabled": true
+    },
+    {
+      "id": "plan-shokz-openfitair-product-mobile-default",
+      "targetId": "shokz-openfitair-product",
+      "deviceProfileId": "mobile-default",
+      "enabled": true
+    }
+  ],
   "intervalMinutes": 0,
   "captureConcurrency": 6,
   "relatedCaptureConcurrency": 2,

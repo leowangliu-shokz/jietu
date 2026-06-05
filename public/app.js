@@ -686,6 +686,7 @@ function renderUrlFilterOptions(select, urls, currentValue = "") {
     const option = document.createElement("option");
     option.value = url;
     option.textContent = url;
+    option.title = url;
     select.append(option);
   }
   select.value = urls.includes(current) ? current : "";
@@ -4829,7 +4830,7 @@ function urlFilterOptions() {
 }
 
 function seoUrlFilterOptions() {
-  const targets = seoAuditTargets().map(seoTargetUrl);
+  const targets = seoAuditTargets().map(displayUrlForTarget);
   const snapshots = platformSeoSnapshots().map(canonicalDisplayUrlForSeoSnapshot);
   const changed = platformSeoChanges().map(canonicalDisplayUrlForSeoChange);
   return [...new Set([...targets, ...snapshots, ...changed].filter(Boolean))];
@@ -4924,7 +4925,18 @@ function displayUrlForSnapshot(snapshot) {
 }
 
 function displayUrlForTarget(target) {
-  return typeof target === "string" ? target : target.label || target.url;
+  if (typeof target === "string") {
+    return target;
+  }
+  const label = String(target?.label || "").trim();
+  const url = String(target?.url || "").trim();
+  if (!label) {
+    return url;
+  }
+  if (!url || label.includes(url) || /https?:\/\//i.test(label)) {
+    return label;
+  }
+  return `${label}（${url}）`;
 }
 
 function homeGroupKey(snapshot) {

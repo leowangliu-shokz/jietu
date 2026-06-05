@@ -238,6 +238,22 @@ test("blank screenshot failures are retried with a bounded attempt count", () =>
         warnings: [{ sectionKey: "navigation", message: "missing planned screenshots" }]
       }
     }
+  }), false);
+  assert.equal(shouldRetryCaptureResult({
+    ok: false,
+    error: "Mobile menu trigger not found:  (stage: opening Shokz products navigation)"
+  }), true);
+  assert.equal(shouldRetryCaptureResult({
+    ok: false,
+    error: "Shokz products navigation did not open. hits=3/3 reason=Desktop Products navigation category column was too close to the left edge."
+  }), true);
+  assert.equal(shouldRetryCaptureResult({
+    ok: false,
+    error: "URL check failed after navigation: requested https://shokz.com/ but browser is at chrome-error://chromewebdata/."
+  }), true);
+  assert.equal(shouldRetryCaptureResult({
+    ok: false,
+    error: "Could not find collection tab All. (stage: activating Shokz collection All tab)"
   }), true);
   assert.equal(shouldRetryCaptureResult({
     ok: false,

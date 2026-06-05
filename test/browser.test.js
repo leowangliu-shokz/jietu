@@ -512,6 +512,7 @@ test("collection and comparison page capture modes prefer direct full-page clip 
   assert.equal(shouldUseDirectFullPageClipCapture({ captureMode: "shokz-collection-page" }), true);
   assert.equal(shouldUseDirectFullPageClipCapture({ captureMode: "shokz-comparison-page" }), true);
   assert.equal(shouldUseDirectFullPageClipCapture({ captureMode: "shokz-landing-page" }), true);
+  assert.equal(shouldUseDirectFullPageClipCapture({ captureMode: "shokz-collection-page", fullPage: false }), false);
   assert.equal(shouldUseDirectFullPageClipCapture({ captureMode: "shokz-products-nav" }), false);
   assert.equal(shouldUseDirectFullPageClipCapture({}), false);
 });
@@ -524,6 +525,10 @@ test("desktop landing full-page capture uses stitched segments", () => {
   assert.equal(shouldUseStitchedLandingFullPageCapture(
     { captureMode: "shokz-landing-page", platform: "mobile" },
     { width: 393, height: 852, mobile: true }
+  ), false);
+  assert.equal(shouldUseStitchedLandingFullPageCapture(
+    { captureMode: "shokz-landing-page", platform: "pc", fullPage: false },
+    { width: 1920, height: 1080, mobile: false }
   ), false);
   assert.equal(shouldUseStitchedLandingFullPageCapture(
     { captureMode: "shokz-collection-page", platform: "pc" },
