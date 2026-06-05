@@ -1,5 +1,9 @@
 import fs from "node:fs/promises";
+import dns from "node:dns/promises";
+import net from "node:net";
+import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import {
   capturePage,
   composeShokzHomeModuleCompositeCaptureFromFiles,
@@ -14,7 +18,7 @@ import { loadChanges, rebuildChanges } from "./changes.js";
 import { notifyChangeRecords, resolveChangeNotificationConfig } from "./change-notifier.js";
 import { findDevicePreset, toPublicDevicePreset } from "./device-presets.js";
 import { boundedConcurrency, runJobQueue } from "./job-queue.js";
-import { archiveDir } from "./paths.js";
+import { archiveDir, logsDir } from "./paths.js";
 import { appendSeoSnapshots, createSeoSnapshotRecord, rebuildSeoChanges } from "./seo-snapshots.js";
 import {
   shokzCollectionRelatedSectionDefinitions,
@@ -40,6 +44,7 @@ import { appendTrackingAuditRecords, createTrackingAuditRecordsForSnapshots } fr
 
 const mobileCollectionRelatedSectionTimeoutMs = 25 * 60 * 1000;
 const mobileComparisonProductMapTimeoutMs = 55 * 60 * 1000;
+const networkPreflightDiagnosticsPath = path.join(logsDir, "network-preflight-diagnostics.jsonl");
 
 export async function captureConfiguredUrls(config = null, options = {}) {
   const activeConfig = normalizeConfig(config || await loadConfig());
@@ -519,14 +524,23 @@ async function runCaptureNetworkPreflight(plans, config = {}, options = {}) {
     }
   }
 
+  const failedChecks = lastAttempt?.checks || [];
+  const diagnostics = settings.diagnosticsEnabled
+    ? await collectNetworkPreflightDiagnostics(failedChecks, settings)
+    : null;
+  if (diagnostics) {
+    await appendNetworkPreflightDiagnostics(diagnostics, settings).catch(() => null);
+  }
+
   return {
     ok: false,
     enabled: true,
     attempts: settings.attempts,
     retryDelayMs: settings.retryDelayMs,
-    checks: lastAttempt?.checks || [],
+    checks: failedChecks,
+    diagnostics,
     reason: "network-unavailable",
-    message: networkPreflightFailureMessage(lastAttempt?.checks || [])
+    message: networkPreflightFailureMessage(failedChecks)
   };
 }
 
@@ -554,6 +568,13 @@ function captureNetworkPreflightSettings(config = {}, options = {}) {
     ),
     fetchImpl: options.fetchImpl || globalThis.fetch,
     probe: options.networkPreflightProbe || null,
+    diagnosticsEnabled: booleanOption(
+      options.networkPreflightDiagnosticsEnabled ?? env.CAPTURE_NETWORK_PREFLIGHT_DIAGNOSTICS_ENABLED,
+      true
+    ),
+    diagnosticsProbe: options.networkPreflightDiagnosticsProbe || null,
+    diagnosticsFilePath: options.networkPreflightDiagnosticsFilePath || networkPreflightDiagnosticsPath,
+    commandRunner: options.networkPreflightCommandRunner || runCommand,
     sleep: options.networkPreflightSleep || sleep
   };
 }
@@ -634,7 +655,8 @@ async function runNetworkPreflightCheck(check, settings) {
     return {
       ...check,
       ok: false,
-      error: error?.name === "AbortError" ? `timeout after ${settings.timeoutMs}ms` : error?.message || String(error)
+      error: error?.name === "AbortError" ? `timeout after ${settings.timeoutMs}ms` : error?.message || String(error),
+      errorDetails: networkPreflightErrorDetails(error)
     };
   } finally {
     clearTimeout(timer);
@@ -646,8 +668,364 @@ function normalizeNetworkPreflightResult(check, result = {}) {
     ...check,
     ok: Boolean(result.ok),
     status: Number.isFinite(Number(result.status)) ? Number(result.status) : null,
-    error: result.ok ? null : stringOrNull(result.error) || "network check failed"
+    error: result.ok ? null : stringOrNull(result.error) || "network check failed",
+    errorDetails: result.ok ? null : result.errorDetails || null
   };
+}
+
+async function collectNetworkPreflightDiagnostics(checks, settings) {
+  const failedChecks = checks.filter((check) => !check.ok);
+  if (!failedChecks.length) {
+    return null;
+  }
+  if (typeof settings.diagnosticsProbe === "function") {
+    return normalizeNetworkPreflightDiagnostics(await settings.diagnosticsProbe(failedChecks, settings));
+  }
+
+  const startedAt = new Date();
+  const diagnostics = {
+    id: `network-preflight-${startedAt.toISOString().replace(/[:.]/g, "-")}-${Math.random().toString(36).slice(2, 8)}`,
+    startedAt: startedAt.toISOString(),
+    environment: await collectNetworkEnvironmentSnapshot(settings),
+    checks: []
+  };
+
+  for (const check of failedChecks) {
+    diagnostics.checks.push(await collectNetworkPreflightCheckDiagnostics(check, settings));
+  }
+
+  diagnostics.finishedAt = new Date().toISOString();
+  diagnostics.failedCheckCount = diagnostics.checks.length;
+  return diagnostics;
+}
+
+function normalizeNetworkPreflightDiagnostics(diagnostics = {}) {
+  if (!diagnostics || typeof diagnostics !== "object") {
+    return null;
+  }
+  return {
+    id: stringOrNull(diagnostics.id) || `network-preflight-${new Date().toISOString().replace(/[:.]/g, "-")}`,
+    startedAt: stringOrNull(diagnostics.startedAt) || new Date().toISOString(),
+    finishedAt: stringOrNull(diagnostics.finishedAt) || new Date().toISOString(),
+    environment: diagnostics.environment || null,
+    failedCheckCount: Number.isFinite(Number(diagnostics.failedCheckCount))
+      ? Number(diagnostics.failedCheckCount)
+      : Array.isArray(diagnostics.checks) ? diagnostics.checks.length : 0,
+    checks: Array.isArray(diagnostics.checks) ? diagnostics.checks : []
+  };
+}
+
+async function collectNetworkPreflightCheckDiagnostics(check, settings) {
+  const target = networkPreflightTarget(check);
+  return {
+    type: check.type || null,
+    label: check.label || null,
+    url: check.url || null,
+    fetch: {
+      ok: Boolean(check.ok),
+      status: check.status || null,
+      error: check.error || null,
+      errorDetails: check.errorDetails || null
+    },
+    dns: target.host ? await dnsDiagnostics(target.host) : { ok: false, error: "missing-host" },
+    tcp443: target.host ? await tcpDiagnostics(target.host, target.port || 443, settings) : { ok: false, error: "missing-host" },
+    curlHead: check.url ? await curlHeadDiagnostics(check.url, settings) : { ok: false, error: "missing-url" }
+  };
+}
+
+function networkPreflightTarget(check) {
+  try {
+    const parsed = new URL(check.url);
+    return {
+      host: parsed.hostname,
+      port: Number(parsed.port || (parsed.protocol === "http:" ? 80 : 443)),
+      protocol: parsed.protocol
+    };
+  } catch {
+    return { host: stringOrNull(check.label), port: 443, protocol: "https:" };
+  }
+}
+
+async function dnsDiagnostics(host) {
+  const diagnostics = { host };
+  try {
+    diagnostics.lookup = (await dns.lookup(host, { all: true })).map((entry) => ({
+      address: entry.address,
+      family: entry.family
+    }));
+    diagnostics.ok = true;
+  } catch (error) {
+    diagnostics.ok = false;
+    diagnostics.lookupError = networkPreflightErrorDetails(error);
+  }
+
+  diagnostics.resolve4 = await dnsResolveDiagnostics(host, "resolve4");
+  diagnostics.resolve6 = await dnsResolveDiagnostics(host, "resolve6");
+  diagnostics.resolveCname = await dnsResolveDiagnostics(host, "resolveCname");
+  return diagnostics;
+}
+
+async function dnsResolveDiagnostics(host, method) {
+  try {
+    return { ok: true, records: await dns[method](host) };
+  } catch (error) {
+    return { ok: false, errorDetails: networkPreflightErrorDetails(error) };
+  }
+}
+
+function tcpDiagnostics(host, port, settings) {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const socket = net.connect({ host, port });
+    let settled = false;
+    const finish = (result) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      socket.destroy();
+      resolve({
+        host,
+        port,
+        durationMs: Date.now() - startedAt,
+        ...result
+      });
+    };
+    socket.setTimeout(Math.min(settings.timeoutMs || 15000, 20000));
+    socket.once("connect", () => {
+      finish({
+        ok: true,
+        localAddress: socket.localAddress || null,
+        localPort: socket.localPort || null,
+        remoteAddress: socket.remoteAddress || null,
+        remotePort: socket.remotePort || null,
+        remoteFamily: socket.remoteFamily || null
+      });
+    });
+    socket.once("timeout", () => {
+      finish({ ok: false, error: `timeout after ${Math.min(settings.timeoutMs || 15000, 20000)}ms` });
+    });
+    socket.once("error", (error) => {
+      finish({ ok: false, error: error.message, errorDetails: networkPreflightErrorDetails(error) });
+    });
+  });
+}
+
+async function curlHeadDiagnostics(url, settings) {
+  const maxTimeSeconds = Math.max(1, Math.ceil(Math.min(settings.timeoutMs || 15000, 30000) / 1000));
+  const result = await settings.commandRunner("curl.exe", [
+    "-sS",
+    "-I",
+    "-L",
+    "--max-time",
+    String(maxTimeSeconds),
+    url
+  ], { timeoutMs: Math.min(settings.timeoutMs || 15000, 30000) });
+  if (result.spawnError && result.spawnError.code === "ENOENT") {
+    return settings.commandRunner("curl", [
+      "-sS",
+      "-I",
+      "-L",
+      "--max-time",
+      String(maxTimeSeconds),
+      url
+    ], { timeoutMs: Math.min(settings.timeoutMs || 15000, 30000) });
+  }
+  return result;
+}
+
+async function collectNetworkEnvironmentSnapshot(settings) {
+  const snapshot = {
+    hostname: os.hostname(),
+    platform: os.platform(),
+    release: os.release(),
+    networkInterfaces: networkInterfaceSnapshot()
+  };
+  const wlan = await settings.commandRunner("netsh", ["wlan", "show", "interfaces"], { timeoutMs: 5000 });
+  snapshot.wlan = {
+    ok: wlan.exitCode === 0,
+    parsed: wlan.exitCode === 0 ? parseNetshWlanInterfaces(wlan.stdout) : null,
+    command: trimCommandResult(wlan)
+  };
+  return snapshot;
+}
+
+function networkInterfaceSnapshot() {
+  const rows = [];
+  const interfaces = os.networkInterfaces();
+  for (const [name, entries] of Object.entries(interfaces)) {
+    for (const entry of entries || []) {
+      if (entry.internal) {
+        continue;
+      }
+      rows.push({
+        name,
+        address: entry.address,
+        family: entry.family,
+        mac: entry.mac,
+        cidr: entry.cidr || null
+      });
+    }
+  }
+  return rows;
+}
+
+function parseNetshWlanInterfaces(stdout) {
+  const fields = {};
+  for (const line of String(stdout || "").split(/\r?\n/)) {
+    const match = line.match(/^\s*([^:]+?)\s*:\s*(.+?)\s*$/);
+    if (!match) {
+      continue;
+    }
+    const key = match[1].trim().toLowerCase().replace(/\s+/g, "_");
+    fields[key] = match[2].trim();
+  }
+  return {
+    name: fields.name || null,
+    state: fields.state || null,
+    ssid: fields.ssid || null,
+    bssid: fields.bssid || fields.ap_bssid || null,
+    signal: fields.signal || null,
+    profile: fields.profile || null,
+    radioType: fields.radio_type || null,
+    authentication: fields.authentication || null
+  };
+}
+
+function runCommand(command, args = [], options = {}) {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    let child;
+    try {
+      child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    } catch (error) {
+      resolve({
+        command,
+        args,
+        ok: false,
+        spawnError: networkPreflightErrorDetails(error),
+        durationMs: Date.now() - startedAt
+      });
+      return;
+    }
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const timeoutMs = Math.max(1000, Number(options.timeoutMs) || 15000);
+    const timer = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      child.kill();
+      settled = true;
+      resolve({
+        command,
+        args,
+        ok: false,
+        timedOut: true,
+        exitCode: null,
+        signal: null,
+        stdout: limitDiagnosticText(stdout),
+        stderr: limitDiagnosticText(stderr),
+        durationMs: Date.now() - startedAt
+      });
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.once("error", (error) => {
+      if (settled) {
+        return;
+      }
+      clearTimeout(timer);
+      settled = true;
+      resolve({
+        command,
+        args,
+        ok: false,
+        spawnError: networkPreflightErrorDetails(error),
+        stdout: limitDiagnosticText(stdout),
+        stderr: limitDiagnosticText(stderr),
+        durationMs: Date.now() - startedAt
+      });
+    });
+    child.once("close", (exitCode, signal) => {
+      if (settled) {
+        return;
+      }
+      clearTimeout(timer);
+      settled = true;
+      resolve({
+        command,
+        args,
+        ok: exitCode === 0,
+        exitCode,
+        signal,
+        stdout: limitDiagnosticText(stdout),
+        stderr: limitDiagnosticText(stderr),
+        durationMs: Date.now() - startedAt
+      });
+    });
+  });
+}
+
+function trimCommandResult(result) {
+  return {
+    command: result.command,
+    args: result.args,
+    ok: result.ok,
+    exitCode: result.exitCode ?? null,
+    signal: result.signal ?? null,
+    timedOut: Boolean(result.timedOut),
+    spawnError: result.spawnError || null,
+    stdout: limitDiagnosticText(result.stdout || ""),
+    stderr: limitDiagnosticText(result.stderr || ""),
+    durationMs: result.durationMs || null
+  };
+}
+
+function networkPreflightErrorDetails(error) {
+  if (!error || typeof error !== "object") {
+    return null;
+  }
+  const details = {
+    name: error.name || null,
+    message: error.message || String(error),
+    code: error.code || null,
+    errno: error.errno || null,
+    syscall: error.syscall || null,
+    address: error.address || null,
+    port: error.port || null
+  };
+  if (error.cause && typeof error.cause === "object") {
+    details.cause = networkPreflightErrorDetails(error.cause);
+  }
+  return details;
+}
+
+async function appendNetworkPreflightDiagnostics(diagnostics, settings) {
+  if (!diagnostics) {
+    return;
+  }
+  await fs.mkdir(path.dirname(settings.diagnosticsFilePath), { recursive: true });
+  await fs.appendFile(settings.diagnosticsFilePath, `${JSON.stringify(diagnostics)}\n`, "utf8");
+}
+
+function limitDiagnosticText(value) {
+  const text = redactDiagnosticText(String(value || ""));
+  return text.length > 12000 ? text.slice(0, 12000) : text;
+}
+
+function redactDiagnosticText(text) {
+  return text
+    .replace(/^set-cookie:\s*.+$/gim, "set-cookie: [redacted]")
+    .replace(/(access_token=)[^&\s]+/gim, "$1[redacted]")
+    .replace(/(sign=)[^&\s]+/gim, "$1[redacted]");
 }
 
 async function skipCaptureRunForNetworkPreflight(plans, config, options, preflight) {

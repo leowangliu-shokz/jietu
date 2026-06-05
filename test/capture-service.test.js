@@ -126,6 +126,59 @@ test("network preflight retries capture target and DingTalk checks before succee
   assert.deepEqual(result.checks.map((check) => check.type), ["capture-target", "dingtalk-webhook"]);
 });
 
+test("network preflight failure records diagnostics and low-level error details", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jietu-network-preflight-"));
+  const diagnosticsFilePath = path.join(dir, "network-preflight-diagnostics.jsonl");
+  const plans = [{
+    id: "plan-home-pc",
+    platform: "pc",
+    target: {
+      id: "home",
+      label: "Home",
+      url: "https://shokz.com/"
+    }
+  }];
+
+  const result = await __testOnly.runCaptureNetworkPreflight(plans, {}, {
+    networkPreflightAttempts: 1,
+    networkPreflightRetryDelayMs: 0,
+    networkPreflightDiagnosticsFilePath: diagnosticsFilePath,
+    networkPreflightProbe: async () => ({
+      ok: false,
+      error: "fetch failed",
+      errorDetails: {
+        name: "TypeError",
+        message: "fetch failed",
+        cause: { code: "ENETUNREACH", syscall: "connect" }
+      }
+    }),
+    networkPreflightDiagnosticsProbe: async (checks) => ({
+      id: "diag-test",
+      environment: {
+        wlan: { parsed: { ssid: "SHOKZ_Office" } },
+        networkInterfaces: [{ name: "WLAN", address: "10.42.147.215", family: "IPv4" }]
+      },
+      checks: checks.map((check) => ({
+        label: check.label,
+        fetch: { errorDetails: check.errorDetails },
+        dns: { ok: true, lookup: [{ address: "23.227.38.74", family: 4 }] },
+        tcp443: { ok: true, localAddress: "10.42.147.215", remoteAddress: "23.227.38.74" },
+        curlHead: { ok: false, exitCode: 28, stderr: "curl timeout" }
+      }))
+    })
+  });
+  const lines = (await fs.readFile(diagnosticsFilePath, "utf8")).trim().split(/\r?\n/);
+  const stored = JSON.parse(lines[0]);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.checks[0].errorDetails.cause.code, "ENETUNREACH");
+  assert.equal(result.diagnostics.id, "diag-test");
+  assert.equal(stored.environment.wlan.parsed.ssid, "SHOKZ_Office");
+  assert.equal(stored.checks[0].tcp443.remoteAddress, "23.227.38.74");
+  assert.equal(stored.checks[0].curlHead.exitCode, 28);
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
 test("network preflight skip records a skipped run without failed items", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jietu-capture-runs-"));
   const captureRunsFilePath = path.join(dir, "capture-runs.json");
