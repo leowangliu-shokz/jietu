@@ -126,7 +126,91 @@ test("network preflight retries capture target and DingTalk checks before succee
   assert.deepEqual(result.checks.map((check) => check.type), ["capture-target", "dingtalk-webhook"]);
 });
 
-test("network preflight failure records diagnostics and low-level error details", async () => {
+test("network preflight continues when DingTalk is unavailable but capture target is reachable", async () => {
+  const plans = [{
+    id: "plan-home-pc",
+    platform: "pc",
+    target: {
+      id: "home",
+      label: "Home",
+      url: "https://shokz.com/"
+    }
+  }];
+
+  const result = await __testOnly.runCaptureNetworkPreflight(plans, {}, {
+    env: {
+      CHANGE_NOTIFY_ENABLED: "1",
+      DINGTALK_WEBHOOK: "https://oapi.dingtalk.com/robot/send?access_token=test"
+    },
+    networkPreflightAttempts: 3,
+    networkPreflightRetryDelayMs: 0,
+    networkPreflightSleep: async () => {},
+    networkPreflightProbe: async (check) => check.type === "capture-target"
+      ? { ok: true, status: 200 }
+      : { ok: false, error: "connect timeout" }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.warning, true);
+  assert.equal(result.attempts, 1);
+  assert.match(result.message, /non-blocking failures/);
+});
+
+test("network preflight treats direct connect EACCES as a warning when DNS resolves", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jietu-network-preflight-warning-"));
+  const diagnosticsFilePath = path.join(dir, "network-preflight-diagnostics.jsonl");
+  const plans = [{
+    id: "plan-home-pc",
+    platform: "pc",
+    target: {
+      id: "home",
+      label: "Home",
+      url: "https://shokz.com/"
+    }
+  }];
+
+  const result = await __testOnly.runCaptureNetworkPreflight(plans, {}, {
+    networkPreflightAttempts: 1,
+    networkPreflightRetryDelayMs: 0,
+    networkPreflightDiagnosticsFilePath: diagnosticsFilePath,
+    networkPreflightProbe: async () => ({
+      ok: false,
+      error: "fetch failed",
+      errorDetails: {
+        name: "TypeError",
+        message: "fetch failed",
+        cause: { code: "EACCES", syscall: "connect" }
+      }
+    }),
+    networkPreflightDiagnosticsProbe: async (checks) => ({
+      id: "diag-warning-test",
+      environment: {
+        wlan: { parsed: { ssid: "SHOKZ_Office" } },
+        networkInterfaces: [{ name: "WLAN", address: "10.42.147.215", family: "IPv4" }]
+      },
+      checks: checks.map((check) => ({
+        type: check.type,
+        label: check.label,
+        url: check.url,
+        fetch: { errorDetails: check.errorDetails },
+        dns: { ok: true, lookup: [{ address: "23.227.38.74", family: 4 }] },
+        tcp443: { ok: false, errorDetails: { code: "EACCES" } },
+        curlHead: { ok: false, exitCode: 7, stderr: "Could not connect to server" }
+      }))
+    })
+  });
+  const lines = (await fs.readFile(diagnosticsFilePath, "utf8")).trim().split(/\r?\n/);
+  const stored = JSON.parse(lines[0]);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.warning, true);
+  assert.equal(result.diagnostics.id, "diag-warning-test");
+  assert.equal(stored.checks[0].dns.lookup[0].address, "23.227.38.74");
+  assert.equal(stored.checks[0].curlHead.exitCode, 7);
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test("network preflight hard DNS failure records diagnostics and low-level error details", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jietu-network-preflight-"));
   const diagnosticsFilePath = path.join(dir, "network-preflight-diagnostics.jsonl");
   const plans = [{
@@ -149,7 +233,7 @@ test("network preflight failure records diagnostics and low-level error details"
       errorDetails: {
         name: "TypeError",
         message: "fetch failed",
-        cause: { code: "ENETUNREACH", syscall: "connect" }
+        cause: { code: "ENOTFOUND", syscall: "getaddrinfo" }
       }
     }),
     networkPreflightDiagnosticsProbe: async (checks) => ({
@@ -159,11 +243,13 @@ test("network preflight failure records diagnostics and low-level error details"
         networkInterfaces: [{ name: "WLAN", address: "10.42.147.215", family: "IPv4" }]
       },
       checks: checks.map((check) => ({
+        type: check.type,
         label: check.label,
+        url: check.url,
         fetch: { errorDetails: check.errorDetails },
-        dns: { ok: true, lookup: [{ address: "23.227.38.74", family: 4 }] },
-        tcp443: { ok: true, localAddress: "10.42.147.215", remoteAddress: "23.227.38.74" },
-        curlHead: { ok: false, exitCode: 28, stderr: "curl timeout" }
+        dns: { ok: false, lookupError: { code: "ENOTFOUND", syscall: "getaddrinfo" } },
+        tcp443: { ok: false, errorDetails: { code: "ENOTFOUND" } },
+        curlHead: { ok: false, exitCode: 6, stderr: "Could not resolve host" }
       }))
     })
   });
@@ -171,11 +257,11 @@ test("network preflight failure records diagnostics and low-level error details"
   const stored = JSON.parse(lines[0]);
 
   assert.equal(result.ok, false);
-  assert.equal(result.checks[0].errorDetails.cause.code, "ENETUNREACH");
+  assert.equal(result.checks[0].errorDetails.cause.code, "ENOTFOUND");
   assert.equal(result.diagnostics.id, "diag-test");
   assert.equal(stored.environment.wlan.parsed.ssid, "SHOKZ_Office");
-  assert.equal(stored.checks[0].tcp443.remoteAddress, "23.227.38.74");
-  assert.equal(stored.checks[0].curlHead.exitCode, 28);
+  assert.equal(stored.checks[0].dns.lookupError.code, "ENOTFOUND");
+  assert.equal(stored.checks[0].curlHead.exitCode, 6);
   await fs.rm(dir, { recursive: true, force: true });
 });
 

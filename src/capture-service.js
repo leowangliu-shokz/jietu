@@ -54,7 +54,7 @@ export async function captureConfiguredUrls(config = null, options = {}) {
     if (!preflight.ok) {
       return skipCaptureRunForNetworkPreflight(plans, activeConfig, options, preflight);
     }
-    return runResolvedCapturePlans(plans, activeConfig, options);
+    return runResolvedCapturePlans(plans, activeConfig, { ...options, networkPreflight: preflight });
   });
 }
 
@@ -477,6 +477,7 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
   run.changeRefresh = changeRefresh;
   run.seoRefresh = seoRefresh;
   run.textQualityRefresh = textQualityRefresh;
+  run.networkPreflight = options.networkPreflight || null;
   for (const result of results) {
     if (result?.ok) {
       result.changeRefresh = changeRefresh;
@@ -510,13 +511,16 @@ async function runCaptureNetworkPreflight(plans, config = {}, options = {}) {
       results.push(await runNetworkPreflightCheck(check, settings));
     }
     lastAttempt = { attempt, checks: results };
-    if (results.every((result) => result.ok)) {
+    if (networkPreflightTargetsPassed(results)) {
       return {
         ok: true,
         enabled: true,
         attempts: attempt,
         checks: results,
-        retryDelayMs: settings.retryDelayMs
+        retryDelayMs: settings.retryDelayMs,
+        warning: results.some((result) => !result.ok),
+        reason: results.some((result) => !result.ok) ? "network-preflight-warning" : null,
+        message: results.some((result) => !result.ok) ? networkPreflightWarningMessage(results) : null
       };
     }
     if (attempt < settings.attempts) {
@@ -530,6 +534,20 @@ async function runCaptureNetworkPreflight(plans, config = {}, options = {}) {
     : null;
   if (diagnostics) {
     await appendNetworkPreflightDiagnostics(diagnostics, settings).catch(() => null);
+  }
+
+  if (networkPreflightCanContinue(failedChecks, diagnostics)) {
+    return {
+      ok: true,
+      enabled: true,
+      attempts: settings.attempts,
+      retryDelayMs: settings.retryDelayMs,
+      checks: failedChecks,
+      diagnostics,
+      warning: true,
+      reason: "network-preflight-warning",
+      message: networkPreflightWarningMessage(failedChecks)
+    };
   }
 
   return {
@@ -564,7 +582,7 @@ function captureNetworkPreflightSettings(config = {}, options = {}) {
       options.networkPreflightTimeoutMs ?? config.networkPreflightTimeoutMs ?? env.CAPTURE_NETWORK_PREFLIGHT_TIMEOUT_MS,
       1000,
       120000,
-      15000
+      30000
     ),
     fetchImpl: options.fetchImpl || globalThis.fetch,
     probe: options.networkPreflightProbe || null,
@@ -627,6 +645,60 @@ function captureNetworkPreflightChecks(plans, options = {}) {
   }
 
   return checks;
+}
+
+function networkPreflightTargetsPassed(checks) {
+  return checks
+    .filter((check) => check.type === "capture-target")
+    .every((check) => check.ok);
+}
+
+function networkPreflightCanContinue(checks, diagnostics = null) {
+  const captureTargetChecks = checks.filter((check) => check.type === "capture-target");
+  const captureTargetFailures = captureTargetChecks.filter((check) => !check.ok);
+  if (!captureTargetFailures.length) {
+    return true;
+  }
+  if (captureTargetFailures.length < captureTargetChecks.length) {
+    return true;
+  }
+  return !captureTargetFailures.every((check) => isHardDnsPreflightFailure(check, diagnostics));
+}
+
+function isHardDnsPreflightFailure(check, diagnostics = null) {
+  const codes = networkPreflightFailureCodes(check.errorDetails);
+  if (codes.some((code) => hardDnsFailureCodes.has(code))) {
+    return true;
+  }
+  const diagnostic = networkPreflightDiagnosticForCheck(check, diagnostics);
+  if (Array.isArray(diagnostic?.dns?.lookup) && diagnostic.dns.lookup.length > 0) {
+    return false;
+  }
+  const lookupCodes = networkPreflightFailureCodes(diagnostic?.dns?.lookupError);
+  return lookupCodes.some((code) => hardDnsFailureCodes.has(code));
+}
+
+const hardDnsFailureCodes = new Set(["ENOTFOUND", "EAI_AGAIN", "ERR_NAME_NOT_RESOLVED"]);
+
+function networkPreflightFailureCodes(details, codes = []) {
+  if (!details || typeof details !== "object") {
+    return codes;
+  }
+  if (details.code) {
+    codes.push(String(details.code));
+  }
+  if (details.cause && typeof details.cause === "object") {
+    networkPreflightFailureCodes(details.cause, codes);
+  }
+  return codes;
+}
+
+function networkPreflightDiagnosticForCheck(check, diagnostics = null) {
+  const diagnosticChecks = Array.isArray(diagnostics?.checks) ? diagnostics.checks : [];
+  return diagnosticChecks.find((entry) =>
+    (entry.type && entry.type === check.type && entry.label === check.label) ||
+    (entry.url && entry.url === check.url)
+  ) || null;
 }
 
 async function runNetworkPreflightCheck(check, settings) {
@@ -1095,6 +1167,15 @@ function networkPreflightFailureMessage(checks) {
   return failed.length
     ? `Network preflight failed; capture skipped. ${failed.join("; ")}`
     : "Network preflight failed; capture skipped.";
+}
+
+function networkPreflightWarningMessage(checks) {
+  const failed = checks
+    .filter((check) => !check.ok)
+    .map((check) => `${check.label || check.url}: ${check.error || "unavailable"}`);
+  return failed.length
+    ? `Network preflight had non-blocking failures; continuing capture. ${failed.join("; ")}`
+    : null;
 }
 
 async function persistPreparedCaptureResult(result) {
