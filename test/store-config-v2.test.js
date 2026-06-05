@@ -29,6 +29,34 @@ test("normalizeConfig migrates legacy config into v2 targets, device profiles, a
   assert.equal(config.captureRetryAttempts, 3);
 });
 
+test("normalizeConfig preserves an explicit empty target list", () => {
+  const config = normalizeConfig({
+    targets: [],
+    capturePlans: [],
+    deviceProfiles: [
+      { id: "pc-main", platform: "pc", devicePresetId: "pc-hd", enabled: true },
+      { id: "mobile-main", platform: "mobile", devicePresetId: "iphone-15", enabled: true }
+    ]
+  });
+
+  assert.deepEqual(config.targets, []);
+  assert.deepEqual(config.capturePlans, []);
+  assert.deepEqual(
+    config.deviceProfiles.map((profile) => profile.id),
+    ["pc-main", "mobile-main"]
+  );
+
+  const implicitPlansConfig = normalizeConfig({
+    targets: [],
+    deviceProfiles: [
+      { id: "pc-main", platform: "pc", devicePresetId: "pc-hd", enabled: true }
+    ]
+  });
+
+  assert.deepEqual(implicitPlansConfig.targets, []);
+  assert.deepEqual(implicitPlansConfig.capturePlans, []);
+});
+
 test("normalizeConfig keeps explicit v2 plans and drops invalid duplicates", () => {
   const config = normalizeConfig({
     targets: [

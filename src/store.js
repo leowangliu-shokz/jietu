@@ -125,20 +125,33 @@ export function normalizeUrl(input) {
 }
 
 export function normalizeConfig(input = {}) {
+  const hasTargetConfig = Array.isArray(input.targets) || Array.isArray(input.urls);
   const targets = normalizeCaptureTargets(
-    Array.isArray(input.targets) ? input.targets : input.urls
+    hasTargetConfig
+      ? (Array.isArray(input.targets) ? input.targets : input.urls)
+      : undefined
   );
   const deviceProfiles = normalizeDeviceProfiles(input.deviceProfiles, input);
-  const capturePlans = normalizeCapturePlans(input.capturePlans, targets, deviceProfiles);
+  const hasCapturePlanConfig = Array.isArray(input.capturePlans);
+  const capturePlans = hasCapturePlanConfig
+    ? normalizeCapturePlans(input.capturePlans, targets, deviceProfiles)
+    : (hasTargetConfig && targets.length === 0
+      ? []
+      : normalizeCapturePlans(undefined, targets, deviceProfiles));
+  const normalizedTargets = hasTargetConfig ? targets : (targets.length ? targets : defaultConfig.targets);
+  let normalizedCapturePlans = capturePlans;
+  if (!hasCapturePlanConfig && !(hasTargetConfig && targets.length === 0) && normalizedCapturePlans.length === 0) {
+    normalizedCapturePlans = buildDefaultCapturePlans(
+      normalizedTargets,
+      deviceProfiles.length ? deviceProfiles : defaultConfig.deviceProfiles
+    );
+  }
 
   return {
     version: configSchemaVersion,
-    targets: targets.length ? targets : defaultConfig.targets,
+    targets: normalizedTargets,
     deviceProfiles: deviceProfiles.length ? deviceProfiles : defaultConfig.deviceProfiles,
-    capturePlans: capturePlans.length ? capturePlans : buildDefaultCapturePlans(
-      targets.length ? targets : defaultConfig.targets,
-      deviceProfiles.length ? deviceProfiles : defaultConfig.deviceProfiles
-    ),
+    capturePlans: normalizedCapturePlans,
     intervalMinutes: clampNumber(input.intervalMinutes, 0, 10080, defaultConfigScalars.intervalMinutes),
     fullPage: Boolean(input.fullPage ?? defaultConfigScalars.fullPage),
     waitAfterLoadMs: clampNumber(input.waitAfterLoadMs, 0, 30000, defaultConfigScalars.waitAfterLoadMs),
@@ -399,8 +412,11 @@ function normalizeDeviceProfiles(inputProfiles, legacyInput = {}) {
 }
 
 function normalizeCapturePlans(inputPlans, targets, deviceProfiles) {
-  if (!Array.isArray(inputPlans) || inputPlans.length === 0) {
+  if (!Array.isArray(inputPlans)) {
     return buildDefaultCapturePlans(targets, deviceProfiles);
+  }
+  if (inputPlans.length === 0) {
+    return [];
   }
 
   const seen = new Set();
