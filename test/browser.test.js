@@ -12,6 +12,7 @@ const {
   restorePageMotion,
   isAcceptableTrailingSegmentBlankAudit,
   isAcceptableOverlappedTrailingSegmentBlankAudit,
+  isAcceptableShokzLongPageBlankBandAudit,
   isViewMoreLabel,
   composeShokzCollectionTabComposite,
   composeShokzHomeModuleComposite,
@@ -20,6 +21,7 @@ const {
   composeShokzHomeProductShowcaseComposite,
   shouldSuppressRelatedQualityWarning,
   shokzLandingRelatedSectionDefinitionsForPath,
+  shouldPreserveMeasuredFullPageHeight,
   shouldUseDedicatedViewMoreExpansion,
   shouldUseDirectFullPageClipCapture,
   shouldUseStitchedLandingFullPageCapture,
@@ -255,6 +257,54 @@ test("accepts a trailing near-white band fully covered by the next stitched segm
   );
 });
 
+test("accepts Shokz long-page white bands without accepting fully blank captures", () => {
+  assert.equal(
+    isAcceptableShokzLongPageBlankBandAudit({
+      status: "blank",
+      fullImageNearWhite: false,
+      nearWhiteCoverage: 0.42,
+      longestNearWhiteBand: 280,
+      minBlankBandHeight: 120
+    }),
+    true
+  );
+  assert.equal(
+    isAcceptableShokzLongPageBlankBandAudit({
+      status: "blank",
+      fullImageNearWhite: true,
+      nearWhiteCoverage: 0.99,
+      longestNearWhiteBand: 1000,
+      minBlankBandHeight: 120
+    }),
+    false
+  );
+  assert.equal(
+    isAcceptableShokzLongPageBlankBandAudit({
+      status: "blank",
+      fullImageNearWhite: true,
+      nearWhiteCoverage: 0.99,
+      longestNearWhiteBand: 1000,
+      minBlankBandHeight: 120
+    }, { allowFullImageNearWhite: true }),
+    true
+  );
+});
+
+test("Shokz full-page captures keep measured page height when pre-scroll height is shorter", () => {
+  assert.equal(
+    shouldPreserveMeasuredFullPageHeight("https://shokz.com/pages/openrunpro2", { fullPage: true }),
+    true
+  );
+  assert.equal(
+    shouldPreserveMeasuredFullPageHeight("https://shokz.com/", { fullPage: true, captureMode: "shokz-products-nav" }),
+    false
+  );
+  assert.equal(
+    shouldPreserveMeasuredFullPageHeight("https://example.com/page", { fullPage: true }),
+    false
+  );
+});
+
 test("stitched capture keeps the full last segment when only the tail is near-white", async () => {
   const firstSegment = encodePng(100, 100, checkerImage(100, 100));
   const lastSegment = encodePng(100, 100, trailingWhiteBandImage(100, 100, 18));
@@ -285,6 +335,77 @@ test("stitched capture keeps the full last segment when only the tail is near-wh
     });
     assert.equal(result.height, 200);
     assert.equal(result.captureValidation.ok, true);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("stitched capture accepts non-first fully near-white Shokz long-page segments", async () => {
+  const contentSegment = encodePng(100, 100, checkerImage(100, 100));
+  const whiteSegment = encodePng(100, 100, solidImage(100, 100, [255, 255, 255, 255]));
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-browser-test-"));
+  const outputPath = path.join(tempDir, "stitched-white-middle.png");
+  const client = {
+    async send(method, params = {}) {
+      if (method === "Runtime.evaluate") {
+        return { result: { value: { ok: true } } };
+      }
+      if (method === "Page.captureScreenshot") {
+        const clipY = Number(params?.clip?.y || 0);
+        return { data: (clipY === 100 ? whiteSegment : contentSegment).toString("base64") };
+      }
+      throw new Error(`Unexpected method: ${method}`);
+    }
+  };
+
+  try {
+    const result = await captureStitchedScreenshot(client, outputPath, {
+      width: 100,
+      height: 300,
+      viewportHeight: 100,
+      stepDelay: 0,
+      dismissObstructionsBeforeSegment: false,
+      hideFixedElementsAfterFirstSegment: false,
+      acceptInteriorNearWhiteBands: true
+    });
+    assert.equal(result.height, 300);
+    assert.equal(result.captureValidation.ok, true);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("stitched capture rejects fully near-white first segments", async () => {
+  const contentSegment = encodePng(100, 100, checkerImage(100, 100));
+  const whiteSegment = encodePng(100, 100, solidImage(100, 100, [255, 255, 255, 255]));
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-browser-test-"));
+  const outputPath = path.join(tempDir, "stitched-white-first.png");
+  const client = {
+    async send(method, params = {}) {
+      if (method === "Runtime.evaluate") {
+        return { result: { value: { ok: true } } };
+      }
+      if (method === "Page.captureScreenshot") {
+        const clipY = Number(params?.clip?.y || 0);
+        return { data: (clipY === 0 ? whiteSegment : contentSegment).toString("base64") };
+      }
+      throw new Error(`Unexpected method: ${method}`);
+    }
+  };
+
+  try {
+    await assert.rejects(
+      () => captureStitchedScreenshot(client, outputPath, {
+        width: 100,
+        height: 300,
+        viewportHeight: 100,
+        stepDelay: 0,
+        dismissObstructionsBeforeSegment: false,
+        hideFixedElementsAfterFirstSegment: false,
+        acceptInteriorNearWhiteBands: true
+      }),
+      /failed blank-image validation/
+    );
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }

@@ -15,6 +15,15 @@ test("uses the state label for product showcase capture items", () => {
   assert.equal(label, "Best Selling 1");
 });
 
+test("generic page overview slices include top and bottom positions", () => {
+  const positions = __testOnly.genericPageOverviewSlicePositions(5000, 1000);
+
+  assert.equal(positions[0], 0);
+  assert.equal(positions.at(-1), 4000);
+  assert.ok(positions.length <= 8);
+  assert.deepEqual([...positions].sort((a, b) => a - b), positions);
+});
+
 test("finds related screenshots by preview file for replacement", () => {
   const snapshot = {
     relatedShots: [

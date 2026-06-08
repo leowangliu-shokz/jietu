@@ -17,8 +17,10 @@ import { appendCaptureRun } from "./capture-runs.js";
 import { loadChanges, rebuildChanges } from "./changes.js";
 import { notifyChangeRecords, resolveChangeNotificationConfig } from "./change-notifier.js";
 import { findDevicePreset, toPublicDevicePreset } from "./device-presets.js";
+import { hashBuffer, visualAuditForBuffer, visualHashForBuffer } from "./image-audit.js";
 import { boundedConcurrency, runJobQueue } from "./job-queue.js";
 import { archiveDir, logsDir } from "./paths.js";
+import { decodePng, encodePng } from "./png.js";
 import { appendSeoSnapshots, createSeoSnapshotRecord, rebuildSeoChanges } from "./seo-snapshots.js";
 import {
   shokzCollectionRelatedSectionDefinitions,
@@ -2118,7 +2120,29 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
 
   const relatedMode = relatedCaptureModeForTarget(target, captureConfig);
   if (!relatedMode) {
-    return { shots: [], validation: null, trackingAudits: [] };
+    const overview = await composePageOverviewForRelatedShots(baseOutputPath, [], captureConfig, {
+      sectionKey: "page-overview",
+      sectionLabel: "Page overview",
+      sectionTitle: "Page overview",
+      stateLabel: "Page overview",
+      label: "Page overview",
+      allowGenericOverview: true
+    });
+    recordCaptureDiagnostic(diagnosticRun, {
+      type: "related-capture",
+      ok: Boolean(overview.homeOverview),
+      sectionKey: "page-overview",
+      sectionLabel: "Page overview",
+      captureMode: "generic-page-overview",
+      shotCount: 0,
+      warningCount: Array.isArray(overview.warnings) ? overview.warnings.length : 0
+    });
+    return {
+      shots: [],
+      validation: relatedValidationWithOverviewWarnings(null, overview.warnings),
+      trackingAudits: [],
+      homeOverview: overview.homeOverview
+    };
   }
 
   let relatedCapture;
@@ -2304,6 +2328,11 @@ async function captureShokzHomeRelatedShotsIsolated(normalizedUrl, baseOutputPat
 }
 
 async function composePageOverviewForRelatedShots(baseOutputPath, relatedShots, captureConfig, options = {}) {
+  const sectionKey = options.sectionKey || "page-overview";
+  const sectionLabel = options.sectionLabel || "Page overview";
+  const sectionTitle = options.sectionTitle || sectionLabel;
+  const stateLabel = options.stateLabel || `${sectionLabel} composite`;
+  const label = options.label || stateLabel;
   const preparedShots = relatedShots
     .filter((shot) => shot?.file)
     .map((shot) => ({
@@ -2311,14 +2340,48 @@ async function composePageOverviewForRelatedShots(baseOutputPath, relatedShots, 
       outputPath: archiveAbsolutePath(shot.file)
     }));
   if (!preparedShots.length) {
-    return { homeOverview: null, warnings: [] };
+    if (!options.allowGenericOverview) {
+      return { homeOverview: null, warnings: [] };
+    }
+    try {
+      const overview = await composeGenericPageOverviewCapture({
+        mainOutputPath: baseOutputPath,
+        outputPath: pageOverviewOutputPath(baseOutputPath, options.outputSuffix || "-page-overview-map.png"),
+        viewport: captureConfig.viewport || {},
+        sectionKey,
+        sectionLabel,
+        sectionTitle,
+        stateLabel,
+        label
+      });
+      return {
+        homeOverview: await publicPageOverviewForCapture({
+          ...overview,
+          kind: "home-overview-composite",
+          sectionKey,
+          sectionLabel,
+          sectionTitle,
+          stateLabel,
+          label,
+          logicalSignature: `${sectionKey}|main-page`,
+          composite: overview.composite
+            ? { ...overview.composite, sourceKind: sectionKey }
+            : overview.composite
+        }),
+        warnings: []
+      };
+    } catch (error) {
+      return {
+        homeOverview: null,
+        warnings: [{
+          sectionKey,
+          sectionLabel,
+          message: `Could not compose generic page overview screenshot: ${error.message}`
+        }]
+      };
+    }
   }
 
-  const sectionKey = options.sectionKey || "page-overview";
-  const sectionLabel = options.sectionLabel || "Page overview";
-  const sectionTitle = options.sectionTitle || sectionLabel;
-  const stateLabel = options.stateLabel || `${sectionLabel} composite`;
-  const label = options.label || stateLabel;
   const compositeShots = preparedShots.filter((shot) => shot.kind === "collection-tab-composite" && shot.composite);
 
   try {
@@ -2371,6 +2434,191 @@ function pageOverviewOutputPath(baseOutputPath, suffix) {
   return /\.png$/i.test(baseOutputPath)
     ? baseOutputPath.replace(/\.png$/i, suffix)
     : `${baseOutputPath}${suffix}`;
+}
+
+async function composeGenericPageOverviewCapture({
+  mainOutputPath,
+  outputPath,
+  viewport,
+  sectionKey,
+  sectionLabel,
+  sectionTitle,
+  stateLabel,
+  label
+}) {
+  const mainBuffer = await fs.readFile(mainOutputPath);
+  const image = decodePng(mainBuffer);
+  const viewportHeight = Math.max(1, Math.min(
+    image.height,
+    Math.round(Number(viewport?.height || 0)) || image.height
+  ));
+  const positions = genericPageOverviewSlicePositions(image.height, viewportHeight);
+  const gutter = 24;
+  const outerPad = 24;
+  const rightX = image.width + gutter;
+  const width = image.width + gutter + image.width + outerPad;
+  const height = Math.max(
+    image.height,
+    positions.reduce((max, y) => Math.max(max, y + Math.min(viewportHeight, image.height - y)), 0) + outerPad
+  );
+  const rgba = new Uint8Array(width * height * 4);
+  fillRgba(rgba, [246, 248, 248, 255]);
+  copyRgbaRect({
+    source: image.rgba,
+    sourceWidth: image.width,
+    sourceHeight: image.height,
+    sourceX: 0,
+    sourceY: 0,
+    width: image.width,
+    height: image.height,
+    target: rgba,
+    targetWidth: width,
+    targetHeight: height,
+    x: 0,
+    y: 0
+  });
+
+  const sourceFile = archiveRelativePath(mainOutputPath);
+  const variants = [];
+  for (const [index, y] of positions.entries()) {
+    const sliceHeight = Math.max(1, Math.min(viewportHeight, image.height - y));
+    const rect = {
+      x: rightX,
+      y,
+      width: image.width,
+      height: sliceHeight
+    };
+    copyRgbaRect({
+      source: image.rgba,
+      sourceWidth: image.width,
+      sourceHeight: image.height,
+      sourceX: 0,
+      sourceY: y,
+      width: image.width,
+      height: sliceHeight,
+      target: rgba,
+      targetWidth: width,
+      targetHeight: height,
+      x: rect.x,
+      y: rect.y
+    });
+    variants.push({
+      key: `${sectionKey}:viewport-${index + 1}`,
+      label: `Viewport ${index + 1}`,
+      sectionKey,
+      sectionLabel,
+      rect,
+      sourceClip: {
+        x: 0,
+        y,
+        width: image.width,
+        height: sliceHeight
+      },
+      sourceFile
+    });
+  }
+
+  const buffer = encodePng(width, height, rgba);
+  await fs.writeFile(outputPath, buffer);
+  const visualSignature = hashBuffer(buffer);
+  const visualHash = visualHashForBuffer(buffer);
+  const visualAudit = visualAuditForBuffer(buffer, visualHash);
+
+  return {
+    outputPath,
+    width,
+    height,
+    kind: "home-overview-composite",
+    sectionKey,
+    sectionLabel,
+    sectionTitle,
+    stateIndex: 1,
+    stateCount: 1,
+    stateLabel,
+    label,
+    interactionState: "default",
+    logicalSignature: `${sectionKey}|main-page`,
+    visualSignature,
+    visualHash,
+    visualAudit,
+    clip: {
+      x: 0,
+      y: 0,
+      width,
+      height
+    },
+    scrollInfo: {
+      height,
+      viewportWidth: Number(viewport?.width || 0) || image.width,
+      viewportHeight,
+      pageCount: variants.length
+    },
+    composite: {
+      mainWidth: image.width,
+      gutter,
+      outerPad,
+      sectionCount: 1,
+      variantCount: variants.length,
+      variants
+    },
+    itemCount: variants.length,
+    visibleItemCount: variants.length,
+    visibleItems: variants,
+    itemRects: variants.map((item) => ({
+      key: item.key,
+      label: item.label,
+      rect: item.rect
+    }))
+  };
+}
+
+function genericPageOverviewSlicePositions(pageHeight, viewportHeight) {
+  const height = Math.max(1, Math.round(Number(pageHeight) || 0));
+  const sliceHeight = Math.max(1, Math.min(height, Math.round(Number(viewportHeight) || height)));
+  if (height <= sliceHeight) {
+    return [0];
+  }
+  const maxSlices = 8;
+  const maxStart = height - sliceHeight;
+  const step = Math.max(sliceHeight, Math.ceil(maxStart / Math.max(1, maxSlices - 1)));
+  const positions = [];
+  for (let y = 0; y <= maxStart; y += step) {
+    positions.push(y);
+  }
+  positions.push(maxStart);
+  return [...new Set(positions.map((y) => Math.max(0, Math.min(maxStart, Math.round(y)))))].sort((a, b) => a - b);
+}
+
+function fillRgba(rgba, color) {
+  for (let index = 0; index < rgba.length; index += 4) {
+    rgba[index] = color[0];
+    rgba[index + 1] = color[1];
+    rgba[index + 2] = color[2];
+    rgba[index + 3] = color[3];
+  }
+}
+
+function copyRgbaRect({
+  source,
+  sourceWidth,
+  sourceHeight,
+  sourceX,
+  sourceY,
+  width,
+  height,
+  target,
+  targetWidth,
+  targetHeight,
+  x,
+  y
+}) {
+  const safeWidth = Math.max(0, Math.min(width, sourceWidth - sourceX, targetWidth - x));
+  const safeHeight = Math.max(0, Math.min(height, sourceHeight - sourceY, targetHeight - y));
+  for (let row = 0; row < safeHeight; row += 1) {
+    const sourceOffset = ((sourceY + row) * sourceWidth + sourceX) * 4;
+    const targetOffset = ((y + row) * targetWidth + x) * 4;
+    target.set(source.subarray(sourceOffset, sourceOffset + safeWidth * 4), targetOffset);
+  }
 }
 
 async function composeRawPageOverviewCompositeCapture({
@@ -2961,6 +3209,8 @@ export const __testOnly = {
   resolveAdHocCaptureExecution,
   createCaptureRunRecord,
   captureConcurrency,
+  composeGenericPageOverviewCapture,
+  genericPageOverviewSlicePositions,
   runnerNameForPlatform
 };
 

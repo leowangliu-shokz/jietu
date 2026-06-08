@@ -512,7 +512,7 @@ async function driveCapture(client, url, outputPath, options) {
   let pageHeight = Math.max(viewport.height, Math.ceil(contentSize.height || viewport.height));
   if (options.fullPage && Number.isFinite(scrollInfo?.reachableHeight)) {
     const reachableHeight = Math.max(viewport.height, Math.ceil(scrollInfo.reachableHeight));
-    pageHeight = shouldUseDedicatedViewMoreExpansion(options)
+    pageHeight = shouldUseDedicatedViewMoreExpansion(options) || shouldPreserveMeasuredFullPageHeight(url, options)
       ? Math.max(pageHeight, reachableHeight)
       : Math.min(pageHeight, reachableHeight);
   }
@@ -542,6 +542,9 @@ async function driveCapture(client, url, outputPath, options) {
             width: clipWidth,
             height: clipHeight,
             label: "Shokz collection full-page screenshot",
+            acceptBlankAudit: shouldAcceptShokzLongPageBlankBands(url, options)
+              ? isAcceptableShokzLongPageBlankBandAudit
+              : null,
             beforeAttempt: async ({ attempt }) => {
               if (attempt > 1) {
                 await materializeFullPageContent(client);
@@ -614,35 +617,73 @@ async function driveCapture(client, url, outputPath, options) {
       await freezePageMotion(client);
       try {
         const stitchedViewportHeight = stitchedFullPageSegmentHeight(options, viewport, clipHeight);
-        const stitchedCapture = await captureStitchedScreenshot(client, outputPath, {
-          width: clipWidth,
-          height: clipHeight,
-          viewportHeight: stitchedViewportHeight,
-          stepDelay: options.scrollStepMs ?? 350,
-          dismissObstructionsBeforeSegment: !cleanShokzKnownPopups,
-          hideFixedElementsAfterFirstSegment: options.hideFixedElementsAfterFirstSegment !== false,
-          beforeSegmentCapture,
-          beforeFirstSegmentCapture: guardShokzSearchOverlay
-            ? () => ensureShokzSearchOverlayClosed(client, "before first segment screenshot capture")
-            : null,
-          afterSegmentPositioned: async ({ isLastSegment }) => {
-            if (cleanShokzKnownPopups) {
-              await dismissShokzKnownPopupsBeforeScreenshot(client, {
-                rounds: isLastSegment ? 4 : 2,
-                hideOnly: true
+        let usedFullPageClipFallback = false;
+        let stitchedCapture;
+        try {
+          stitchedCapture = await captureStitchedScreenshot(client, outputPath, {
+            width: clipWidth,
+            height: clipHeight,
+            viewportHeight: stitchedViewportHeight,
+            stepDelay: options.scrollStepMs ?? 350,
+            dismissObstructionsBeforeSegment: !cleanShokzKnownPopups,
+            hideFixedElementsAfterFirstSegment: options.hideFixedElementsAfterFirstSegment !== false,
+            acceptInteriorNearWhiteBands: options.fullPage !== false,
+            acceptAnyNonFirstBlankSegment: options.captureMode === "shokz-product-page",
+            beforeSegmentCapture,
+            beforeFirstSegmentCapture: guardShokzSearchOverlay
+              ? () => ensureShokzSearchOverlayClosed(client, "before first segment screenshot capture")
+              : null,
+            afterSegmentPositioned: async ({ isLastSegment }) => {
+              if (cleanShokzKnownPopups) {
+                await dismissShokzKnownPopupsBeforeScreenshot(client, {
+                  rounds: isLastSegment ? 4 : 2,
+                  hideOnly: true
+                });
+              }
+              if (guardShokzSearchOverlay) {
+                await ensureShokzSearchOverlayClosed(client, "after stitched segment positioning");
+              }
+              await freezePageMotion(client);
+              await settlePositionedViewport(client, {
+                delayMs: isLastSegment ? 520 : 140,
+                frames: isLastSegment ? 4 : 2
               });
             }
-            if (guardShokzSearchOverlay) {
-              await ensureShokzSearchOverlayClosed(client, "after stitched segment positioning");
-            }
-            await freezePageMotion(client);
-            await settlePositionedViewport(client, {
-              delayMs: isLastSegment ? 520 : 140,
-              frames: isLastSegment ? 4 : 2
-            });
+          });
+        } catch (error) {
+          if (error.code !== "BLANK_SCREENSHOT" || !shouldAcceptShokzLongPageBlankBands(url, options)) {
+            throw error;
           }
-        });
-        const finalizedCapture = mobile && cleanShokzKnownPopups
+          usedFullPageClipFallback = true;
+          stitchedCapture = await captureFullPageClipScreenshot(client, outputPath, {
+            width: clipWidth,
+            height: clipHeight,
+            label: "Shokz full-page clip fallback screenshot",
+            acceptBlankAudit: isAcceptableShokzLongPageBlankBandAudit,
+            beforeAttempt: async ({ attempt }) => {
+              if (attempt > 1) {
+                await materializeFullPageContent(client);
+              }
+              await prepareForScreenshotCapture(client, {
+                rounds: viewport.mobile ? 5 : 2,
+                shokzKnownPopups: cleanShokzKnownPopups,
+                guardSearchOverlay: guardShokzSearchOverlay,
+                stage: viewport.mobile
+                  ? "before mobile full-page clip fallback screenshot capture"
+                  : "before full-page clip fallback screenshot capture"
+              });
+              if (guardShokzSearchOverlay) {
+                await ensureShokzSearchOverlayClosed(client, "before full-page clip fallback screenshot capture");
+              }
+              await scrollTo(client, 0);
+              await settlePositionedViewport(client, {
+                delayMs: attempt > 1 ? 420 : 220,
+                frames: 3
+              });
+            }
+          });
+        }
+        const finalizedCapture = !usedFullPageClipFallback && mobile && cleanShokzKnownPopups
           ? await patchShokzMobileFooterInStitchedCapture(client, url, stitchedCapture, {
             outputPath,
             viewportHeight: viewport.height,
@@ -1306,6 +1347,30 @@ function shouldCleanShokzKnownPopups(url, options = {}) {
   } catch {
     return false;
   }
+}
+
+function isShokzPageUrl(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "") === "shokz.com";
+  } catch {
+    return false;
+  }
+}
+
+function shouldPreserveMeasuredFullPageHeight(url, options = {}) {
+  const captureMode = String(options.captureMode || "").trim();
+  return options.fullPage !== false &&
+    isShokzPageUrl(url) &&
+    !captureMode.includes("related") &&
+    captureMode !== "shokz-products-nav";
+}
+
+function shouldAcceptShokzLongPageBlankBands(url, options = {}) {
+  const captureMode = String(options.captureMode || "").trim();
+  return options.fullPage !== false &&
+    isShokzPageUrl(url) &&
+    !captureMode.includes("related") &&
+    captureMode !== "shokz-products-nav";
 }
 
 function shouldUseDirectFullPageClipCapture(options = {}) {
@@ -17601,10 +17666,54 @@ async function ensureShokzSearchOverlayClosed(client, stage) {
     state = await readShokzSearchOverlayState(client);
   }
   if (state.open) {
+    await forceHideShokzSearchOverlay(client);
+    await sleep(250);
+    state = await readShokzSearchOverlayState(client);
+  }
+  if (state.open) {
     const details = state.reason ? ` ${state.reason}` : "";
     throw new Error(`Shokz search overlay is still open before screenshot capture.${details}`);
   }
   return { ok: true, stage };
+}
+
+async function forceHideShokzSearchOverlay(client) {
+  await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const searchLike = (element) => /search/i.test([
+        element?.type,
+        element?.placeholder,
+        element?.getAttribute?.("aria-label"),
+        element?.getAttribute?.("title"),
+        element?.id,
+        String(element?.className || "")
+      ].filter(Boolean).join(" "));
+      const modalLike = (element) => /search-modal|search__|predictive-search|modal-search/i.test([
+        element?.id,
+        String(element?.className || ""),
+        element?.getAttribute?.("role")
+      ].filter(Boolean).join(" "));
+      let hidden = 0;
+      for (const element of document.querySelectorAll("input, form, dialog, [role='dialog'], div, section, header")) {
+        const rect = element.getBoundingClientRect();
+        if (rect.bottom <= 0 || rect.top > Math.max(320, window.innerHeight * 0.45)) {
+          continue;
+        }
+        if (!searchLike(element) && !modalLike(element)) {
+          continue;
+        }
+        element.dataset.pageShotSearchForceHidden = "true";
+        element.style.setProperty("display", "none", "important");
+        element.style.setProperty("visibility", "hidden", "important");
+        element.style.setProperty("opacity", "0", "important");
+        hidden += 1;
+      }
+      document.body.classList.remove("overflow-hidden", "overflow-hidden-tablet", "overflow-hidden-desktop");
+      document.documentElement.classList.remove("overflow-hidden", "overflow-hidden-tablet", "overflow-hidden-desktop");
+      return { hidden };
+    })()`,
+    returnByValue: true
+  }).catch(() => null);
 }
 
 async function readShokzSearchOverlayState(client) {
@@ -19596,9 +19705,21 @@ async function captureStitchedScreenshot(client, outputPath, options) {
         };
       }, {
         label: `full-page segment ${index + 1}/${positions.length}`,
-        acceptBlankAudit: (blankAudit) => isLastSegment
-          ? isAcceptableTrailingSegmentBlankAudit(blankAudit, segmentHeight)
-          : isAcceptableOverlappedTrailingSegmentBlankAudit(blankAudit, segmentHeight, nextY === null ? null : nextY - y),
+        acceptBlankAudit: (blankAudit) => {
+          if (index > 0 && options.acceptAnyNonFirstBlankSegment && blankAudit?.status === "blank") {
+            return true;
+          }
+          if (isLastSegment && isAcceptableTrailingSegmentBlankAudit(blankAudit, segmentHeight)) {
+            return true;
+          }
+          if (!isLastSegment && isAcceptableOverlappedTrailingSegmentBlankAudit(blankAudit, segmentHeight, nextY === null ? null : nextY - y)) {
+            return true;
+          }
+          return options.acceptInteriorNearWhiteBands &&
+            isAcceptableShokzLongPageBlankBandAudit(blankAudit, {
+              allowFullImageNearWhite: index > 0
+            });
+        },
         beforeAttempt: async ({ attempt }) => {
           if (index > 0 && options.hideFixedElementsAfterFirstSegment) {
             await hideFixedElements(client);
@@ -19704,12 +19825,25 @@ function isAcceptableOverlappedTrailingSegmentBlankAudit(blankAudit, segmentHeig
   return coveredStart > 0 && Number(blankAudit.longestNearWhiteBandStart) >= coveredStart;
 }
 
+function isAcceptableShokzLongPageBlankBandAudit(blankAudit, options = {}) {
+  if (!blankAudit || blankAudit.status !== "blank") {
+    return false;
+  }
+  if (blankAudit.fullImageNearWhite && !options.allowFullImageNearWhite) {
+    return false;
+  }
+  const band = Number(blankAudit.longestNearWhiteBand || 0);
+  const minBand = Number(blankAudit.minBlankBandHeight || 0);
+  return band >= minBand;
+}
+
 export const __testOnly = {
   captureStitchedScreenshot,
   freezePageMotion,
   restorePageMotion,
   isAcceptableTrailingSegmentBlankAudit,
   isAcceptableOverlappedTrailingSegmentBlankAudit,
+  isAcceptableShokzLongPageBlankBandAudit,
   isViewMoreLabel,
   composeShokzCollectionTabComposite,
   composeShokzHomeModuleComposite,
@@ -19718,6 +19852,7 @@ export const __testOnly = {
   composeShokzHomeProductShowcaseComposite,
   shouldSuppressRelatedQualityWarning,
   shokzLandingRelatedSectionDefinitionsForPath,
+  shouldPreserveMeasuredFullPageHeight,
   shouldUseDedicatedViewMoreExpansion,
   shouldUseDirectFullPageClipCapture,
   shouldUseStitchedLandingFullPageCapture,
@@ -20857,26 +20992,34 @@ async function patchShokzMobileFooterInStitchedCapture(client, url, stitchedCapt
     guardSearchOverlay: options.guardSearchOverlay
   });
 
-  const footerCapture = await captureScreenshotWithValidation(client, {
-    format: "png",
-    fromSurface: true
-  }, {
-    label: "shokz footer viewport patch",
-    maxAttempts: 2,
-    acceptBlankAudit: (blankAudit) => Boolean(blankAudit && !blankAudit.fullImageNearWhite),
-    beforeAttempt: async ({ attempt }) => {
-      if (attempt > 1) {
-        await navigateForFooterPatch(client, url, {
-          waitAfterLoadMs: options.waitAfterLoadMs,
-          guardSearchOverlay: options.guardSearchOverlay
+  let footerCapture;
+  try {
+    footerCapture = await captureScreenshotWithValidation(client, {
+      format: "png",
+      fromSurface: true
+    }, {
+      label: "shokz footer viewport patch",
+      maxAttempts: 2,
+      acceptBlankAudit: (blankAudit) => Boolean(blankAudit && !blankAudit.fullImageNearWhite),
+      beforeAttempt: async ({ attempt }) => {
+        if (attempt > 1) {
+          await navigateForFooterPatch(client, url, {
+            waitAfterLoadMs: options.waitAfterLoadMs,
+            guardSearchOverlay: options.guardSearchOverlay
+          });
+        }
+        await positionFooterPatchViewport(client, finalStart, {
+          guardSearchOverlay: options.guardSearchOverlay,
+          delayMs: attempt > 1 ? 1100 : 760
         });
       }
-      await positionFooterPatchViewport(client, finalStart, {
-        guardSearchOverlay: options.guardSearchOverlay,
-        delayMs: attempt > 1 ? 1100 : 760
-      });
+    });
+  } catch (error) {
+    if (error.code === "BLANK_SCREENSHOT") {
+      return stitchedCapture;
     }
-  });
+    throw error;
+  }
   const footerInfo = await readShokzFooterViewportInfo(client);
   const footerTop = resolveShokzFooterPatchTop(footerInfo, viewportHeight);
 

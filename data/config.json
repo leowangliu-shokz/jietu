@@ -16,8 +16,7 @@
     {
       "id": "shokz-headphones-accessories",
       "url": "https://shokz.com/collections/headphones-accessories",
-      "label": "产品集合页（https://shokz.com/collections/headphones-accessories）",
-      "fullPage": false
+      "label": "产品集合页（https://shokz.com/collections/headphones-accessories）"
     },
     {
       "id": "shokz-product-comparison",
@@ -27,8 +26,7 @@
     {
       "id": "shokz-open-ear-headphones-collection",
       "url": "https://shokz.com/collections/open-ear-earbuds",
-      "label": "开耳集合页（https://shokz.com/collections/open-ear-headphones）",
-      "fullPage": false
+      "label": "开耳集合页（https://shokz.com/collections/open-ear-headphones）"
     },
     {
       "id": "shokz-open-ear-series",
@@ -53,98 +51,82 @@
     {
       "id": "shokz-openrunpro2-page",
       "url": "https://shokz.com/pages/openrunpro2",
-      "label": "BOS信息页（https://shokz.com/pages/openrunpro2）",
-      "fullPage": false
+      "label": "BOS信息页（https://shokz.com/pages/openrunpro2）"
     },
     {
       "id": "shokz-openrunpro2-product",
       "url": "https://shokz.com/products/openrunpro2",
-      "label": "BOS购买页（https://shokz.com/products/openrunpro2）",
-      "fullPage": false
+      "label": "BOS购买页（https://shokz.com/products/openrunpro2）"
     },
     {
       "id": "shokz-openswimpro-page",
       "url": "https://shokz.com/pages/openswimpro",
-      "label": "Seal信息页（https://shokz.com/pages/openswimpro）",
-      "fullPage": false
+      "label": "Seal信息页（https://shokz.com/pages/openswimpro）"
     },
     {
       "id": "shokz-openswimpro-product",
       "url": "https://shokz.com/products/openswimpro",
-      "label": "Seal购买页（https://shokz.com/products/openswimpro）",
-      "fullPage": false
+      "label": "Seal购买页（https://shokz.com/products/openswimpro）"
     },
     {
       "id": "shokz-openrun-page",
       "url": "https://shokz.com/pages/openrun",
-      "label": "OpenRun信息页（https://shokz.com/pages/openrun）",
-      "fullPage": false
+      "label": "OpenRun信息页（https://shokz.com/pages/openrun）"
     },
     {
       "id": "shokz-openrun-product",
       "url": "https://shokz.com/products/openrun",
-      "label": "OpenRun购买页（https://shokz.com/products/openrun）",
-      "fullPage": false
+      "label": "OpenRun购买页（https://shokz.com/products/openrun）"
     },
     {
       "id": "shokz-opendots-2-page",
       "url": "https://shokz.com/pages/opendots-2",
-      "label": "Being信息页（https://shokz.com/pages/opendots-2）",
-      "fullPage": false
+      "label": "Being信息页（https://shokz.com/pages/opendots-2）"
     },
     {
       "id": "shokz-opendots-2-product",
       "url": "https://shokz.com/products/opendots-2",
-      "label": "Being购买页（https://shokz.com/products/opendots-2）",
-      "fullPage": false
+      "label": "Being购买页（https://shokz.com/products/opendots-2）"
     },
     {
       "id": "shokz-opendots-air-page",
       "url": "https://shokz.com/pages/opendots-air",
-      "label": "Looking信息页（https://shokz.com/pages/opendots-air）",
-      "fullPage": false
+      "label": "Looking信息页（https://shokz.com/pages/opendots-air）"
     },
     {
       "id": "shokz-opendots-air-product",
       "url": "https://shokz.com/products/opendots-air",
-      "label": "Looking购买页（https://shokz.com/products/opendots-air）",
-      "fullPage": false
+      "label": "Looking购买页（https://shokz.com/products/opendots-air）"
     },
     {
       "id": "shokz-openfit-pro-page",
       "url": "https://shokz.com/pages/openfit-pro",
-      "label": "NT信息页（https://shokz.com/pages/openfit-pro）",
-      "fullPage": false
+      "label": "NT信息页（https://shokz.com/pages/openfit-pro）"
     },
     {
       "id": "shokz-openfit-pro-product",
       "url": "https://shokz.com/products/openfit-pro",
-      "label": "NT购买页（https://shokz.com/products/openfit-pro）",
-      "fullPage": false
+      "label": "NT购买页（https://shokz.com/products/openfit-pro）"
     },
     {
       "id": "shokz-openfit2-page",
       "url": "https://shokz.com/pages/openfit2",
-      "label": "UCS信息页（https://shokz.com/pages/openfit2）",
-      "fullPage": false
+      "label": "UCS信息页（https://shokz.com/pages/openfit2）"
     },
     {
       "id": "shokz-openfit2plus-product",
       "url": "https://shokz.com/products/openfit2plus",
-      "label": "UCS购买页（https://shokz.com/products/openfit2plus）",
-      "fullPage": false
+      "label": "UCS购买页（https://shokz.com/products/openfit2plus）"
     },
     {
       "id": "shokz-openfitair-page",
       "url": "https://shokz.com/pages/openfitair",
-      "label": "CCT信息页（https://shokz.com/pages/openfitair）",
-      "fullPage": false
+      "label": "CCT信息页（https://shokz.com/pages/openfitair）"
     },
     {
       "id": "shokz-openfitair-product",
       "url": "https://shokz.com/products/openfitair",
-      "label": "CCT购买页（https://shokz.com/products/openfitair）",
-      "fullPage": false
+      "label": "CCT购买页（https://shokz.com/products/openfitair）"
     }
   ],
   "deviceProfiles": [
@@ -191,16 +173,14 @@
       "targetId": "shokz-headphones-accessories",
       "deviceProfileId": "pc-default",
       "enabled": true,
-      "relatedCaptureMode": "shokz-collection-page",
-      "fullPage": false
+      "relatedCaptureMode": "shokz-collection-page"
     },
     {
       "id": "plan-shokz-headphones-accessories-mobile-default",
       "targetId": "shokz-headphones-accessories",
       "deviceProfileId": "mobile-default",
       "enabled": true,
-      "captureMode": "shokz-collection-page",
-      "fullPage": false
+      "captureMode": "shokz-collection-page"
     },
     {
       "id": "plan-shokz-product-comparison-pc-default",
@@ -320,7 +300,8 @@
       "id": "plan-shokz-openswimpro-product-pc-default",
       "targetId": "shokz-openswimpro-product",
       "deviceProfileId": "pc-default",
-      "enabled": true
+      "enabled": true,
+      "captureMode": "shokz-product-page"
     },
     {
       "id": "plan-shokz-openswimpro-product-mobile-default",
@@ -474,8 +455,8 @@
     }
   ],
   "intervalMinutes": 0,
-  "captureConcurrency": 6,
-  "relatedCaptureConcurrency": 2,
+  "captureConcurrency": 1,
+  "relatedCaptureConcurrency": 1,
   "captureRetryAttempts": 3,
   "fullPage": true,
   "waitAfterLoadMs": 2500,
