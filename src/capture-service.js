@@ -14,7 +14,7 @@ import { assessRelatedShotConfidence, assessSnapshotConfidence } from "./capture
 import { createCaptureDiagnosticRun, finalizeCaptureDiagnostic, recordCaptureDiagnostic } from "./capture-diagnostics.js";
 import { withCaptureLock } from "./capture-lock.js";
 import { appendCaptureRun } from "./capture-runs.js";
-import { loadChanges, rebuildChanges } from "./changes.js";
+import { loadChanges, rebuildChanges, rebuildChangesForNewSnapshots } from "./changes.js";
 import { notifyChangeRecords, resolveChangeNotificationConfig } from "./change-notifier.js";
 import { findDevicePreset, toPublicDevicePreset } from "./device-presets.js";
 import { hashBuffer, visualAuditForBuffer, visualHashForBuffer } from "./image-audit.js";
@@ -25,6 +25,7 @@ import { appendSeoSnapshots, createSeoSnapshotRecord, rebuildSeoChanges } from "
 import {
   shokzCollectionRelatedSectionDefinitions,
   shokzComparisonRelatedSectionDefinitions,
+  shokzComparisonProductMapStates,
   shokzHomeRelatedSectionDefinitions,
   shokzRelatedSectionOrder
 } from "./shokz-capture-specs.js";
@@ -46,6 +47,7 @@ import { appendTrackingAuditRecords, createTrackingAuditRecordsForSnapshots } fr
 
 const mobileCollectionRelatedSectionTimeoutMs = 25 * 60 * 1000;
 const mobileComparisonProductMapTimeoutMs = 55 * 60 * 1000;
+const mobileComparisonProductStateTimeoutMs = 20 * 60 * 1000;
 const networkPreflightDiagnosticsPath = path.join(logsDir, "network-preflight-diagnostics.jsonl");
 
 export async function captureConfiguredUrls(config = null, options = {}) {
@@ -387,7 +389,6 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
   const results = new Array(plans.length);
   const concurrency = captureConcurrency(config, options);
   run.concurrency = concurrency;
-  let saveQueue = Promise.resolve();
 
   async function runPlan(execution, { index: planIndex }) {
     const item = run.items[planIndex];
@@ -409,14 +410,6 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
       };
     }
     result = failResultWithRetriableRelatedWarnings(result);
-    if (result?.ok) {
-      try {
-        await enqueuePreparedCaptureSave(result);
-      } catch (error) {
-        result.ok = false;
-        result.error = `Capture completed but failed to save snapshot index: ${error.message}`;
-      }
-    }
     item.finishedAt = new Date().toISOString();
     item.durationMs = Date.now() - startedAt;
     item.ok = Boolean(result?.ok);
@@ -433,12 +426,6 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
     return results[planIndex];
   }
 
-  function enqueuePreparedCaptureSave(result) {
-    const saveTask = saveQueue.then(() => persistPreparedCaptureResult(result));
-    saveQueue = saveTask.catch(() => null);
-    return saveTask;
-  }
-
   const queue = await runJobQueue(plans, runPlan, {
     concurrency,
     maxConcurrency: 8,
@@ -449,13 +436,17 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
     config,
     options,
     run,
-    results,
-    savePreparedCaptureResult: enqueuePreparedCaptureSave
+    results
   });
 
+  const persistence = await persistPreparedCaptureResultsForRun(results, run);
   const changeRefresh = options.deferChangeRefresh
     ? { ok: true, deferred: true }
-    : await refreshChangeRecords();
+    : await refreshChangeRecords({
+        incrementalSnapshots: persistence.ok && options.incrementalChangeRefresh !== false
+          ? persistence.snapshots
+          : null
+      });
   const seoRefresh = options.deferChangeRefresh
     ? { ok: true, deferred: true }
     : await refreshSeoChangeRecords();
@@ -480,6 +471,7 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
   run.seoRefresh = seoRefresh;
   run.textQualityRefresh = textQualityRefresh;
   run.networkPreflight = options.networkPreflight || null;
+  run.persistence = persistence.summary;
   for (const result of results) {
     if (result?.ok) {
       result.changeRefresh = changeRefresh;
@@ -1180,19 +1172,72 @@ function networkPreflightWarningMessage(checks) {
     : null;
 }
 
-async function persistPreparedCaptureResult(result) {
-  const snapshots = captureResultSnapshots(result);
+async function persistPreparedCaptureResultsForRun(results, run) {
+  try {
+    const persistence = await persistPreparedCaptureResults(results);
+    return {
+      ...persistence,
+      ok: true,
+      summary: {
+        ok: true,
+        batch: true,
+        snapshotCount: persistence.snapshots.length,
+        seoSnapshotCount: persistence.seoSnapshots.length,
+        trackingAuditRecordCount: persistence.trackingAuditRecords.length
+      }
+    };
+  } catch (error) {
+    const message = `Capture completed but failed to save prepared batch: ${error.message}`;
+    for (const [index, result] of results.entries()) {
+      if (!result?.ok) {
+        continue;
+      }
+      result.ok = false;
+      result.error = message;
+      const item = run.items[index];
+      if (item) {
+        item.ok = false;
+        item.status = "failed";
+        item.error = message;
+      }
+    }
+    return {
+      ok: false,
+      snapshots: [],
+      seoSnapshots: [],
+      trackingAuditRecords: [],
+      summary: {
+        ok: false,
+        batch: true,
+        error: message,
+        snapshotCount: 0,
+        seoSnapshotCount: 0,
+        trackingAuditRecordCount: 0
+      }
+    };
+  }
+}
+
+async function persistPreparedCaptureResults(results) {
+  const successfulResults = (Array.isArray(results) ? results : [])
+    .filter((result) => result?.ok);
+  const snapshots = successfulResults.flatMap(captureResultSnapshots);
   if (snapshots.length) {
     await appendSnapshots(snapshots);
   }
-  const seoSnapshots = captureResultSeoSnapshots(result);
+  const seoSnapshots = successfulResults.flatMap(captureResultSeoSnapshots);
   if (seoSnapshots.length) {
     await appendSeoSnapshots(seoSnapshots);
   }
-  const trackingAuditRecords = captureResultTrackingAuditRecords(result);
+  const trackingAuditRecords = successfulResults.flatMap(captureResultTrackingAuditRecords);
   if (trackingAuditRecords.length) {
     await appendTrackingAuditRecords(trackingAuditRecords);
   }
+  return {
+    snapshots,
+    seoSnapshots,
+    trackingAuditRecords
+  };
 }
 
 function createCaptureRunRecord(plans, options = {}) {
@@ -1241,16 +1286,16 @@ function captureConcurrency(config, options = {}) {
     options.concurrency ??
     config.captureConcurrency ??
     process.env.CAPTURE_CONCURRENCY ??
-    1;
-  return boundedConcurrency(value, { defaultValue: 1, max: 8 });
+    6;
+  return boundedConcurrency(value, { defaultValue: 6, max: 8 });
 }
 
 function relatedCaptureConcurrency(config = {}, options = {}) {
   const value = options.relatedCaptureConcurrency ??
     config.relatedCaptureConcurrency ??
     process.env.RELATED_CAPTURE_CONCURRENCY ??
-    1;
-  return boundedConcurrency(value, { defaultValue: 1, max: 4 });
+    4;
+  return boundedConcurrency(value, { defaultValue: 4, max: 4 });
 }
 
 function captureRetryAttempts(config = {}, options = {}) {
@@ -1266,8 +1311,7 @@ async function retryFailedCapturePlans({
   config,
   options,
   run,
-  results,
-  savePreparedCaptureResult
+  results
 }) {
   const maxAttempts = captureRetryAttempts(config, options);
   if (maxAttempts <= 1) {
@@ -1304,14 +1348,6 @@ async function retryFailedCapturePlans({
         };
       }
       result = failResultWithRetriableRelatedWarnings(result);
-      if (result?.ok) {
-        try {
-          await savePreparedCaptureResult(result);
-        } catch (error) {
-          result.ok = false;
-          result.error = `Capture completed but failed to save snapshot index: ${error.message}`;
-        }
-      }
       const retryDurationMs = Date.now() - startedAt;
       item.finishedAt = new Date().toISOString();
       item.durationMs = Number(item.durationMs || 0) + retryDurationMs;
@@ -1671,7 +1707,15 @@ function resolveAdHocDeviceProfile(config, options = {}) {
 async function refreshChangeRecords(options = {}) {
   try {
     const previousChanges = await loadChanges();
-    const changes = await rebuildChanges();
+    const incrementalSnapshots = Array.isArray(options.incrementalSnapshots)
+      ? options.incrementalSnapshots
+      : null;
+    const changes = incrementalSnapshots
+      ? await rebuildChangesForNewSnapshots(incrementalSnapshots, {
+          ...options,
+          previousChanges
+        })
+      : await rebuildChanges();
     const notification = await notifyChangeRecords(changes, {
       previousChanges,
       sendNotifications: options.sendNotifications
@@ -2851,11 +2895,19 @@ function comparisonRelatedDescriptorsForCaptureConfig(captureConfig = {}) {
     return descriptors;
   }
 
-  return descriptors.map((descriptor) =>
-    descriptor.sectionKey === "comparison-products"
-      ? { ...descriptor, captureTimeoutMs: mobileComparisonProductMapTimeoutMs }
-      : descriptor
-  );
+  return descriptors.flatMap((descriptor) => {
+    if (descriptor.sectionKey !== "comparison-products") {
+      return [descriptor];
+    }
+    return shokzComparisonProductMapStates.length
+      ? shokzComparisonProductMapStates.map((state, index) => ({
+          ...descriptor,
+          sectionLabel: `${descriptor.sectionLabel} / ${state.productLabel || state.productKey}`,
+          relatedStateFilter: relatedFilterForComparisonProductState(descriptor.sectionKey, state, index),
+          captureTimeoutMs: mobileComparisonProductStateTimeoutMs
+        }))
+      : [{ ...descriptor, captureTimeoutMs: mobileComparisonProductMapTimeoutMs }];
+  });
 }
 
 function relatedFilterForCollectionState(sectionKey, state = {}) {
@@ -2864,6 +2916,19 @@ function relatedFilterForCollectionState(sectionKey, state = {}) {
     categoryKey: state.categoryKey || state.matchHandle || null,
     tabLabel: state.tabLabel || state.categoryLabel || state.stateLabel || null,
     tileKey: state.categoryKey || state.fileId || state.stateLabel || null
+  };
+}
+
+function relatedFilterForComparisonProductState(sectionKey, state = {}, index = 0) {
+  const productKey = state.productKey || state.fileId || null;
+  const productLabel = state.productLabel || state.stateLabel || productKey;
+  return {
+    sectionKey,
+    productKey,
+    productLabel,
+    tabLabel: productLabel,
+    tileKey: productKey || productLabel,
+    stateIndex: index + 1
   };
 }
 
@@ -3200,6 +3265,7 @@ export const __testOnly = {
   relatedReplacementCaptureMode,
   replacementFilterForRelatedShot,
   relatedDescriptorsForCaptureConfig,
+  comparisonRelatedDescriptorsForCaptureConfig,
   relatedCaptureModeForTarget,
   relatedCaptureConcurrency,
   captureRetryAttempts,

@@ -46,6 +46,7 @@ function normalizeCaptureRun(run = {}) {
     seoRefresh: run.seoRefresh || null,
     textQualityRefresh: run.textQualityRefresh || null,
     networkPreflight: run.networkPreflight || null,
+    persistence: normalizeCaptureRunPersistence(run.persistence),
     items: items.map(normalizeCaptureRunItem)
   };
 }
@@ -59,6 +60,20 @@ function normalizeCaptureRunJobQueue(jobQueue = null) {
     concurrency: numberOrDefault(jobQueue.concurrency, 1),
     durationMs: numberOrNull(jobQueue.durationMs),
     maxActiveCount: numberOrNull(jobQueue.maxActiveCount)
+  };
+}
+
+function normalizeCaptureRunPersistence(persistence = null) {
+  if (!persistence || typeof persistence !== "object") {
+    return null;
+  }
+  return {
+    ok: persistence.ok === undefined || persistence.ok === null ? null : Boolean(persistence.ok),
+    batch: Boolean(persistence.batch),
+    snapshotCount: numberOrDefault(persistence.snapshotCount, 0),
+    seoSnapshotCount: numberOrDefault(persistence.seoSnapshotCount, 0),
+    trackingAuditRecordCount: numberOrDefault(persistence.trackingAuditRecordCount, 0),
+    error: stringOrNull(persistence.error)
   };
 }
 

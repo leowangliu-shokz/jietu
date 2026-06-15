@@ -3,7 +3,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { compareSnapshots, diffPngImages, judgeHumanVisibleChange, rebuildChanges } from "../src/changes.js";
+import {
+  compareSnapshots,
+  compareSnapshotsForNewSnapshots,
+  diffPngImages,
+  judgeHumanVisibleChange,
+  rebuildChanges
+} from "../src/changes.js";
 import { encodePng } from "../src/png.js";
 
 test("matches the same section position when tab copy changes", async () => {
@@ -46,6 +52,58 @@ test("matches the same section position when tab copy changes", async () => {
   assert.equal(changes[0].textChange.beforeFragment, "Best Selling");
   assert.equal(changes[0].textChange.afterFragment, "Best Sell");
   assert.equal(changes[0].createdAt, "2026-05-03T10:00:00.000Z");
+});
+
+test("incremental compare only emits changes for new snapshots", async () => {
+  const before = snapshot("snap-1", "2026-05-02T10:00:00.000Z", [{
+    file: "missing-before.png",
+    sectionKey: "product-showcase",
+    sectionLabel: "浜у搧姗辩獥",
+    stateIndex: 1,
+    tabIndex: 1,
+    tabLabel: "Best Selling",
+    label: "Best Selling 1",
+    sectionState: {
+      text: "OpenRun Pro 2",
+      textBlocks: [{ text: "OpenRun Pro 2", x: 10, y: 8, width: 120, height: 24 }]
+    }
+  }]);
+  const previous = snapshot("snap-2", "2026-05-03T10:00:00.000Z", [{
+    file: "missing-previous.png",
+    sectionKey: "product-showcase",
+    sectionLabel: "浜у搧姗辩獥",
+    stateIndex: 1,
+    tabIndex: 1,
+    tabLabel: "Best Selling",
+    label: "Best Selling 1",
+    sectionState: {
+      text: "OpenRun Pro 2 Sale",
+      textBlocks: [{ text: "OpenRun Pro 2 Sale", x: 10, y: 8, width: 148, height: 24 }]
+    }
+  }]);
+  const current = snapshot("snap-3", "2026-05-04T10:00:00.000Z", [{
+    file: "missing-current.png",
+    sectionKey: "product-showcase",
+    sectionLabel: "浜у搧姗辩獥",
+    stateIndex: 1,
+    tabIndex: 1,
+    tabLabel: "Best Selling",
+    label: "Best Selling 1",
+    sectionState: {
+      text: "OpenRun Pro 2 Final Sale",
+      textBlocks: [{ text: "OpenRun Pro 2 Final Sale", x: 10, y: 8, width: 180, height: 24 }]
+    }
+  }]);
+
+  const changes = await compareSnapshotsForNewSnapshots([before, previous, current], [current], {
+    writeDiffImages: false
+  });
+
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].occurredBetween.from, "2026-05-03T10:00:00.000Z");
+  assert.equal(changes[0].occurredBetween.to, "2026-05-04T10:00:00.000Z");
+  assert.equal(changes[0].textChange.beforeFragment, "OpenRun Pro 2 Sale");
+  assert.equal(changes[0].textChange.afterFragment, "OpenRun Pro 2 Final Sale");
 });
 
 test("prefers tab and page identity when state index shifts", async () => {

@@ -248,6 +248,26 @@ export const shokzComparisonRelatedSectionDefinitions = [
   }
 ];
 
+export const shokzComparisonProductMapStates = [
+  { productKey: "openrunpro2", productLabel: "OpenRun Pro 2" },
+  { productKey: "openrunpro", productLabel: "OpenRun Pro" },
+  { productKey: "openswimpro", productLabel: "OpenSwim Pro" },
+  { productKey: "openswim", productLabel: "OpenSwim" },
+  { productKey: "openrun", productLabel: "OpenRun" },
+  { productKey: "openmove", productLabel: "OpenMove" },
+  { productKey: "openfit2", productLabel: "OpenFit 2" },
+  { productKey: "openfit2plus", productLabel: "OpenFit 2+" },
+  { productKey: "openfit", productLabel: "OpenFit" },
+  { productKey: "openfitair", productLabel: "OpenFit Air" },
+  { productKey: "opendots-one", productLabel: "OpenDots ONE" },
+  { productKey: "opendots-2", productLabel: "OpenDots 2" },
+  { productKey: "opendots-air", productLabel: "OpenDots Air" },
+  { productKey: "openfit-pro", productLabel: "OpenFit Pro" },
+  { productKey: "openmeet", productLabel: "OpenMeet" },
+  { productKey: "opencomm2uc-2025-upgrade", productLabel: "OpenComm2 UC 2025 Upgrade" },
+  { productKey: "opencomm2-2025-upgrade", productLabel: "OpenComm2 2025 Upgrade" }
+];
+
 export const shokzMediaTrackDefinitions = [
   {
     key: "pioneer",

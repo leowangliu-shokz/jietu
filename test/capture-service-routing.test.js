@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { __testOnly } from "../src/capture-service.js";
+import { shokzComparisonProductMapStates } from "../src/shokz-capture-specs.js";
 import { normalizeConfig, resolveConfiguredCapturePlans } from "../src/store.js";
 
 const {
   captureConfigForExecution,
   relatedCaptureModeForTarget,
   relatedDescriptorsForCaptureConfig,
+  comparisonRelatedDescriptorsForCaptureConfig,
   resolveAdHocCaptureExecution,
   captureConcurrency,
   relatedCaptureConcurrency,
@@ -160,6 +162,43 @@ test("comparison page capture mode routes to isolated related section captures",
   );
 });
 
+test("mobile comparison related captures split product maps by product", () => {
+  const descriptors = comparisonRelatedDescriptorsForCaptureConfig({
+    platform: "mobile",
+    viewport: { mobile: true }
+  });
+
+  const productDescriptors = descriptors.filter((descriptor) =>
+    descriptor.sectionKey === "comparison-products"
+  );
+  assert.equal(productDescriptors.length, shokzComparisonProductMapStates.length);
+  assert.deepEqual(
+    productDescriptors.map((descriptor) => descriptor.relatedStateFilter?.productKey),
+    shokzComparisonProductMapStates.map((state) => state.productKey)
+  );
+  assert.ok(productDescriptors.every((descriptor) =>
+    descriptor.captureTimeoutMs === 20 * 60 * 1000
+  ));
+  assert.equal(
+    descriptors.filter((descriptor) => descriptor.sectionKey === "comparison-quick-look").length,
+    1
+  );
+});
+
+test("targeted mobile comparison related captures keep a single requested section", () => {
+  const descriptors = comparisonRelatedDescriptorsForCaptureConfig({
+    platform: "mobile",
+    relatedStateFilter: {
+      sectionKey: "comparison-products",
+      productKey: "openrunpro2"
+    }
+  });
+
+  assert.equal(descriptors.length, 1);
+  assert.equal(descriptors[0].sectionKey, "comparison-products");
+  assert.equal(descriptors[0].relatedStateFilter, undefined);
+});
+
 test("landing page capture mode routes to landing related captures", () => {
   assert.equal(
     relatedCaptureModeForTarget(
@@ -211,15 +250,15 @@ test("capture run records preserve plan item metadata for batch status", () => {
   assert.equal(run.items[0].capturePlanId, "home-pc");
 });
 
-test("capture concurrency is bounded and defaults to the conservative serial runner", () => {
-  assert.equal(captureConcurrency({}, {}), 1);
+test("capture concurrency is bounded and defaults to the automation runner budget", () => {
+  assert.equal(captureConcurrency({}, {}), 6);
   assert.equal(captureConcurrency({ captureConcurrency: 3 }, {}), 3);
   assert.equal(captureConcurrency({ captureConcurrency: 20 }, {}), 8);
   assert.equal(captureConcurrency({ captureConcurrency: 3 }, { maxConcurrency: 2 }), 2);
 });
 
 test("related capture concurrency uses a tighter browser budget", () => {
-  assert.equal(relatedCaptureConcurrency({}, {}), 1);
+  assert.equal(relatedCaptureConcurrency({}, {}), 4);
   assert.equal(relatedCaptureConcurrency({ relatedCaptureConcurrency: 2 }, {}), 2);
   assert.equal(relatedCaptureConcurrency({ relatedCaptureConcurrency: 20 }, {}), 4);
 });

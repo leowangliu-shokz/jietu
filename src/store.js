@@ -35,8 +35,8 @@ const defaultConfigScalars = {
   scrollStepMs: 350,
   hideFixedElementsAfterFirstSegment: true,
   maxFullPageHeight: 16000,
-  captureConcurrency: 1,
-  relatedCaptureConcurrency: 1,
+  captureConcurrency: 6,
+  relatedCaptureConcurrency: 4,
   captureRetryAttempts: 2
 };
 

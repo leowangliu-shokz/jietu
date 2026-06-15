@@ -70,6 +70,41 @@ export async function rebuildChanges(options = {}) {
   return changes;
 }
 
+export async function rebuildChangesForNewSnapshots(newSnapshots, options = {}) {
+  const incoming = Array.isArray(newSnapshots)
+    ? newSnapshots.filter((snapshot) => snapshot && typeof snapshot === "object")
+    : [];
+  if (!incoming.length) {
+    return Array.isArray(options.previousChanges)
+      ? options.previousChanges
+      : await loadChanges(options.changesFilePath || changesPath);
+  }
+
+  const previousChanges = Array.isArray(options.previousChanges)
+    ? options.previousChanges
+    : await loadChanges(options.changesFilePath || changesPath);
+  const snapshots = Array.isArray(options.snapshots)
+    ? options.snapshots
+    : await loadSnapshots();
+  const newSnapshotIds = snapshotIdSet(incoming);
+  if (!newSnapshotIds.size) {
+    return previousChanges;
+  }
+
+  const monitorScope = options.monitorScope || defaultChangeMonitorScope;
+  const compareDeviceIds = Object.hasOwn(options, "compareDeviceIds")
+    ? options.compareDeviceIds
+    : defaultCompareDeviceIdsForMonitorScope(monitorScope);
+  const incrementalChanges = await compareSnapshotsForNewSnapshots(snapshots, newSnapshotIds, {
+    ...options,
+    monitorScope,
+    compareDeviceIds
+  });
+  const mergedChanges = mergeIncrementalChanges(previousChanges, incrementalChanges, newSnapshotIds);
+  await saveChanges(mergedChanges, options.changesFilePath || changesPath);
+  return mergedChanges;
+}
+
 export async function compareSnapshots(snapshots, options = {}) {
   const archiveRoot = options.archiveRoot || archiveDir;
   const monitorScope = options.monitorScope || "all";
@@ -98,6 +133,78 @@ export async function compareSnapshots(snapshots, options = {}) {
   }
 
   return changes.sort((a, b) => String(b.to.capturedAt).localeCompare(String(a.to.capturedAt)));
+}
+
+export async function compareSnapshotsForNewSnapshots(snapshots, newSnapshotsOrIds, options = {}) {
+  const archiveRoot = options.archiveRoot || archiveDir;
+  const monitorScope = options.monitorScope || "all";
+  const compareDeviceIds = normalizeCompareDeviceIds(options.compareDeviceIds);
+  const newSnapshotIds = snapshotIdSet(newSnapshotsOrIds);
+  if (!newSnapshotIds.size) {
+    return [];
+  }
+
+  const items = flattenComparableItems(snapshots)
+    .filter((item) => itemMatchesMonitorScope(item, monitorScope))
+    .filter((item) => itemMatchesCompareDeviceIds(item, compareDeviceIds))
+    .sort((a, b) =>
+      timestamp(a.capturedAt) - timestamp(b.capturedAt) ||
+      String(a.itemId).localeCompare(String(b.itemId))
+    );
+  const previousTrustedByKey = new Map();
+  const changes = [];
+
+  for (const item of items) {
+    const previous = previousTrustedByKey.get(item.comparisonKey);
+    if (newSnapshotIds.has(item.snapshotId) && previous && item.captureConfidence.baselineEligible) {
+      const change = await compareItems(previous, item, { ...options, archiveRoot });
+      if (change) {
+        changes.push(change);
+      }
+    }
+    if (item.captureConfidence.baselineEligible) {
+      previousTrustedByKey.set(item.comparisonKey, item);
+    }
+  }
+
+  return changes.sort((a, b) => String(b.to.capturedAt).localeCompare(String(a.to.capturedAt)));
+}
+
+function mergeIncrementalChanges(previousChanges, incrementalChanges, newSnapshotIds) {
+  const staleSnapshotIds = newSnapshotIds instanceof Set
+    ? newSnapshotIds
+    : snapshotIdSet(newSnapshotIds);
+  const byId = new Map();
+
+  for (const change of Array.isArray(previousChanges) ? previousChanges : []) {
+    if (!change?.id || staleSnapshotIds.has(change.to?.snapshotId)) {
+      continue;
+    }
+    byId.set(change.id, change);
+  }
+  for (const change of Array.isArray(incrementalChanges) ? incrementalChanges : []) {
+    if (change?.id) {
+      byId.set(change.id, change);
+    }
+  }
+
+  return [...byId.values()]
+    .sort((a, b) => String(b.to?.capturedAt || "").localeCompare(String(a.to?.capturedAt || "")));
+}
+
+function snapshotIdSet(input) {
+  if (input instanceof Set) {
+    return new Set([...input].map(stringOrNull).filter(Boolean));
+  }
+  return new Set((Array.isArray(input) ? input : [input])
+    .map((item) => typeof item === "string" ? item : item?.id)
+    .map(stringOrNull)
+    .filter(Boolean));
+}
+
+function stringOrNull(value) {
+  const text = String(value ?? "").trim();
+  return text || null;
 }
 
 export function defaultCompareDeviceIdsForMonitorScope(monitorScope) {
