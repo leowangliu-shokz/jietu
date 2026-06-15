@@ -455,9 +455,9 @@
     }
   ],
   "intervalMinutes": 0,
-  "captureConcurrency": 6,
-  "relatedCaptureConcurrency": 4,
-  "captureRetryAttempts": 3,
+  "captureConcurrency": 10,
+  "relatedCaptureConcurrency": 3,
+  "captureRetryAttempts": 2,
   "fullPage": true,
   "waitAfterLoadMs": 2500,
   "dismissPopups": true,

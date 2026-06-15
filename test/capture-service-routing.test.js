@@ -8,9 +8,12 @@ const {
   captureConfigForExecution,
   relatedCaptureModeForTarget,
   relatedDescriptorsForCaptureConfig,
+  collectionRelatedDescriptorsForCaptureConfig,
   comparisonRelatedDescriptorsForCaptureConfig,
   resolveAdHocCaptureExecution,
+  shouldSkipRelatedForFastAutomation,
   captureConcurrency,
+  captureBrowserConcurrency,
   relatedCaptureConcurrency,
   captureRetryAttempts,
   shouldRetryCaptureResult,
@@ -152,6 +155,26 @@ test("collection page capture mode routes to isolated related section captures",
   );
 });
 
+test("collection related captures split tabs by category on desktop and mobile", () => {
+  const pcDescriptors = collectionRelatedDescriptorsForCaptureConfig({
+    platform: "pc",
+    viewport: { mobile: false }
+  });
+  const mobileDescriptors = collectionRelatedDescriptorsForCaptureConfig({
+    platform: "mobile",
+    viewport: { mobile: true }
+  });
+
+  assert.equal(pcDescriptors.length, 6);
+  assert.equal(mobileDescriptors.length, 6);
+  assert.ok(pcDescriptors.every((descriptor) =>
+    descriptor.sectionKey === "collection-tabs" &&
+    descriptor.captureTimeoutMs === 2 * 60 * 1000 &&
+    descriptor.skipRelatedComposite === true &&
+    descriptor.relatedStateFilter?.categoryKey
+  ));
+});
+
 test("comparison page capture mode routes to isolated related section captures", () => {
   assert.equal(
     relatedCaptureModeForTarget(
@@ -162,10 +185,16 @@ test("comparison page capture mode routes to isolated related section captures",
   );
 });
 
-test("mobile comparison related captures split product maps by product", () => {
+test("comparison related captures split product maps by product", () => {
   const descriptors = comparisonRelatedDescriptorsForCaptureConfig({
     platform: "mobile",
-    viewport: { mobile: true }
+    viewport: { mobile: true },
+    deepRelatedCaptures: true
+  });
+  const pcDescriptors = comparisonRelatedDescriptorsForCaptureConfig({
+    platform: "pc",
+    viewport: { mobile: false },
+    deepRelatedCaptures: true
   });
 
   const productDescriptors = descriptors.filter((descriptor) =>
@@ -177,8 +206,35 @@ test("mobile comparison related captures split product maps by product", () => {
     shokzComparisonProductMapStates.map((state) => state.productKey)
   );
   assert.ok(productDescriptors.every((descriptor) =>
-    descriptor.captureTimeoutMs === 20 * 60 * 1000
+    descriptor.captureTimeoutMs === 2 * 60 * 1000
   ));
+  assert.ok(productDescriptors.every((descriptor) =>
+    descriptor.skipRelatedComposite === true
+  ));
+  assert.equal(
+    pcDescriptors.filter((descriptor) => descriptor.sectionKey === "comparison-products").length,
+    shokzComparisonProductMapStates.length
+  );
+  assert.ok(pcDescriptors
+    .filter((descriptor) => descriptor.sectionKey === "comparison-products")
+    .every((descriptor) => descriptor.skipRelatedComposite === true)
+  );
+  assert.equal(
+    descriptors.filter((descriptor) => descriptor.sectionKey === "comparison-quick-look").length,
+    1
+  );
+});
+
+test("default comparison related captures skip expensive product maps", () => {
+  const descriptors = comparisonRelatedDescriptorsForCaptureConfig({
+    platform: "mobile",
+    viewport: { mobile: true }
+  });
+
+  assert.equal(
+    descriptors.filter((descriptor) => descriptor.sectionKey === "comparison-products").length,
+    0
+  );
   assert.equal(
     descriptors.filter((descriptor) => descriptor.sectionKey === "comparison-quick-look").length,
     1
@@ -207,6 +263,52 @@ test("landing page capture mode routes to landing related captures", () => {
     ),
     "shokz-landing-related"
   );
+});
+
+test("fast automation skips heavy related captures except navigation and targeted states", () => {
+  assert.equal(shouldSkipRelatedForFastAutomation(
+    { id: "shokz-home" },
+    { platform: "mobile" },
+    { fastRelated: true }
+  ), true);
+  assert.equal(shouldSkipRelatedForFastAutomation(
+    { id: "shokz-products-nav" },
+    { captureMode: "shokz-products-nav" },
+    { fastRelated: true }
+  ), false);
+  assert.equal(shouldSkipRelatedForFastAutomation(
+    { id: "shokz-product-comparison" },
+    { relatedStateFilter: { sectionKey: "comparison-products" } },
+    { fastRelated: true }
+  ), false);
+  assert.equal(shouldSkipRelatedForFastAutomation(
+    { id: "shokz-home" },
+    { platform: "mobile" },
+    { fastRelated: false }
+  ), false);
+});
+
+test("fast main capture uses viewport screenshots for non-navigation plans", () => {
+  const config = normalizeConfig({
+    targets: [
+      { id: "home", url: "https://example.com/", label: "Home" },
+      { id: "nav", url: "https://example.com/", label: "Nav", captureMode: "shokz-products-nav", fullPage: false }
+    ],
+    deviceProfiles: [{ id: "pc-main", platform: "pc", devicePresetId: "pc-hd", enabled: true }],
+    capturePlans: [
+      { id: "home-pc", targetId: "home", deviceProfileId: "pc-main", enabled: true },
+      { id: "nav-pc", targetId: "nav", deviceProfileId: "pc-main", enabled: true }
+    ]
+  });
+  const [homeExecution] = resolveConfiguredCapturePlans(config, { planIds: ["home-pc"] });
+  const [navExecution] = resolveConfiguredCapturePlans(config, { planIds: ["nav-pc"] });
+
+  assert.equal(captureConfigForExecution(config, homeExecution, { fastMainCapture: true }).fullPage, false);
+  assert.equal(captureConfigForExecution(config, homeExecution, { fastMainCapture: true }).lazyLoadScroll, false);
+  assert.equal(captureConfigForExecution(config, homeExecution, { fastMainCapture: true }).maxAttempts, 2);
+  const navConfig = captureConfigForExecution(config, navExecution, { fastMainCapture: true });
+  assert.equal(navConfig.captureMode, "shokz-products-nav");
+  assert.equal(navConfig.fullPage, false);
 });
 
 test("resolveAdHocCaptureExecution can bind a manual URL to the requested mobile profile", () => {
@@ -251,16 +353,22 @@ test("capture run records preserve plan item metadata for batch status", () => {
 });
 
 test("capture concurrency is bounded and defaults to the automation runner budget", () => {
-  assert.equal(captureConcurrency({}, {}), 6);
+  assert.equal(captureConcurrency({}, {}), 10);
   assert.equal(captureConcurrency({ captureConcurrency: 3 }, {}), 3);
-  assert.equal(captureConcurrency({ captureConcurrency: 20 }, {}), 8);
+  assert.equal(captureConcurrency({ captureConcurrency: 20 }, {}), 10);
   assert.equal(captureConcurrency({ captureConcurrency: 3 }, { maxConcurrency: 2 }), 2);
 });
 
 test("related capture concurrency uses a tighter browser budget", () => {
-  assert.equal(relatedCaptureConcurrency({}, {}), 4);
+  assert.equal(relatedCaptureConcurrency({}, {}), 3);
   assert.equal(relatedCaptureConcurrency({ relatedCaptureConcurrency: 2 }, {}), 2);
-  assert.equal(relatedCaptureConcurrency({ relatedCaptureConcurrency: 20 }, {}), 4);
+  assert.equal(relatedCaptureConcurrency({ relatedCaptureConcurrency: 20 }, {}), 3);
+});
+
+test("browser capture slots cap nested capture fan-out", () => {
+  assert.equal(captureBrowserConcurrency({}, {}), 6);
+  assert.equal(captureBrowserConcurrency({ captureBrowserConcurrency: 4 }, {}), 4);
+  assert.equal(captureBrowserConcurrency({ captureBrowserConcurrency: 20 }, {}), 6);
 });
 
 test("blank screenshot failures are retried with a bounded attempt count", () => {
@@ -281,6 +389,10 @@ test("blank screenshot failures are retried with a bounded attempt count", () =>
   assert.equal(shouldRetryCaptureResult({
     ok: false,
     error: "Mobile menu trigger not found:  (stage: opening Shokz products navigation)"
+  }), true);
+  assert.equal(shouldRetryCaptureResult({
+    ok: false,
+    error: "Products trigger not found: Products Products HeaderMenu-products"
   }), true);
   assert.equal(shouldRetryCaptureResult({
     ok: false,

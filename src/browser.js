@@ -20,23 +20,10 @@ import {
 export { blankImageAuditForBuffer, imageQualityAuditForBuffer } from "./image-audit.js";
 
 const defaultTimeoutMs = 45000;
-const defaultCaptureTimeoutMs = 20 * 60 * 1000;
+const defaultCaptureTimeoutMs = 8 * 60 * 1000;
 const pageShotMotionFreezeStateKey = "__pageShotMotionFreeze";
 const pageShotMotionFreezeStyleId = "__pageShotMotionFreezeStyle";
 const browserLaunchProfiles = [
-  {
-    name: "headless-new-in-process-gpu",
-    args: [
-      "--headless=new",
-      "--disable-gpu",
-      "--disable-gpu-sandbox",
-      "--disable-software-rasterizer",
-      "--disable-dev-shm-usage",
-      "--in-process-gpu",
-      "--no-sandbox",
-      "--disable-setuid-sandbox"
-    ]
-  },
   {
     name: "headless-new-no-sandbox",
     args: ["--headless=new", "--disable-gpu", "--disable-gpu-sandbox", "--no-sandbox", "--disable-setuid-sandbox"]
@@ -52,7 +39,23 @@ const browserLaunchProfiles = [
       "--disable-gpu",
       "--disable-gpu-compositing",
       "--use-angle=swiftshader",
-      "--use-gl=swiftshader"
+      "--use-gl=swiftshader",
+      "--disable-dev-shm-usage",
+      "--no-sandbox",
+      "--disable-setuid-sandbox"
+    ]
+  },
+  {
+    name: "headless-new-in-process-gpu",
+    args: [
+      "--headless=new",
+      "--disable-gpu",
+      "--disable-gpu-sandbox",
+      "--disable-software-rasterizer",
+      "--disable-dev-shm-usage",
+      "--in-process-gpu",
+      "--no-sandbox",
+      "--disable-setuid-sandbox"
     ]
   },
   {
@@ -151,9 +154,24 @@ function isRetryableBrowserLaunchError(error) {
   }
   const stageMatch = message.match(/\(stage: ([^)]+)\)/);
   if (stageMatch && stageMatch[1] !== "initializing") {
-    return /URL check failed after navigation|chrome-error:\/\/chromewebdata/i.test(message);
+    return /URL check failed after navigation|chrome-error:\/\/chromewebdata/i.test(message) ||
+      isRetryableBlankCaptureError(error);
   }
   return /Browser could not start headless mode|CDP socket closed\. \(stage: initializing\)|Target crashed \(stage: initializing\)|Timed out waiting for browser debugging port|DevToolsActivePort|GPU process isn't usable|gpu_process_host|URL check failed after navigation|chrome-error:\/\/chromewebdata/i.test(message);
+}
+
+function isRetryableBlankCaptureError(error) {
+  const message = String(error?.message || "");
+  return error?.code === "BLANK_SCREENSHOT" ||
+    /failed blank-image validation/i.test(message);
+}
+
+function isRetryableBlankGpuCaptureError(error) {
+  const message = String(error?.message || "");
+  if (!isRetryableBlankCaptureError(error)) {
+    return false;
+  }
+  return /ContextResult::kFatalFailure|gpu_channel_manager|GPU process isn't usable|gpu_process_host/i.test(message);
 }
 
 export async function findBrowser() {
@@ -3845,7 +3863,7 @@ async function hoverShokzTopNavigationLabel(client, label) {
         .map((element) => ({ element, text: compactRepeatedLabel(textOf(element)), rect: element.getBoundingClientRect() }))
         .filter((item) =>
           comparable(item.text) === targetKey &&
-          item.rect.top >= 32 &&
+          item.rect.top >= 16 &&
           item.rect.top < Math.max(150, window.innerHeight * 0.22) &&
           item.rect.left > 80 &&
           item.rect.left < window.innerWidth - 180 &&
@@ -7926,7 +7944,7 @@ function isAcceptableCollectionProductVariantBlankAudit(blankAudit, state) {
 
 async function captureShokzComparisonRelatedSection(client, outputPath, captureContext, definition) {
   if (definition?.mode === "product-map" || definition?.key === "comparison-products") {
-    if (!isMobileCaptureContext(captureContext)) {
+    if (!isMobileCaptureContext(captureContext) || captureContext.skipRelatedComposite) {
       return captureShokzComparisonProductLongStateSection(client, outputPath, captureContext, definition);
     }
     return captureShokzComparisonProductMapSection(client, outputPath, captureContext, definition);
@@ -8271,7 +8289,7 @@ async function captureShokzComparisonProductLongStateSection(client, outputPath,
       productLabel,
       productIndex,
       variantKey: null,
-      variantLabel: "PC selected product long page",
+      variantLabel: "Selected product long page",
       variantOptions: null,
       logicalSignature: [definition.key, productKey, "pc-selected-product"].join("|"),
       visualSignature,
@@ -16931,7 +16949,7 @@ async function hoverShokzProductsMenu(client) {
         .map((element) => ({ element, text: textOf(element).slice(0, 220), rect: element.getBoundingClientRect() }))
         .filter((item) => /^products(?:\\s+products){0,3}(?:\\s|$)/i.test(item.text) && !/all products/i.test(item.text))
         .filter((item) =>
-          item.rect.top >= 32 &&
+          item.rect.top >= 16 &&
           item.rect.top < Math.max(150, window.innerHeight * 0.22) &&
           item.rect.left > 100 &&
           item.rect.left < window.innerWidth - 220 &&
@@ -19856,6 +19874,10 @@ export const __testOnly = {
   shouldUseDedicatedViewMoreExpansion,
   shouldUseDirectFullPageClipCapture,
   shouldUseStitchedLandingFullPageCapture,
+  browserLaunchProfiles,
+  isRetryableBrowserLaunchError,
+  isRetryableBlankCaptureError,
+  isRetryableBlankGpuCaptureError,
   stitchedFullPageSegmentHeight
 };
 

@@ -25,7 +25,10 @@ process.exit(process.exitCode || 0);
 
 async function runCaptureCommand() {
   try {
-    return argUrl ? [await captureOne(argUrl, config)] : await captureConfiguredUrls(config);
+    const deferChangeRefresh = process.env.PAGE_SHOT_SYNC_REFRESH !== "1";
+    return argUrl
+      ? [await captureOne(argUrl, config)]
+      : await captureConfiguredUrls(config, { deferChangeRefresh });
   } catch (error) {
     if (error.code === "CAPTURE_LOCKED") {
       console.log(error.message);

@@ -25,6 +25,10 @@ const {
   shouldUseDedicatedViewMoreExpansion,
   shouldUseDirectFullPageClipCapture,
   shouldUseStitchedLandingFullPageCapture,
+  browserLaunchProfiles,
+  isRetryableBrowserLaunchError,
+  isRetryableBlankCaptureError,
+  isRetryableBlankGpuCaptureError,
   stitchedFullPageSegmentHeight
 } = __testOnly;
 
@@ -146,6 +150,30 @@ test("fails after repeated blank screenshots", async () => {
     }
   );
   assert.equal(captures, 3);
+});
+
+test("uses the stable headless browser profile before in-process GPU fallback", () => {
+  assert.equal(browserLaunchProfiles[0].name, "headless-new-no-sandbox");
+  assert.equal(browserLaunchProfiles[1].name, "headless-new");
+  assert.equal(browserLaunchProfiles[2].name, "headless-new-swiftshader");
+});
+
+test("blank screenshots trigger browser profile fallback", () => {
+  const gpuBlank = new Error(
+    "page screenshot failed blank-image validation after 3 attempts. (stage: capturing screenshot) Browser output: ContextResult::kFatalFailure"
+  );
+  gpuBlank.code = "BLANK_SCREENSHOT";
+  const plainBlank = new Error(
+    "page screenshot failed blank-image validation after 3 attempts. (stage: capturing screenshot)"
+  );
+  plainBlank.code = "BLANK_SCREENSHOT";
+
+  assert.equal(isRetryableBlankCaptureError(gpuBlank), true);
+  assert.equal(isRetryableBlankCaptureError(plainBlank), true);
+  assert.equal(isRetryableBlankGpuCaptureError(gpuBlank), true);
+  assert.equal(isRetryableBrowserLaunchError(gpuBlank), true);
+  assert.equal(isRetryableBlankGpuCaptureError(plainBlank), false);
+  assert.equal(isRetryableBrowserLaunchError(plainBlank), true);
 });
 
 test("freezes and restores page motion with runtime evaluation", async () => {

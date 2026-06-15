@@ -45,20 +45,27 @@ import {
 import { rebuildTextQuality } from "./text-quality.js";
 import { appendTrackingAuditRecords, createTrackingAuditRecordsForSnapshots } from "./tracking-audit.js";
 
-const mobileCollectionRelatedSectionTimeoutMs = 25 * 60 * 1000;
+const splitRelatedSectionTimeoutMs = 2 * 60 * 1000;
+const collectionRelatedSectionTimeoutMs = splitRelatedSectionTimeoutMs;
 const mobileComparisonProductMapTimeoutMs = 55 * 60 * 1000;
-const mobileComparisonProductStateTimeoutMs = 20 * 60 * 1000;
+const comparisonProductStateTimeoutMs = splitRelatedSectionTimeoutMs;
+const homeRelatedSectionTimeoutMs = splitRelatedSectionTimeoutMs;
 const networkPreflightDiagnosticsPath = path.join(logsDir, "network-preflight-diagnostics.jsonl");
 
 export async function captureConfiguredUrls(config = null, options = {}) {
   const activeConfig = normalizeConfig(config || await loadConfig());
   const plans = resolveConfiguredCapturePlans(activeConfig, options);
+  const runOptions = {
+    ...options,
+    fastRelated: options.fastRelated ?? process.env.PAGE_SHOT_DEEP_RELATED !== "1",
+    fastMainCapture: options.fastMainCapture ?? process.env.PAGE_SHOT_DEEP_RELATED !== "1"
+  };
   return withCaptureLock(async () => {
-    const preflight = await runCaptureNetworkPreflight(plans, activeConfig, options);
+    const preflight = await runCaptureNetworkPreflight(plans, activeConfig, runOptions);
     if (!preflight.ok) {
-      return skipCaptureRunForNetworkPreflight(plans, activeConfig, options, preflight);
+      return skipCaptureRunForNetworkPreflight(plans, activeConfig, runOptions, preflight);
     }
-    return runResolvedCapturePlans(plans, activeConfig, { ...options, networkPreflight: preflight });
+    return runResolvedCapturePlans(plans, activeConfig, { ...runOptions, networkPreflight: preflight });
   });
 }
 
@@ -388,7 +395,10 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
   const run = createCaptureRunRecord(plans, options);
   const results = new Array(plans.length);
   const concurrency = captureConcurrency(config, options);
+  const browserConcurrency = captureBrowserConcurrency(config, options);
+  const browserLimiter = options.browserLimiter || createBrowserSlotLimiter(browserConcurrency);
   run.concurrency = concurrency;
+  run.browserConcurrency = browserConcurrency;
 
   async function runPlan(execution, { index: planIndex }) {
     const item = run.items[planIndex];
@@ -399,6 +409,7 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
     try {
       result = await runCaptureExecution(execution, config, {
         ...options,
+        browserLimiter,
         captureBatchIndex: planIndex,
         deferSnapshotSave: true,
         deferChangeRefresh: true
@@ -428,16 +439,19 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
 
   const queue = await runJobQueue(plans, runPlan, {
     concurrency,
-    maxConcurrency: 8,
+    maxConcurrency: 10,
     throwOnError: false
   });
+  run.browserMaxActiveCount = browserLimiter.stats?.maxActiveCount || 0;
   await retryFailedCapturePlans({
     plans,
     config,
     options,
     run,
-    results
+    results,
+    browserLimiter
   });
+  run.browserMaxActiveCount = browserLimiter.stats?.maxActiveCount || run.browserMaxActiveCount || 0;
 
   const persistence = await persistPreparedCaptureResultsForRun(results, run);
   const changeRefresh = options.deferChangeRefresh
@@ -1286,16 +1300,68 @@ function captureConcurrency(config, options = {}) {
     options.concurrency ??
     config.captureConcurrency ??
     process.env.CAPTURE_CONCURRENCY ??
-    6;
-  return boundedConcurrency(value, { defaultValue: 6, max: 8 });
+    10;
+  return boundedConcurrency(value, { defaultValue: 10, max: 10 });
 }
 
 function relatedCaptureConcurrency(config = {}, options = {}) {
   const value = options.relatedCaptureConcurrency ??
     config.relatedCaptureConcurrency ??
     process.env.RELATED_CAPTURE_CONCURRENCY ??
-    4;
-  return boundedConcurrency(value, { defaultValue: 4, max: 4 });
+    3;
+  return boundedConcurrency(value, { defaultValue: 3, max: 3 });
+}
+
+function captureBrowserConcurrency(config = {}, options = {}) {
+  const value = options.captureBrowserConcurrency ??
+    config.captureBrowserConcurrency ??
+    process.env.CAPTURE_BROWSER_CONCURRENCY ??
+    6;
+  return boundedConcurrency(value, { defaultValue: 6, max: 6 });
+}
+
+function createBrowserSlotLimiter(maxConcurrency) {
+  const concurrency = boundedConcurrency(maxConcurrency, { defaultValue: 6, max: 6 });
+  const stats = {
+    concurrency,
+    activeCount: 0,
+    maxActiveCount: 0,
+    queuedCount: 0
+  };
+  const queue = [];
+
+  async function acquire() {
+    if (stats.activeCount < concurrency) {
+      stats.activeCount += 1;
+      stats.maxActiveCount = Math.max(stats.maxActiveCount, stats.activeCount);
+      return;
+    }
+    stats.queuedCount += 1;
+    await new Promise((resolve) => queue.push(resolve));
+    stats.queuedCount -= 1;
+  }
+
+  return Object.assign(async (task) => {
+    await acquire();
+    try {
+      return await task();
+    } finally {
+      const next = queue.shift();
+      if (next) {
+        next();
+      } else {
+        stats.activeCount -= 1;
+      }
+    }
+  }, { stats });
+}
+
+function capturePageWithBrowserSlot(url, outputPath, captureConfig, options = {}) {
+  const limiter = options.browserLimiter;
+  if (typeof limiter !== "function") {
+    return capturePage(url, outputPath, captureConfig);
+  }
+  return limiter(() => capturePage(url, outputPath, captureConfig));
 }
 
 function captureRetryAttempts(config = {}, options = {}) {
@@ -1311,7 +1377,8 @@ async function retryFailedCapturePlans({
   config,
   options,
   run,
-  results
+  results,
+  browserLimiter
 }) {
   const maxAttempts = captureRetryAttempts(config, options);
   if (maxAttempts <= 1) {
@@ -1326,7 +1393,7 @@ async function retryFailedCapturePlans({
       return;
     }
 
-    for (const planIndex of retryIndexes) {
+    await runJobQueue(retryIndexes, async (planIndex) => {
       const execution = plans[planIndex];
       const item = run.items[planIndex];
       item.status = "retrying";
@@ -1336,6 +1403,7 @@ async function retryFailedCapturePlans({
       try {
         result = await runCaptureExecution(execution, retryCaptureConfig(config, attempt), {
           ...options,
+          browserLimiter,
           captureBatchIndex: planIndex,
           captureRetryAttempt: attempt,
           deferSnapshotSave: true,
@@ -1363,13 +1431,18 @@ async function retryFailedCapturePlans({
         runTotal: plans.length,
         retryAttempt: attempt
       };
-    }
+      return results[planIndex];
+    }, {
+      concurrency: captureConcurrency(config, options),
+      maxConcurrency: 10,
+      throwOnError: false
+    });
   }
 }
 
 function shouldRetryCaptureResult(result) {
   const message = String(result?.error || "");
-  return /failed blank-image validation|near-white blank band|related warnings|Mobile menu trigger not found|Shokz products navigation did not open|chrome-error:\/\/chromewebdata|URL check failed|Could not find|did not become active|net::ERR|Navigation timeout|Target closed/i.test(message);
+  return /failed blank-image validation|near-white blank band|related warnings|trigger not found|Mobile menu trigger not found|Shokz products navigation did not open|chrome-error:\/\/chromewebdata|URL check failed|Could not find|did not become active|net::ERR|Navigation timeout|Target closed/i.test(message);
 }
 
 function retryCaptureConfig(config, attempt) {
@@ -1441,7 +1514,7 @@ async function capturePlanExecution(execution, config, options = {}) {
   });
 
   try {
-    const capture = await capturePage(normalizedUrl, fileInfo.absolutePath, captureConfig);
+    const capture = await capturePageWithBrowserSlot(normalizedUrl, fileInfo.absolutePath, captureConfig, options);
     recordCaptureDiagnostic(diagnosticRun, {
       type: "main-capture",
       ok: true,
@@ -1457,7 +1530,8 @@ async function capturePlanExecution(execution, config, options = {}) {
       normalizedUrl,
       fileInfo.absolutePath,
       captureConfig,
-      diagnosticRun
+      diagnosticRun,
+      options
     );
     const relatedShots = relatedCapture.shots;
     const stamp = capturedAt.toISOString().replace(/[:.]/g, "-");
@@ -1774,6 +1848,11 @@ function captureConfigForExecution(config, execution, options = {}) {
     mainCaptureModeForRelatedCaptureMode(relatedCaptureMode);
   if (captureMode) {
     targetConfig.captureMode = captureMode;
+  }
+  if (options.fastMainCapture && captureMode !== "shokz-products-nav") {
+    targetConfig.fullPage = false;
+    targetConfig.lazyLoadScroll = false;
+    targetConfig.maxAttempts = Math.min(2, Math.max(1, Number(targetConfig.maxAttempts) || 2));
   }
   if (relatedCaptureMode) {
     targetConfig.relatedCaptureMode = relatedCaptureMode;
@@ -2150,16 +2229,19 @@ function relatedCaptureModeForTarget(target, captureConfig) {
   return null;
 }
 
-async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPath, captureConfig, diagnosticRun = null) {
+async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPath, captureConfig, diagnosticRun = null, options = {}) {
   const relatedSourceMode = captureConfig.relatedCaptureMode || captureConfig.captureMode || null;
+  if (shouldSkipRelatedForFastAutomation(target, captureConfig, options)) {
+    return captureFastRelatedOverview(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun);
+  }
   if (target.id === "shokz-home" && !relatedSourceMode) {
-    return captureShokzHomeRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun);
+    return captureShokzHomeRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun, options);
   }
   if (relatedSourceMode === "shokz-collection-page") {
-    return captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun);
+    return captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun, options);
   }
   if (relatedSourceMode === "shokz-comparison-page") {
-    return captureShokzComparisonRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun);
+    return captureShokzComparisonRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun, options);
   }
 
   const relatedMode = relatedCaptureModeForTarget(target, captureConfig);
@@ -2191,12 +2273,12 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
 
   let relatedCapture;
   try {
-    relatedCapture = await capturePage(normalizedUrl, baseOutputPath, {
+    relatedCapture = await capturePageWithBrowserSlot(normalizedUrl, baseOutputPath, {
       ...captureConfig,
       captureMode: relatedMode,
       fullPage: false,
       lazyLoadScroll: false
-    });
+    }, options);
   } catch (error) {
     await removeSidecarOutputs(baseOutputPath);
     recordCaptureDiagnostic(diagnosticRun, {
@@ -2325,18 +2407,58 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
   };
 }
 
-async function captureShokzHomeRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun) {
+async function captureFastRelatedOverview(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun) {
+  const overview = await composePageOverviewForRelatedShots(baseOutputPath, [], captureConfig, {
+    sectionKey: "page-overview",
+    sectionLabel: "Page overview",
+    sectionTitle: "Page overview",
+    stateLabel: "Page overview",
+    label: "Page overview",
+    allowGenericOverview: true
+  });
+  recordCaptureDiagnostic(diagnosticRun, {
+    type: "related-capture",
+    ok: Boolean(overview.homeOverview),
+    sectionKey: "page-overview",
+    sectionLabel: "Page overview",
+    captureMode: "fast-related-overview",
+    shotCount: 0,
+    warningCount: Array.isArray(overview.warnings) ? overview.warnings.length : 0
+  });
+  return {
+    shots: [],
+    trackingAudits: [],
+    homeOverview: overview.homeOverview,
+    validation: relatedValidationWithOverviewWarnings(null, overview.warnings)
+  };
+}
+
+function shouldSkipRelatedForFastAutomation(target, captureConfig = {}, options = {}) {
+  if (!options.fastRelated || captureConfig.relatedStateFilter) {
+    return false;
+  }
+  if (target?.id === "shokz-products-nav" || captureConfig.captureMode === "shokz-products-nav") {
+    return false;
+  }
+  return true;
+}
+
+async function captureShokzHomeRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun, options = {}) {
   const descriptors = relatedDescriptorsForCaptureConfig([
     {
       sectionKey: "banner",
       sectionLabel: "Banner",
-      captureMode: "shokz-home-banners"
+      captureMode: "shokz-home-banners",
+      skipRelatedComposite: true,
+      captureTimeoutMs: homeRelatedSectionTimeoutMs
     },
     ...shokzHomeRelatedSectionDefinitions.map((definition) => ({
       sectionKey: definition.key,
       sectionLabel: definition.sectionLabel,
       captureMode: "shokz-home-related-section",
-      sectionCaptureKey: definition.key
+      sectionCaptureKey: definition.key,
+      skipRelatedComposite: true,
+      captureTimeoutMs: homeRelatedSectionTimeoutMs
     }))
   ], captureConfig);
   const { shots, warnings, sections, trackingAudits } = await captureIsolatedRelatedSections(
@@ -2344,7 +2466,8 @@ async function captureShokzHomeRelatedShotsIsolated(normalizedUrl, baseOutputPat
     baseOutputPath,
     captureConfig,
     descriptors,
-    diagnosticRun
+    diagnosticRun,
+    options
   );
 
   sections.sort(compareRelatedSectionEntries);
@@ -2748,14 +2871,15 @@ function relatedValidationWithOverviewWarnings(validation, overviewWarnings = []
   };
 }
 
-async function captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun) {
+async function captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun, options = {}) {
   const descriptors = collectionRelatedDescriptorsForCaptureConfig(captureConfig);
   const { shots, warnings, sections, trackingAudits } = await captureIsolatedRelatedSections(
     normalizedUrl,
     baseOutputPath,
     captureConfig,
     descriptors,
-    diagnosticRun
+    diagnosticRun,
+    options
   );
 
   sections.sort(compareRelatedSectionEntries);
@@ -2778,14 +2902,15 @@ async function captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOut
   };
 }
 
-async function captureShokzComparisonRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun) {
+async function captureShokzComparisonRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun, options = {}) {
   const descriptors = comparisonRelatedDescriptorsForCaptureConfig(captureConfig);
   const { shots, warnings, sections, trackingAudits } = await captureIsolatedRelatedSections(
     normalizedUrl,
     baseOutputPath,
     captureConfig,
     descriptors,
-    diagnosticRun
+    diagnosticRun,
+    options
   );
 
   sections.sort(compareRelatedSectionEntries);
@@ -2808,15 +2933,15 @@ async function captureShokzComparisonRelatedShotsIsolated(normalizedUrl, baseOut
   };
 }
 
-async function captureIsolatedRelatedSections(normalizedUrl, baseOutputPath, captureConfig, descriptors, diagnosticRun) {
+async function captureIsolatedRelatedSections(normalizedUrl, baseOutputPath, captureConfig, descriptors, diagnosticRun, options = {}) {
   const shots = [];
   const warnings = [];
   const sections = [];
   const trackingAudits = [];
   const queue = await runJobQueue(descriptors, (descriptor) =>
-    captureIsolatedRelatedSection(normalizedUrl, baseOutputPath, captureConfig, descriptor, diagnosticRun), {
+    captureIsolatedRelatedSection(normalizedUrl, baseOutputPath, captureConfig, descriptor, diagnosticRun, options), {
       concurrency: relatedCaptureConcurrency(captureConfig),
-      maxConcurrency: 4,
+      maxConcurrency: 3,
       throwOnError: false
     });
 
@@ -2862,7 +2987,7 @@ function collectionRelatedDescriptorsForCaptureConfig(captureConfig = {}) {
     sectionCaptureKey: definition.key
   })), captureConfig);
 
-  if (!isMobileRelatedCaptureConfig(captureConfig) || captureConfig.relatedStateFilter) {
+  if (captureConfig.relatedStateFilter) {
     return descriptors;
   }
 
@@ -2877,7 +3002,8 @@ function collectionRelatedDescriptorsForCaptureConfig(captureConfig = {}) {
           ...descriptor,
           sectionLabel: `${descriptor.sectionLabel} / ${state.stateLabel || state.tabLabel || state.categoryKey}`,
           relatedStateFilter: relatedFilterForCollectionState(descriptor.sectionKey, state),
-          captureTimeoutMs: mobileCollectionRelatedSectionTimeoutMs
+          skipRelatedComposite: true,
+          captureTimeoutMs: collectionRelatedSectionTimeoutMs
         }))
       : [descriptor];
   });
@@ -2891,23 +3017,33 @@ function comparisonRelatedDescriptorsForCaptureConfig(captureConfig = {}) {
     sectionCaptureKey: definition.key
   })), captureConfig);
 
-  if (!isMobileRelatedCaptureConfig(captureConfig) || captureConfig.relatedStateFilter) {
+  if (captureConfig.relatedStateFilter) {
     return descriptors;
   }
-
   return descriptors.flatMap((descriptor) => {
     if (descriptor.sectionKey !== "comparison-products") {
       return [descriptor];
+    }
+    if (!shouldCaptureDeepComparisonProducts(captureConfig)) {
+      return [];
     }
     return shokzComparisonProductMapStates.length
       ? shokzComparisonProductMapStates.map((state, index) => ({
           ...descriptor,
           sectionLabel: `${descriptor.sectionLabel} / ${state.productLabel || state.productKey}`,
           relatedStateFilter: relatedFilterForComparisonProductState(descriptor.sectionKey, state, index),
-          captureTimeoutMs: mobileComparisonProductStateTimeoutMs
+          skipRelatedComposite: true,
+          captureTimeoutMs: comparisonProductStateTimeoutMs
         }))
       : [{ ...descriptor, captureTimeoutMs: mobileComparisonProductMapTimeoutMs }];
   });
+}
+
+function shouldCaptureDeepComparisonProducts(captureConfig = {}) {
+  const value = captureConfig.captureComparisonProducts ??
+    captureConfig.deepRelatedCaptures ??
+    process.env.PAGE_SHOT_DEEP_RELATED;
+  return value === true || value === 1 || /^(1|true|yes|on)$/i.test(String(value || ""));
 }
 
 function relatedFilterForCollectionState(sectionKey, state = {}) {
@@ -2932,10 +3068,6 @@ function relatedFilterForComparisonProductState(sectionKey, state = {}, index = 
   };
 }
 
-function isMobileRelatedCaptureConfig(captureConfig = {}) {
-  return captureConfig.platform === "mobile" || Boolean(captureConfig.viewport?.mobile);
-}
-
 function relatedDescriptorsForCaptureConfig(descriptors, captureConfig = {}) {
   const requestedSectionKey = stringOrNull(captureConfig.sectionKey) ||
     stringOrNull(captureConfig.relatedStateFilter?.sectionKey);
@@ -2946,18 +3078,19 @@ function relatedDescriptorsForCaptureConfig(descriptors, captureConfig = {}) {
   return filtered.length ? filtered : descriptors;
 }
 
-async function captureIsolatedRelatedSection(normalizedUrl, baseOutputPath, captureConfig, descriptor, diagnosticRun) {
+async function captureIsolatedRelatedSection(normalizedUrl, baseOutputPath, captureConfig, descriptor, diagnosticRun, options = {}) {
   let relatedCapture;
   try {
-    relatedCapture = await capturePage(normalizedUrl, baseOutputPath, {
+    relatedCapture = await capturePageWithBrowserSlot(normalizedUrl, baseOutputPath, {
       ...captureConfig,
       captureMode: descriptor.captureMode,
       sectionKey: descriptor.sectionCaptureKey || null,
       relatedStateFilter: descriptor.relatedStateFilter || captureConfig.relatedStateFilter || null,
+      skipRelatedComposite: Boolean(descriptor.skipRelatedComposite || captureConfig.skipRelatedComposite),
       captureTimeoutMs: descriptor.captureTimeoutMs || captureConfig.captureTimeoutMs,
       fullPage: false,
       lazyLoadScroll: false
-    });
+    }, options);
   } catch (error) {
     recordCaptureDiagnostic(diagnosticRun, {
       type: "related-capture",
@@ -3265,9 +3398,12 @@ export const __testOnly = {
   relatedReplacementCaptureMode,
   replacementFilterForRelatedShot,
   relatedDescriptorsForCaptureConfig,
+  collectionRelatedDescriptorsForCaptureConfig,
   comparisonRelatedDescriptorsForCaptureConfig,
   relatedCaptureModeForTarget,
+  shouldSkipRelatedForFastAutomation,
   relatedCaptureConcurrency,
+  captureBrowserConcurrency,
   captureRetryAttempts,
   runCaptureNetworkPreflight,
   skipCaptureRunForNetworkPreflight,

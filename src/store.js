@@ -35,8 +35,8 @@ const defaultConfigScalars = {
   scrollStepMs: 350,
   hideFixedElementsAfterFirstSegment: true,
   maxFullPageHeight: 16000,
-  captureConcurrency: 6,
-  relatedCaptureConcurrency: 4,
+  captureConcurrency: 10,
+  relatedCaptureConcurrency: 3,
   captureRetryAttempts: 2
 };
 
@@ -92,7 +92,7 @@ export async function appendSnapshots(nextSnapshots, filePath = snapshotsPath) {
 }
 
 export async function saveSnapshots(snapshots, filePath = snapshotsPath) {
-  await writeJson(filePath, Array.isArray(snapshots) ? snapshots : []);
+  await writeCompactJson(filePath, Array.isArray(snapshots) ? snapshots : []);
   return snapshots;
 }
 
@@ -162,11 +162,11 @@ export function normalizeConfig(input = {}) {
       input.hideFixedElementsAfterFirstSegment ?? defaultConfigScalars.hideFixedElementsAfterFirstSegment
     ),
     maxFullPageHeight: clampNumber(input.maxFullPageHeight, 1000, 60000, defaultConfigScalars.maxFullPageHeight),
-    captureConcurrency: clampNumber(input.captureConcurrency, 1, 8, defaultConfigScalars.captureConcurrency),
+    captureConcurrency: clampNumber(input.captureConcurrency, 1, 10, defaultConfigScalars.captureConcurrency),
     relatedCaptureConcurrency: clampNumber(
       input.relatedCaptureConcurrency,
       1,
-      4,
+      3,
       defaultConfigScalars.relatedCaptureConcurrency
     ),
     captureRetryAttempts: clampNumber(
@@ -358,6 +358,11 @@ async function readJson(filePath, fallback) {
 async function writeJson(filePath, value) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+async function writeCompactJson(filePath, value) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, `${JSON.stringify(value)}\n`, "utf8");
 }
 
 function clampNumber(value, min, max, fallback) {
