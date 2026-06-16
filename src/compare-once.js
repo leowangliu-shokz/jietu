@@ -1,14 +1,8 @@
-import { loadChanges, rebuildChanges } from "./changes.js";
-import { notifyChangeRecords } from "./change-notifier.js";
+import { runCompareWorker } from "./compare/worker.js";
 
-const previousChanges = await loadChanges();
-const changes = await rebuildChanges();
-console.log(`Saved ${changes.length} change records to data/changes.json`);
-const notification = await notifyChangeRecords(changes, { previousChanges, sendNotifications: false }).catch((error) => ({
-  ok: false,
-  enabled: true,
-  error: error.message
-}));
+const result = await runCompareWorker({ sendNotifications: false });
+console.log(`Saved ${result.count} change records to data/changes.json`);
+const notification = result.notification;
 if (notification.enabled || notification.recordOnly) {
   const sent = notification.sentCount || 0;
   const status = notification.ok

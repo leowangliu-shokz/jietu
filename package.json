@@ -7,7 +7,10 @@
   "scripts": {
     "start": "powershell -ExecutionPolicy Bypass -File scripts/run-node20.ps1 src/server.js",
     "capture": "powershell -ExecutionPolicy Bypass -File scripts/run-node20.ps1 src/capture-once.js",
+    "capture:hourly": "powershell -ExecutionPolicy Bypass -File scripts/run-node20.ps1 src/capture/hourly.js",
     "compare": "node src/compare-once.js",
+    "compare:worker": "node src/compare/worker.js",
+    "audit:daily": "node src/audit/daily.js",
     "woodpecker": "node src/text-quality-once.js",
     "repair:data": "node src/repair-runtime-data.js",
     "smoke:capture": "powershell -ExecutionPolicy Bypass -File scripts/run-node20.ps1 src/capture-smoke.js",
