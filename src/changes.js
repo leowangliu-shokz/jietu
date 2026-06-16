@@ -542,7 +542,7 @@ async function buildVisualChange(fromItem, toItem, options) {
   if (fromItem.visualHash && toItem.visualHash && fromItem.visualHash === toItem.visualHash) {
     return null;
   }
-  if (options.externalVision?.endpoint) {
+  if (shouldUseExternalVision(options.externalVision)) {
     return buildExternalVisionChange(fromItem, toItem, options);
   }
 
@@ -613,7 +613,10 @@ async function buildExternalVisionChange(fromItem, toItem, options = {}) {
   }
   let response;
   try {
-    response = await requestExternalVisionCompare(fromItem, toItem, options.externalVision);
+    response = await requestExternalVisionCompare(fromItem, toItem, {
+      ...options.externalVision,
+      archiveRoot: options.archiveRoot || archiveDir
+    });
   } catch (error) {
     return options.recordVisualSkips ? {
       diffFile: null,
@@ -652,12 +655,20 @@ async function buildExternalVisionChange(fromItem, toItem, options = {}) {
     dimensionChanged: Boolean(response.dimensionChanged || dimensionsChanged(fromItem, toItem)),
     judgment: response.judgment || "external-vision",
     signals: Array.isArray(response.signals) ? response.signals : [{ type: "external-vision", label: "external vision change" }],
-    summary: response.summary || "外部视觉识别工具判断页面截图发生变化。",
+    summary: response.summary || "External vision provider detected a screenshot change.",
     externalVision: {
       provider: response.provider || options.externalVision.provider || "external",
-      confidence: response.confidence ?? null
+      confidence: response.confidence ?? null,
+      status: response.status || null,
+      dashboardUrl: response.dashboardUrl || response.sessionUrl || response.batchUrl || response.diffImageUrl || null,
+      isNew: response.isNew ?? null,
+      isDifferent: response.isDifferent ?? null
     }
   };
+}
+
+function shouldUseExternalVision(config = null) {
+  return Boolean(config && (config.endpoint || config.provider === "applitools"));
 }
 
 function shouldCallExternalVision(fromItem, toItem) {
@@ -674,6 +685,10 @@ function shouldCallExternalVision(fromItem, toItem) {
 }
 
 async function requestExternalVisionCompare(fromItem, toItem, config = {}) {
+  if (config.provider === "applitools") {
+    const { compareWithApplitoolsImages } = await import("./vision/applitools.js");
+    return compareWithApplitoolsImages(fromItem, toItem, config);
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), Number(config.timeoutMs || 30000));
   try {

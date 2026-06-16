@@ -4,6 +4,7 @@ import { notifyChangeRecords } from "../change-notifier.js";
 import { loadCaptureRuns } from "../capture-runs.js";
 import { createWorkflowRun, saveWorkflowRun, workflowTasksFromCompareResult } from "../jobs/workflow-tasks.js";
 import { readSnapshots } from "../store.js";
+import { applitoolsConfigFromEnv } from "../vision/applitools.js";
 
 export async function runCompareWorker(options = {}) {
   const previousChanges = await loadChanges(options.changesFilePath);
@@ -172,6 +173,10 @@ function parseCliArgs(args = []) {
 }
 
 function externalVisionConfigFromEnv() {
+  const applitools = applitoolsConfigFromEnv();
+  if (applitools) {
+    return applitools;
+  }
   const endpoint = String(process.env.VISION_COMPARE_ENDPOINT || "").trim();
   if (!endpoint) {
     return null;

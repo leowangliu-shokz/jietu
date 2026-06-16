@@ -11,6 +11,7 @@
     "compare": "node src/compare-once.js",
     "compare:worker": "node src/compare/worker.js",
     "audit:daily": "node src/audit/daily.js",
+    "applitools:smoke": "node src/vision/applitools-smoke.js",
     "scheduler:local": "node src/scheduler/local.js",
     "woodpecker": "node src/text-quality-once.js",
     "repair:data": "node src/repair-runtime-data.js",
@@ -21,6 +22,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@applitools/eyes-images": "^4.31.47",
     "cspell-lib": "^10.0.1",
     "parse5": "^7.1.2"
   }
