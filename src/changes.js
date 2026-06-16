@@ -539,6 +539,12 @@ async function buildVisualChange(fromItem, toItem, options) {
   if (fromItem.visualSignature && toItem.visualSignature && fromItem.visualSignature === toItem.visualSignature) {
     return null;
   }
+  if (fromItem.visualHash && toItem.visualHash && fromItem.visualHash === toItem.visualHash) {
+    return null;
+  }
+  if (options.externalVision?.endpoint) {
+    return buildExternalVisionChange(fromItem, toItem, options);
+  }
 
   const archiveRoot = options.archiveRoot || archiveDir;
   const fromPath = path.join(archiveRoot, fromItem.file);
@@ -599,6 +605,115 @@ async function buildVisualChange(fromItem, toItem, options) {
     }
     return null;
   }
+}
+
+async function buildExternalVisionChange(fromItem, toItem, options = {}) {
+  if (!shouldCallExternalVision(fromItem, toItem)) {
+    return null;
+  }
+  let response;
+  try {
+    response = await requestExternalVisionCompare(fromItem, toItem, options.externalVision);
+  } catch (error) {
+    return options.recordVisualSkips ? {
+      diffFile: null,
+      diffImageUrl: null,
+      regionCount: 0,
+      regions: [],
+      changedPixels: 0,
+      rawChangedPixels: 0,
+      comparedPixels: 0,
+      ratio: 0,
+      width: null,
+      height: null,
+      dimensionChanged: false,
+      skipped: true,
+      reason: error.message,
+      externalVision: {
+        provider: options.externalVision.provider || "external",
+        error: error.message
+      }
+    } : null;
+  }
+  if (!response?.changed) {
+    return null;
+  }
+  return {
+    diffFile: response.diffFile || null,
+    diffImageUrl: response.diffImageUrl || null,
+    regionCount: Array.isArray(response.regions) ? response.regions.length : Number(response.regionCount || 0),
+    regions: Array.isArray(response.regions) ? response.regions : [],
+    changedPixels: Number(response.changedPixels || 0),
+    rawChangedPixels: Number(response.rawChangedPixels || 0),
+    comparedPixels: Number(response.comparedPixels || 0),
+    ratio: Number(response.ratio || 0),
+    width: Number(response.width || toItem.width || 0) || null,
+    height: Number(response.height || toItem.height || 0) || null,
+    dimensionChanged: Boolean(response.dimensionChanged || dimensionsChanged(fromItem, toItem)),
+    judgment: response.judgment || "external-vision",
+    signals: Array.isArray(response.signals) ? response.signals : [{ type: "external-vision", label: "external vision change" }],
+    summary: response.summary || "外部视觉识别工具判断页面截图发生变化。",
+    externalVision: {
+      provider: response.provider || options.externalVision.provider || "external",
+      confidence: response.confidence ?? null
+    }
+  };
+}
+
+function shouldCallExternalVision(fromItem, toItem) {
+  if (dimensionsChanged(fromItem, toItem)) {
+    return true;
+  }
+  if (fromItem.visualSignature && toItem.visualSignature && fromItem.visualSignature !== toItem.visualSignature) {
+    return true;
+  }
+  if (fromItem.visualHash && toItem.visualHash && fromItem.visualHash !== toItem.visualHash) {
+    return true;
+  }
+  return true;
+}
+
+async function requestExternalVisionCompare(fromItem, toItem, config = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Number(config.timeoutMs || 30000));
+  try {
+    const response = await fetch(config.endpoint, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(config.apiKey ? { authorization: `Bearer ${config.apiKey}` } : {})
+      },
+      body: JSON.stringify({
+        oldImageUrl: absoluteImageUrl(fromItem.imageUrl, config.baseUrl),
+        newImageUrl: absoluteImageUrl(toItem.imageUrl, config.baseUrl),
+        targetId: toItem.targetId,
+        deviceProfileId: toItem.deviceProfileId,
+        capturePlanId: toItem.capturePlanId,
+        platform: toItem.platform,
+        comparisonKey: toItem.comparisonKey
+      }),
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      throw new Error(`External vision compare failed: HTTP ${response.status}`);
+    }
+    return response.json();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function absoluteImageUrl(imageUrl, baseUrl) {
+  const value = String(imageUrl || "").trim();
+  if (!value || /^[a-z]+:\/\//i.test(value) || !baseUrl) {
+    return value;
+  }
+  return new URL(value, baseUrl).toString();
+}
+
+function dimensionsChanged(fromItem, toItem) {
+  return Number(fromItem.width || 0) !== Number(toItem.width || 0) ||
+    Number(fromItem.height || 0) !== Number(toItem.height || 0);
 }
 
 export function judgeHumanVisibleChange(fromItem, toItem, diff, options = {}) {

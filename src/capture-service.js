@@ -42,6 +42,7 @@ import {
   resolveConfiguredCapturePlans,
   saveSnapshots
 } from "./store.js";
+import { syncArchiveFileToObjectStorage } from "./storage/object-storage.js";
 import { rebuildTextQuality } from "./text-quality.js";
 import { appendTrackingAuditRecords, createTrackingAuditRecordsForSnapshots } from "./tracking-audit.js";
 
@@ -1525,14 +1526,16 @@ async function capturePlanExecution(execution, config, options = {}) {
       urlCheck: capture.urlCheck || null,
       captureValidation: capture.captureValidation || null
     });
-    const relatedCapture = await captureRelatedShotsForTarget(
-      target,
-      normalizedUrl,
-      fileInfo.absolutePath,
-      captureConfig,
-      diagnosticRun,
-      options
-    );
+    const relatedCapture = options.fastCaptureOnly
+      ? emptyRelatedCapture()
+      : await captureRelatedShotsForTarget(
+        target,
+        normalizedUrl,
+        fileInfo.absolutePath,
+        captureConfig,
+        diagnosticRun,
+        options
+      );
     const relatedShots = relatedCapture.shots;
     const stamp = capturedAt.toISOString().replace(/[:.]/g, "-");
     const targetLabel = target.label || normalizedUrl;
@@ -1550,13 +1553,19 @@ async function capturePlanExecution(execution, config, options = {}) {
       const itemTargetId = item.bannerIndex ? `${target.id}-banner-${item.bannerIndex}` : target.id;
       const itemTargetLabel = item.bannerIndex ? `\u9996\u9875 Banner ${item.bannerIndex}` : targetLabel;
       const displayUrl = item.bannerIndex ? bannerDisplayLabel(targetLabel, item.bannerIndex) : targetLabel;
+      const snapshotId = `${stamp}-${fileInfo.siteSlug}-${itemTargetId}-${execution.id || publicDevice?.id || "device"}`;
+      const storage = await syncArchiveFileToObjectStorage({
+        absolutePath,
+        relativePath,
+        snapshotId
+      });
       const visualAudit = item.visualAudit || capture.visualAudit || null;
       const captureConfidence = assessSnapshotConfidence({
         visualAudit,
         urlCheck: capture.urlCheck || null
       });
       snapshots.push({
-        id: `${stamp}-${fileInfo.siteSlug}-${itemTargetId}-${execution.id || publicDevice?.id || "device"}`,
+        id: snapshotId,
         url: normalizedUrl,
         targetId: itemTargetId,
         targetLabel: itemTargetLabel,
@@ -1568,7 +1577,12 @@ async function capturePlanExecution(execution, config, options = {}) {
         title: capture.title,
         capturedAt: capturedAt.toISOString(),
         file: relativePath,
-        imageUrl: publicSnapshotUrl(relativePath),
+        imageUrl: storage.objectImageUrl || publicSnapshotUrl(relativePath),
+        localImageUrl: publicSnapshotUrl(relativePath),
+        localPath: storage.localPath,
+        ossKey: storage.ossKey,
+        syncStatus: storage.syncStatus,
+        sha256: storage.sha256,
         bytes: stat.size,
         width: item.width || capture.width,
         height: item.height || capture.height,
@@ -1597,12 +1611,14 @@ async function capturePlanExecution(execution, config, options = {}) {
       });
     }
 
-    const seoSnapshots = createSeoSnapshotsForCapture(capture, snapshots);
-    const trackingAuditRecords = createTrackingAuditRecordsForSnapshots({
-      snapshots,
-      capture,
-      relatedTrackingAudits: relatedCapture.trackingAudits || []
-    });
+    const seoSnapshots = options.fastCaptureOnly ? [] : createSeoSnapshotsForCapture(capture, snapshots);
+    const trackingAuditRecords = options.fastCaptureOnly
+      ? []
+      : createTrackingAuditRecordsForSnapshots({
+        snapshots,
+        capture,
+        relatedTrackingAudits: relatedCapture.trackingAudits || []
+      });
 
     if (!options.deferSnapshotSave) {
       await appendSnapshots(snapshots);
@@ -2404,6 +2420,15 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
     trackingAudits: [relatedCapture.trackingAudit].filter(Boolean),
     homeOverview: overview.homeOverview,
     validation: validationWithOverview
+  };
+}
+
+function emptyRelatedCapture() {
+  return {
+    shots: [],
+    trackingAudits: [],
+    homeOverview: null,
+    validation: null
   };
 }
 

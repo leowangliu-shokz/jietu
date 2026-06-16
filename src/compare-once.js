@@ -1,6 +1,6 @@
 import { runCompareWorker } from "./compare/worker.js";
 
-const result = await runCompareWorker({ sendNotifications: false });
+const result = await runCompareWorker({ all: true, sendNotifications: false });
 console.log(`Saved ${result.count} change records to data/changes.json`);
 const notification = result.notification;
 if (notification.enabled || notification.recordOnly) {

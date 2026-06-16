@@ -11,6 +11,7 @@
     "compare": "node src/compare-once.js",
     "compare:worker": "node src/compare/worker.js",
     "audit:daily": "node src/audit/daily.js",
+    "scheduler:local": "node src/scheduler/local.js",
     "woodpecker": "node src/text-quality-once.js",
     "repair:data": "node src/repair-runtime-data.js",
     "smoke:capture": "powershell -ExecutionPolicy Bypass -File scripts/run-node20.ps1 src/capture-smoke.js",

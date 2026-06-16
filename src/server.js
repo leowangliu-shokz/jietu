@@ -12,6 +12,8 @@ import { annotateChangesForResponse, buildStatePayload } from "./server-state.js
 import { buildSeoSummary, loadSeoChanges, loadSeoSnapshots } from "./seo-snapshots.js";
 import { deleteSnapshotAction, deleteSnapshotsAction, viewerModeErrorMessage } from "./snapshot-admin.js";
 import { ensureStorage, loadConfig, loadSnapshots, saveConfig } from "./store.js";
+import { loadAuditRun } from "./jobs/audit-checklist.js";
+import { loadWorkflowRun } from "./jobs/workflow-tasks.js";
 import { buildTextQualitySummary, loadTextQualityRecords } from "./text-quality.js";
 import { buildTrackingAuditSummary, loadTrackingAuditRecords } from "./tracking-audit.js";
 
@@ -85,6 +87,22 @@ const server = http.createServer(async (request, response) => {
         records,
         summary: buildTrackingAuditSummary(records)
       });
+    }
+
+    if (request.method === "GET" && pathname === "/api/tasks") {
+      const type = stringOrNull(url.searchParams.get("type")) || "audit";
+      if (type === "workflow") {
+        const runId = stringOrNull(url.searchParams.get("runId"));
+        const run = runId ? await loadWorkflowRun(runId) : null;
+        return run
+          ? sendJson(response, run)
+          : sendJson(response, { error: "Workflow run not found" }, 404);
+      }
+      const date = stringOrNull(url.searchParams.get("date")) || new Date().toISOString().slice(0, 10);
+      const run = await loadAuditRun(date);
+      return run
+        ? sendJson(response, run)
+        : sendJson(response, { error: "Audit run not found" }, 404);
     }
 
     if (request.method === "POST" && pathname === "/api/capture-issues") {

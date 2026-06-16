@@ -4,14 +4,26 @@
 
 - `npm run capture:hourly`
   - 每小时截图主链路。
-  - 只负责截图、保存归档和记录 run。
-  - 分析刷新后置，不在小时级截图尾部同步执行。
+  - 只负责截图、保存归档、记录截图 run 和生成本轮截图任务清单。
+  - 默认使用快速截图参数，不在小时级截图尾部同步执行重分析。
+
 - `npm run compare:worker`
   - 单独执行截图变化比对。
-  - 旧的 `npm run compare` 继续可用，并复用同一模块。
+  - 默认读取最新 capture run 里的 `snapshotIds` 做增量比对，不再全量扫描全部历史截图。
+  - 如需全量重建，显式执行 `npm run compare:worker -- --all`。
+  - 如需指定某次截图批次，执行 `npm run compare:worker -- --run-id <captureRunId>`。
+  - 旧的 `npm run compare` 继续保留全量重建语义，并复用同一个 worker。
+
 - `npm run audit:daily`
   - 每日巡检入口。
-  - 生成结构化任务状态和 Markdown 勾选清单。
+  - 面向 SEO、啄木鸟文本检查、埋点审计这类低频任务。
+  - 输出结构化任务状态和 Markdown 勾选清单。
+
+- `npm run scheduler:local`
+  - 本地调度入口。
+  - 默认常驻运行，按小时执行 `capture:hourly -> compare:worker`。
+  - `--once` 可以执行一次小时链路。
+  - `--daily` 可以在 one-shot 模式里附带执行每日巡检。
 
 ## 每日巡检清单
 
@@ -29,25 +41,88 @@ logs/audit-runs/YYYY-MM-DD.json
 logs/audit-checklists/YYYY-MM-DD.md
 ```
 
-JSON 是机器恢复和跳过重复任务的状态源；Markdown 是给人看的进度表。
+JSON 是机器恢复和避免重复执行的状态源；Markdown 是给人看的进度表。
+
+## 小时截图和比对清单
+
+小时截图和异步比对也会输出任务清单：
+
+```text
+logs/workflow-runs/<runId>.json
+logs/workflow-checklists/<runId>.md
+```
+
+截图清单会对每个截图任务做轻量自检：
+
+- 是否生成 snapshot
+- 是否有图片链接
+- 图片尺寸是否正常
+- 是否被标记为截断或低置信
+
+比对清单会区分三种状态：
+
+- 本轮有截图并已完成比对
+- 本轮完成比对但没有发现可记录变化
+- 没有可比对的截图 run 或 snapshot 记录缺失
+
+## 任务状态 API
+
+后端提供轻量任务状态接口：
+
+```text
+GET /api/tasks?type=audit&date=YYYY-MM-DD
+GET /api/tasks?type=workflow&runId=<runId>
+```
+
+前端后续可以基于这个接口展示完成率、失败项和需要补跑的任务。
 
 ## OSS 接入边界
 
-当前提交没有接入真实 OSS 账号。后续接入时建议新增：
+当前没有接入真实 OSS 账号，但已经有对象存储适配层：
 
 ```text
-src/storage/local-cache.js
-src/storage/oss-storage.js
+src/storage/object-storage.js
 ```
 
-并在 snapshot 记录中增加：
+默认不上载远端，snapshot 会写入：
 
 ```text
 localPath
-imageUrl
 ossKey
 syncStatus
 sha256
 ```
 
-迁移期仍应保留本地 `archive/` 和 `data/snapshots.json`，不要让 OSS 替代归档事实来源。
+如果需要本地模拟 OSS：
+
+```powershell
+$env:PAGE_SHOT_OBJECT_STORAGE = "local"
+$env:PAGE_SHOT_OBJECT_STORAGE_DIR = "D:\jietu-object-storage"
+$env:PAGE_SHOT_OBJECT_STORAGE_PUBLIC_BASE_URL = "https://example-cdn.test/"
+```
+
+迁移期仍应保留本地 `archive/` 和 `data/snapshots.json`，不要让 OSS 替代归档事实源。
+
+## 外部视觉 API
+
+默认仍使用本地比对。配置以下环境变量后，比对模块会在预筛后调用外部视觉 API：
+
+```powershell
+$env:VISION_COMPARE_ENDPOINT = "https://vision.example.test/compare"
+$env:VISION_COMPARE_API_KEY = "<secret>"
+$env:VISION_COMPARE_BASE_URL = "https://your-jietu-image-host.test/"
+$env:VISION_COMPARE_TIMEOUT_MS = "30000"
+```
+
+请求体包含：
+
+```json
+{
+  "oldImageUrl": "...",
+  "newImageUrl": "...",
+  "targetId": "...",
+  "deviceProfileId": "...",
+  "capturePlanId": "...",
+  "platform": "pc"
+}
+```
