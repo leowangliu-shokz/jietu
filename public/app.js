@@ -3888,10 +3888,14 @@ function renderChangeImage(label, imageUrl, capturedAt, extraClass = "") {
       </div>
     `;
   }
+  const caption = `${label}${capturedAt ? ` ${formatDate(capturedAt)}` : ""}`;
   return `
-    <a class="change-image ${extraClass}" href="${imageUrl}" target="_blank" rel="noreferrer">
-      <img src="${imageUrl}" alt="${escapeHtml(label)} ${capturedAt ? formatDate(capturedAt) : ""}" loading="lazy">
+    <a class="change-image ${extraClass}" href="${escapeHtml(imageUrl)}" target="_blank" rel="noreferrer" title="${escapeHtml(caption)}" data-preview-caption="${escapeHtml(caption)}">
       <span>${escapeHtml(label)}</span>
+      <div class="change-image-placeholder" aria-hidden="true">
+        <strong>点击查看截图</strong>
+        ${capturedAt ? `<small>${formatDate(capturedAt)}</small>` : ""}
+      </div>
     </a>
   `;
 }
@@ -4275,6 +4279,7 @@ function renderShotCard(card) {
   const hasRelatedWarning = relatedWarnings(card.relatedValidation).length > 0;
   const preview = snapshot.homeOverview || null;
   const mainPreviewUrl = preview?.imageUrl || snapshot.imageUrl;
+  const mainPreviewCaption = `${displayUrl} ${formatDate(snapshot.capturedAt)}`;
   const mainPreviewAttrs = preview
     ? [
         `data-preview-file="${escapeHtml(preview.file || "")}"`,
@@ -4297,8 +4302,11 @@ function renderShotCard(card) {
   item.dataset.viewportHeight = String(Number(snapshot.scrollInfo?.viewportHeight || 0) || "");
   item.innerHTML = `
     <div class="shot-hero">
-      <a class="shot-main-image" href="${escapeHtml(mainPreviewUrl)}" target="_blank" rel="noreferrer" data-snapshot-id="${escapeHtml(snapshot.id || "")}" data-snapshot-file="${escapeHtml(snapshot.file || "")}" ${mainPreviewAttrs}>
-        <img src="${snapshot.imageUrl}" alt="${escapeHtml(displayUrl)} ${formatDate(snapshot.capturedAt)}" loading="lazy">
+      <a class="shot-main-image" href="${escapeHtml(mainPreviewUrl)}" target="_blank" rel="noreferrer" title="${escapeHtml(mainPreviewCaption)}" data-preview-caption="${escapeHtml(mainPreviewCaption)}" data-snapshot-id="${escapeHtml(snapshot.id || "")}" data-snapshot-file="${escapeHtml(snapshot.file || "")}" ${mainPreviewAttrs}>
+        <div class="shot-image-placeholder" aria-hidden="true">
+          <strong>点击查看截图</strong>
+          <small>${escapeHtml(deviceNameForSnapshot(snapshot))} · ${snapshot.width}×${snapshot.height}</small>
+        </div>
       </a>
       ${renderSnapshotSelectionControl(snapshot)}
       ${renderSnapshotDeleteButton(snapshot)}
@@ -4548,13 +4556,16 @@ function groupHasTabbedPages(group) {
 function renderRelatedThumbGrid(shots) {
   return `
     <div class="related-grid">
-      ${shots.map((shot) => `
+      ${shots.map((shot) => {
+        const caption = relatedShotTitle(shot);
+        return `
         <a
           class="related-thumb ${isLowConfidenceCapture(shot.captureConfidence) ? "related-thumb-low-confidence" : ""}"
-          href="${shot.imageUrl}"
+          href="${escapeHtml(shot.imageUrl)}"
           target="_blank"
           rel="noreferrer"
-          title="${escapeHtml(relatedShotTitle(shot))}"
+          title="${escapeHtml(caption)}"
+          data-preview-caption="${escapeHtml(caption)}"
           data-shot-file="${escapeHtml(shot.file || "")}"
           data-preview-width="${escapeHtml(String(shot.width || ""))}"
           data-preview-height="${escapeHtml(String(shot.height || ""))}"
@@ -4565,11 +4576,14 @@ function renderRelatedThumbGrid(shots) {
           data-section-key="${escapeHtml(shot.sectionKey || "")}"
           data-navigation-level="${escapeHtml(shot.navigationLevel || "")}"
         >
-          <img src="${shot.imageUrl}" alt="${escapeHtml(relatedShotDisplayLabel(shot))}" loading="lazy">
+          <div class="related-thumb-placeholder" aria-hidden="true">
+            <strong>查看</strong>
+          </div>
           ${isLowConfidenceCapture(shot.captureConfidence) ? `<span class="related-thumb-flag" title="${escapeHtml(captureConfidenceTitle(shot.captureConfidence))}">低可信</span>` : ""}
           <span>${escapeHtml(relatedThumbLabel(shot))}</span>
         </a>
-      `).join("")}
+      `;
+      }).join("")}
     </div>
   `;
 }
