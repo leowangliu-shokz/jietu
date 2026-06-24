@@ -114,6 +114,7 @@ npm run capture:hourly -- --platform pc
 [Environment]::SetEnvironmentVariable("APPLITOOLS_BATCH_NAME", "jietu-hourly", "User")
 [Environment]::SetEnvironmentVariable("APPLITOOLS_BRANCH_NAME", "main", "User")
 [Environment]::SetEnvironmentVariable("APPLITOOLS_MATCH_LEVEL", "Strict", "User")
+[Environment]::SetEnvironmentVariable("PAGE_SHOT_COMPARE_PROVIDER", "applitools", "User")
 ```
 
 首次验证：

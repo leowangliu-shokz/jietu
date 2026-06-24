@@ -65,3 +65,44 @@ test("compare worker cli args preserve explicit full rebuild mode", () => {
     captureRunId: "run-1"
   });
 });
+
+test("compare worker does not enable Applitools from API key alone", () => {
+  assert.equal(__testOnly.externalVisionConfigFromEnv({
+    APPLITOOLS_API_KEY: "test-key"
+  }), null);
+});
+
+test("compare worker enables Applitools only when explicitly selected", () => {
+  const config = __testOnly.externalVisionConfigFromEnv({
+    PAGE_SHOT_COMPARE_PROVIDER: "applitools",
+    APPLITOOLS_API_KEY: "test-key",
+    APPLITOOLS_APP_NAME: "jietu-test"
+  });
+
+  assert.equal(config.provider, "applitools");
+  assert.equal(config.apiKey, "test-key");
+  assert.equal(config.appName, "jietu-test");
+});
+
+test("compare worker local provider disables external vision endpoints", () => {
+  assert.equal(__testOnly.externalVisionConfigFromEnv({
+    PAGE_SHOT_COMPARE_PROVIDER: "local",
+    VISION_COMPARE_ENDPOINT: "https://vision.example.test/compare"
+  }), null);
+});
+
+test("compare worker still supports explicit generic vision endpoint", () => {
+  const config = __testOnly.externalVisionConfigFromEnv({
+    VISION_COMPARE_ENDPOINT: "https://vision.example.test/compare",
+    VISION_COMPARE_API_KEY: "endpoint-key",
+    VISION_COMPARE_BASE_URL: "https://cdn.example.test/",
+    VISION_COMPARE_TIMEOUT_MS: "45000"
+  });
+
+  assert.deepEqual(config, {
+    endpoint: "https://vision.example.test/compare",
+    apiKey: "endpoint-key",
+    baseUrl: "https://cdn.example.test/",
+    timeoutMs: 45000
+  });
+});

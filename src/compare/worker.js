@@ -63,7 +63,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
 }
 
 async function buildWorkerChanges(options = {}) {
-  const externalVision = options.externalVision ?? externalVisionConfigFromEnv();
+  const externalVision = Object.hasOwn(options, "externalVision")
+    ? options.externalVision
+    : externalVisionConfigFromEnv();
   if (options.all === true) {
     const changes = await rebuildChanges({ ...options, externalVision });
     return {
@@ -172,20 +174,30 @@ function parseCliArgs(args = []) {
   return options;
 }
 
-function externalVisionConfigFromEnv() {
-  const applitools = applitoolsConfigFromEnv();
-  if (applitools) {
-    return applitools;
+function externalVisionConfigFromEnv(env = process.env) {
+  const provider = String(env.PAGE_SHOT_COMPARE_PROVIDER || env.VISION_COMPARE_PROVIDER || "").trim().toLowerCase();
+  if (["local", "none", "off"].includes(provider)) {
+    return null;
   }
-  const endpoint = String(process.env.VISION_COMPARE_ENDPOINT || "").trim();
+  if (!provider) {
+    return externalVisionEndpointConfigFromEnv(env);
+  }
+  if (provider === "applitools") {
+    return applitoolsConfigFromEnv(env);
+  }
+  return externalVisionEndpointConfigFromEnv(env);
+}
+
+function externalVisionEndpointConfigFromEnv(env = process.env) {
+  const endpoint = String(env.VISION_COMPARE_ENDPOINT || "").trim();
   if (!endpoint) {
     return null;
   }
   return {
     endpoint,
-    apiKey: String(process.env.VISION_COMPARE_API_KEY || "").trim(),
-    baseUrl: String(process.env.VISION_COMPARE_BASE_URL || "").trim(),
-    timeoutMs: Number(process.env.VISION_COMPARE_TIMEOUT_MS || 30000)
+    apiKey: String(env.VISION_COMPARE_API_KEY || "").trim(),
+    baseUrl: String(env.VISION_COMPARE_BASE_URL || "").trim(),
+    timeoutMs: Number(env.VISION_COMPARE_TIMEOUT_MS || 30000)
   };
 }
 
@@ -195,6 +207,7 @@ function stringOrNull(value) {
 }
 
 export const __testOnly = {
+  externalVisionConfigFromEnv,
   latestRunWithSnapshots,
   snapshotIdsForCaptureRun,
   snapshotsForIds,

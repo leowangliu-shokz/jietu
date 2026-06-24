@@ -20,6 +20,7 @@ $env:APPLITOOLS_APP_NAME="jietu"
 $env:APPLITOOLS_BATCH_NAME="jietu-hourly"
 $env:APPLITOOLS_BRANCH_NAME="main"
 $env:APPLITOOLS_MATCH_LEVEL="Strict"
+$env:PAGE_SHOT_COMPARE_PROVIDER="applitools"
 ```
 
 如果要长期生效，可以设置为 Windows 用户环境变量，或放入本机忽略的 `.env` 文件。`.env` 已在 `.gitignore` 中忽略。
@@ -49,6 +50,7 @@ Dashboard: ...
 设置 `APPLITOOLS_API_KEY` 后，正常执行：
 
 ```powershell
+$env:PAGE_SHOT_COMPARE_PROVIDER="applitools"
 npm run compare:worker
 ```
 
