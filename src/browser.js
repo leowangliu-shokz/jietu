@@ -20094,10 +20094,7 @@ async function capturePageWithPlaywrightFullPage(url, outputPath, options = {}) 
       await dialog.dismiss().catch(() => null);
     });
 
-    await page.goto(url, {
-      waitUntil: "domcontentloaded",
-      timeout: Math.min(timeoutMs, Number(options.playwrightNavigationTimeoutMs) || timeoutMs)
-    });
+    const navigation = await navigatePlaywrightPageForFastScreenshot(page, url, options, timeoutMs, urlCheck);
     await page.waitForTimeout(Number(options.playwrightWaitAfterLoadMs) || 700);
     await preparePlaywrightPageForFullPageScreenshot(page, url, viewport, options);
 
@@ -20151,6 +20148,7 @@ async function capturePageWithPlaywrightFullPage(url, outputPath, options = {}) 
         requested: true,
         used: true,
         engine: "playwright",
+        navigation,
         fallback: null
       },
       browserPath
@@ -20164,6 +20162,81 @@ async function capturePageWithPlaywrightFullPage(url, outputPath, options = {}) 
     await context?.close?.().catch(() => null);
     await browser?.close?.().catch(() => null);
   }
+}
+
+async function navigatePlaywrightPageForFastScreenshot(page, url, options = {}, timeoutMs, urlCheck) {
+  const navigationTimeoutMs = Math.min(timeoutMs, Number(options.playwrightNavigationTimeoutMs) || timeoutMs);
+  const navigation = {
+    waitUntil: "commit",
+    timeoutMs: navigationTimeoutMs,
+    timedOut: false,
+    bodyReady: false
+  };
+
+  try {
+    await page.goto(url, {
+      waitUntil: "commit",
+      timeout: navigationTimeoutMs
+    });
+  } catch (error) {
+    if (!isPlaywrightTimeoutError(error) || !urlsEquivalent(url, page.url())) {
+      throw error;
+    }
+    navigation.timedOut = true;
+    navigation.timeoutMessage = error.message || "Playwright navigation timed out after commit.";
+  }
+
+  verifyPlaywrightCurrentUrl(page.url(), url, "after Playwright navigation", urlCheck);
+  const ready = await waitForPlaywrightBodyReady(
+    page,
+    Number(options.playwrightBodyReadyTimeoutMs) || Math.min(5000, timeoutMs)
+  );
+  navigation.bodyReady = ready.ok;
+  navigation.readyState = ready.readyState || null;
+  if (!ready.ok) {
+    throw playwrightFullPageFallbackError(ready.reason || "Playwright page body was not ready for screenshot.");
+  }
+  return navigation;
+}
+
+async function waitForPlaywrightBodyReady(page, timeoutMs = 5000) {
+  const startedAt = Date.now();
+  const deadline = startedAt + Math.max(500, Math.trunc(Number(timeoutMs) || 5000));
+  let lastError = null;
+  while (Date.now() < deadline) {
+    const state = await page.evaluate(() => ({
+      readyState: document.readyState,
+      hasBody: Boolean(document.body),
+      width: Math.max(
+        document.body?.scrollWidth || 0,
+        document.documentElement?.scrollWidth || 0,
+        window.innerWidth || 0
+      ),
+      height: Math.max(
+        document.body?.scrollHeight || 0,
+        document.documentElement?.scrollHeight || 0,
+        window.innerHeight || 0
+      )
+    })).catch((error) => {
+      lastError = error;
+      return null;
+    });
+    if (state?.hasBody && state.width > 0 && state.height > 0) {
+      return { ok: true, ...state };
+    }
+    await page.waitForTimeout(100).catch(() => null);
+  }
+  return {
+    ok: false,
+    reason: lastError
+      ? `Playwright page body was not ready: ${lastError.message || lastError}`
+      : "Playwright page body was not ready before timeout."
+  };
+}
+
+function isPlaywrightTimeoutError(error) {
+  const message = String(error?.message || "");
+  return error?.name === "TimeoutError" || /Timeout \d+ms exceeded|timed?\s*out/i.test(message);
 }
 
 async function loadPlaywrightChromium(options = {}) {
@@ -20245,8 +20318,18 @@ async function cleanupPlaywrightPopups(page, options = {}) {
       element === document.body ||
       element === document.documentElement ||
       element.matches?.("header, nav, footer, main") ||
-      element.closest?.("header, nav, footer")
+      element.closest?.("header, nav, footer") ||
+      isLikelySiteChrome(element)
     );
+    const isLikelySiteChrome = (element) => {
+      const rect = element.getBoundingClientRect();
+      const meta = textOf(element);
+      return rect.top <= 140 &&
+        rect.width >= window.innerWidth * 0.8 &&
+        rect.height > 0 &&
+        rect.height <= 180 &&
+        !/(cookie|privacy|consent)/i.test(meta);
+    };
     const classifyKnownPopup = (text) => {
       const value = String(text || "");
       if (/\bcookies?\b/i.test(value) && /(privacy|accept all|necessary cookies|preferences|consent)/i.test(value)) {
@@ -20275,21 +20358,23 @@ async function cleanupPlaywrightPopups(page, options = {}) {
         const rect = element.getBoundingClientRect();
         const style = getComputedStyle(element);
         const meta = textOf(element);
-        const kind = classifyKnownPopup(meta);
         const zIndex = Number.parseInt(style.zIndex, 10);
-        const popupMeta = /(modal|dialog|popup|overlay|lightbox|klaviyo|newsletter|interstitial|cookie|consent)/i.test(meta);
         const highZ = Number.isFinite(zIndex) && zIndex >= 20;
         const fixedLayer = ["fixed", "sticky"].includes(style.position) || highZ;
         const centeredOverlay = highZ &&
           rect.width >= window.innerWidth * 0.45 &&
           rect.height >= Math.min(260, window.innerHeight * 0.4);
+        const overlayLike = fixedLayer || centeredOverlay;
+        const kind = overlayLike ? classifyKnownPopup(meta) : null;
+        const popupMeta = overlayLike &&
+          /(modal|dialog|popup|overlay|lightbox|klaviyo|newsletter|interstitial|cookie|consent)/i.test(meta);
         return {
           element,
           text: meta,
           kind,
           rect,
           area: rect.width * rect.height,
-          popupLike: Boolean(kind || popupMeta || fixedLayer || centeredOverlay),
+          popupLike: Boolean(kind || popupMeta || centeredOverlay),
           zIndex: Number.isFinite(zIndex) ? zIndex : 0
         };
       })
@@ -20371,7 +20456,7 @@ async function primePlaywrightLazyContent(page, viewport = {}, options = {}) {
   }).catch(() => ({ height: Number(viewport.height || 0) || 1000, images: 0 }));
 
   const viewportHeight = Math.max(320, Number(viewport.height || 0) || 1000);
-  const height = Math.max(viewportHeight, Number(state.height || 0) || viewportHeight);
+  let height = Math.max(viewportHeight, Number(state.height || 0) || viewportHeight);
   const step = Math.max(viewportHeight, Math.ceil(height / maxSteps));
   for (let y = 0; y < height; y += step) {
     await page.evaluate((value) => {
@@ -20385,6 +20470,25 @@ async function primePlaywrightLazyContent(page, viewport = {}, options = {}) {
     window.dispatchEvent(new Event("scroll"));
   }).catch(() => null);
   await page.waitForTimeout(delayMs).catch(() => null);
+  for (let pass = 0; pass < 4; pass += 1) {
+    const nextState = await page.evaluate(() => ({
+      height: Math.max(
+        document.body?.scrollHeight || 0,
+        document.documentElement?.scrollHeight || 0,
+        document.documentElement?.clientHeight || 0
+      )
+    })).catch(() => ({ height }));
+    const nextHeight = Math.max(viewportHeight, Number(nextState.height || 0) || viewportHeight);
+    if (nextHeight <= height + 8) {
+      break;
+    }
+    height = nextHeight;
+    await page.evaluate(() => {
+      window.scrollTo(0, Math.max(0, document.documentElement.scrollHeight || document.body?.scrollHeight || 0));
+      window.dispatchEvent(new Event("scroll"));
+    }).catch(() => null);
+    await page.waitForTimeout(delayMs).catch(() => null);
+  }
   await page.evaluate(() => Promise.race([
     Promise.all(Array.from(document.images || []).slice(0, 80).map((img) => {
       if (img.complete && img.naturalWidth > 0) return true;

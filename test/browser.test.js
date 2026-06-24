@@ -721,6 +721,37 @@ test("Playwright full-page capture writes and validates a full-page screenshot",
   }
 });
 
+test("Playwright full-page capture continues after committed navigation timeout", async () => {
+  const calls = [];
+  const screenshotBuffer = encodePng(120, 360, checkerImage(120, 360));
+  const timeoutError = new Error("page.goto: Timeout 20000ms exceeded.");
+  timeoutError.name = "TimeoutError";
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-playwright-timeout-test-"));
+  const outputPath = path.join(tempDir, "playwright-fullpage-timeout.png");
+  const playwrightChromium = fakePlaywrightChromium(calls, screenshotBuffer, {
+    gotoError: timeoutError,
+    currentUrlAfterGoto: "https://example.com/"
+  });
+
+  try {
+    const result = await capturePageWithPlaywrightFullPage("https://example.com/", outputPath, {
+      viewport: { width: 120, height: 90, mobile: false, deviceScaleFactor: 1 },
+      playwrightBrowserPath: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      playwrightChromium,
+      playwrightFullPageTimeoutMs: 5000
+    });
+
+    assert.equal(result.captureStrategy, "playwright-full-page");
+    assert.equal(result.fastFullPage.used, true);
+    assert.equal(result.fastFullPage.navigation.timedOut, true);
+    assert.equal(result.fastFullPage.navigation.bodyReady, true);
+    assert.equal(calls.find((call) => call.method === "goto").options.waitUntil, "commit");
+    assert.ok(await fileExists(outputPath));
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("fast full-page capture expands the viewport and captures without a clip", async () => {
   const calls = [];
   const screenshotBuffer = encodePng(120, 360, checkerImage(120, 360));
@@ -905,7 +936,8 @@ async function fileExists(filePath) {
   }
 }
 
-function fakePlaywrightChromium(calls, screenshotBuffer) {
+function fakePlaywrightChromium(calls, screenshotBuffer, behavior = {}) {
+  let currentUrl = behavior.currentUrl || "https://example.com/";
   const page = {
     setDefaultTimeout(timeout) {
       calls.push({ method: "setDefaultTimeout", timeout });
@@ -915,6 +947,10 @@ function fakePlaywrightChromium(calls, screenshotBuffer) {
     },
     async goto(url, options) {
       calls.push({ method: "goto", url, options });
+      currentUrl = behavior.currentUrlAfterGoto || url;
+      if (behavior.gotoError) {
+        throw behavior.gotoError;
+      }
     },
     async waitForTimeout(timeout) {
       calls.push({ method: "waitForTimeout", timeout });
@@ -925,6 +961,9 @@ function fakePlaywrightChromium(calls, screenshotBuffer) {
     async evaluate(fn, arg) {
       const source = String(fn);
       calls.push({ method: "evaluate", source: source.slice(0, 80), arg });
+      if (source.includes("document.readyState") && source.includes("hasBody")) {
+        return { readyState: "interactive", hasBody: true, width: 120, height: 360 };
+      }
       if (source.includes("document.body?.scrollWidth")) {
         return { width: 120, height: 360 };
       }
@@ -941,7 +980,7 @@ function fakePlaywrightChromium(calls, screenshotBuffer) {
       return "Example";
     },
     url() {
-      return "https://example.com/";
+      return currentUrl;
     }
   };
   return {
