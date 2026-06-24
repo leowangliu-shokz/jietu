@@ -1963,7 +1963,7 @@ function captureConfigForExecution(config, execution, options = {}) {
   if (captureMode) {
     targetConfig.captureMode = captureMode;
   }
-  if (options.fastMainCapture && captureMode !== "shokz-products-nav") {
+  if (options.fastMainCapture && !options.fastFullPage && captureMode !== "shokz-products-nav") {
     targetConfig.fullPage = false;
     targetConfig.lazyLoadScroll = false;
     targetConfig.maxAttempts = Math.min(2, Math.max(1, Number(targetConfig.maxAttempts) || 2));
@@ -1976,12 +1976,19 @@ function captureConfigForExecution(config, execution, options = {}) {
   }
   if ((options.fastFullPage || targetConfig.fastFullPage) && captureMode !== "shokz-products-nav") {
     targetConfig.fastFullPage = true;
+    targetConfig.playwrightFullPage = options.playwrightFullPage ??
+      targetConfig.playwrightFullPage ??
+      process.env.PAGE_SHOT_PLAYWRIGHT_FULLPAGE !== "0";
     targetConfig.skipSeoSnapshot = true;
     targetConfig.skipTrackingAudit = true;
     targetConfig.fastFullPageTimeoutMs = options.fastFullPageTimeoutMs ||
       targetConfig.fastFullPageTimeoutMs ||
       process.env.PAGE_SHOT_FAST_FULLPAGE_TIMEOUT_MS ||
       10000;
+    targetConfig.playwrightFullPageTimeoutMs = options.playwrightFullPageTimeoutMs ||
+      targetConfig.playwrightFullPageTimeoutMs ||
+      process.env.PAGE_SHOT_PLAYWRIGHT_FULLPAGE_TIMEOUT_MS ||
+      undefined;
     targetConfig.fastFullPageAttemptTimeoutMs = options.fastFullPageAttemptTimeoutMs ||
       targetConfig.fastFullPageAttemptTimeoutMs ||
       process.env.PAGE_SHOT_FAST_FULLPAGE_ATTEMPT_TIMEOUT_MS ||

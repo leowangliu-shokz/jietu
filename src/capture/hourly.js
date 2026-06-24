@@ -13,6 +13,7 @@ export async function runHourlyCapture(options = {}) {
     screenshotOnly: options.screenshotOnly !== false,
     fastCaptureOnly,
     fastFullPage,
+    playwrightFullPage: options.playwrightFullPage !== false,
     fastMainCapture: options.fastMainCapture === true,
     fastRelated: options.fastRelated === true
   });
@@ -40,7 +41,8 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const result = await runHourlyCapture({
     platform: readArg("--platform") || undefined,
     fastCaptureOnly: hasArg("--with-related") ? false : undefined,
-    fastFullPage: hasArg("--no-fast-fullpage") ? false : undefined
+    fastFullPage: hasArg("--no-fast-fullpage") ? false : undefined,
+    playwrightFullPage: hasArg("--no-playwright-fullpage") ? false : undefined
   });
   const run = result.run;
   const succeeded = run?.successCount ?? result.results.filter((item) => item?.ok).length;

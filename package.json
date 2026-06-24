@@ -25,6 +25,7 @@
     "@applitools/eyes-images": "^4.31.47",
     "ali-oss": "^6.23.0",
     "cspell-lib": "^10.0.1",
-    "parse5": "^7.1.2"
+    "parse5": "^7.1.2",
+    "playwright-core": "^1.61.1"
   }
 }

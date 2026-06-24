@@ -25,7 +25,10 @@ const {
   shouldUseDedicatedViewMoreExpansion,
   shouldUseDirectFullPageClipCapture,
   shouldUseFastViewportFullPageCapture,
+  shouldUsePlaywrightFullPageCapture,
   fastFullPageAttemptTimeoutMs,
+  playwrightFullPageTimeoutMs,
+  capturePageWithPlaywrightFullPage,
   captureFastViewportFullPageScreenshot,
   shouldUseStitchedLandingFullPageCapture,
   browserLaunchProfiles,
@@ -682,6 +685,42 @@ test("fast full-page attempt timeout is short and configurable", () => {
   assert.equal(fastFullPageAttemptTimeoutMs({ fastFullPageAttemptTimeoutMs: 12000 }), 12000);
 });
 
+test("Playwright full-page mode is the primary fast full-page path", () => {
+  assert.equal(shouldUsePlaywrightFullPageCapture({ fastFullPage: true }), true);
+  assert.equal(shouldUsePlaywrightFullPageCapture({ fastFullPage: true, playwrightFullPage: false }), false);
+  assert.equal(shouldUsePlaywrightFullPageCapture({ fastFullPage: true, fastFullPageFallback: { reason: "retry" } }), false);
+  assert.equal(shouldUsePlaywrightFullPageCapture({ fastFullPage: true, captureMode: "shokz-products-nav" }), false);
+  assert.equal(playwrightFullPageTimeoutMs({}), 20000);
+  assert.equal(playwrightFullPageTimeoutMs({ playwrightFullPageTimeoutMs: 9000 }), 9000);
+});
+
+test("Playwright full-page capture writes and validates a full-page screenshot", async () => {
+  const calls = [];
+  const screenshotBuffer = encodePng(120, 360, checkerImage(120, 360));
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-playwright-fullpage-test-"));
+  const outputPath = path.join(tempDir, "playwright-fullpage.png");
+  const playwrightChromium = fakePlaywrightChromium(calls, screenshotBuffer);
+
+  try {
+    const result = await capturePageWithPlaywrightFullPage("https://example.com/", outputPath, {
+      viewport: { width: 120, height: 90, mobile: false, deviceScaleFactor: 1 },
+      playwrightBrowserPath: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      playwrightChromium,
+      playwrightFullPageTimeoutMs: 5000
+    });
+
+    assert.equal(result.captureStrategy, "playwright-full-page");
+    assert.equal(result.fastFullPage.used, true);
+    assert.equal(result.height, 360);
+    assert.ok(await fileExists(outputPath));
+    const screenshotCall = calls.find((call) => call.method === "screenshot");
+    assert.equal(screenshotCall.options.fullPage, true);
+    assert.equal(screenshotCall.options.scale, "css");
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("fast full-page capture expands the viewport and captures without a clip", async () => {
   const calls = [];
   const screenshotBuffer = encodePng(120, 360, checkerImage(120, 360));
@@ -864,6 +903,69 @@ async function fileExists(filePath) {
   } catch {
     return false;
   }
+}
+
+function fakePlaywrightChromium(calls, screenshotBuffer) {
+  const page = {
+    setDefaultTimeout(timeout) {
+      calls.push({ method: "setDefaultTimeout", timeout });
+    },
+    on(eventName) {
+      calls.push({ method: "on", eventName });
+    },
+    async goto(url, options) {
+      calls.push({ method: "goto", url, options });
+    },
+    async waitForTimeout(timeout) {
+      calls.push({ method: "waitForTimeout", timeout });
+    },
+    async addStyleTag(options) {
+      calls.push({ method: "addStyleTag", options });
+    },
+    async evaluate(fn, arg) {
+      const source = String(fn);
+      calls.push({ method: "evaluate", source: source.slice(0, 80), arg });
+      if (source.includes("document.body?.scrollWidth")) {
+        return { width: 120, height: 360 };
+      }
+      if (source.includes("document.body?.scrollHeight")) {
+        return { height: 360, images: 1 };
+      }
+      return { ok: true };
+    },
+    async screenshot(options) {
+      calls.push({ method: "screenshot", options });
+      return screenshotBuffer;
+    },
+    async title() {
+      return "Example";
+    },
+    url() {
+      return "https://example.com/";
+    }
+  };
+  return {
+    async launch(options) {
+      calls.push({ method: "launch", options });
+      return {
+        async newContext(contextOptions) {
+          calls.push({ method: "newContext", options: contextOptions });
+          return {
+            async newPage() {
+              calls.push({ method: "newPage" });
+              return page;
+            },
+            async close() {
+              calls.push({ method: "context.close" });
+            }
+          };
+        },
+        async close() {
+          calls.push({ method: "browser.close" });
+        }
+      };
+    }
+  };
 }
 
 function solidImage(width, height, color) {

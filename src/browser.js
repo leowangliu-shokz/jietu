@@ -65,6 +65,26 @@ const browserLaunchProfiles = [
 ];
 
 export async function capturePage(url, outputPath, options = {}) {
+  if (shouldUsePlaywrightFullPageCapture(options)) {
+    try {
+      return await capturePageWithPlaywrightFullPage(url, outputPath, options);
+    } catch (error) {
+      if (!shouldFallbackFromPlaywrightFullPage(error, options)) {
+        throw error;
+      }
+      options = {
+        ...options,
+        fastFullPage: false,
+        fastFullPageFallback: {
+          reason: `Playwright full-page fallback: ${error.message}`
+        },
+        playwrightFullPageFallback: {
+          reason: error.message
+        }
+      };
+    }
+  }
+
   const browserPaths = await findBrowsers();
   let lastLaunchError = null;
 
@@ -1474,9 +1494,21 @@ function shouldUseFastViewportFullPageCapture(options = {}) {
   return !captureMode.includes("related") && captureMode !== "shokz-products-nav";
 }
 
+function shouldUsePlaywrightFullPageCapture(options = {}) {
+  return shouldUseFastViewportFullPageCapture(options) &&
+    options.playwrightFullPage !== false &&
+    !options.fastFullPageFallback &&
+    !options.playwrightFullPageFallback;
+}
+
 function fastFullPageTimeoutMs(options = {}) {
   const value = Number(options.fastFullPageTimeoutMs ?? process.env.PAGE_SHOT_FAST_FULLPAGE_TIMEOUT_MS);
   return Number.isFinite(value) && value > 0 ? Math.max(1000, Math.trunc(value)) : 10000;
+}
+
+function playwrightFullPageTimeoutMs(options = {}) {
+  const value = Number(options.playwrightFullPageTimeoutMs ?? process.env.PAGE_SHOT_PLAYWRIGHT_FULLPAGE_TIMEOUT_MS);
+  return Number.isFinite(value) && value > 0 ? Math.max(1000, Math.trunc(value)) : 20000;
 }
 
 function fastFullPageAttemptTimeoutMs(options = {}) {
@@ -1499,6 +1531,20 @@ function fastFullPageFallbackError(message, cause = null) {
 
 function shouldFallbackFromFastFullPage(error, options = {}) {
   return Boolean(options.fastFullPage) && error?.code === "FAST_FULL_PAGE_FALLBACK";
+}
+
+function playwrightFullPageFallbackError(message, cause = null) {
+  const error = new Error(message || "Playwright full-page screenshot failed.");
+  error.code = "PLAYWRIGHT_FULL_PAGE_FALLBACK";
+  if (cause) {
+    error.cause = cause;
+    error.captureValidation = cause.captureValidation || null;
+  }
+  return error;
+}
+
+function shouldFallbackFromPlaywrightFullPage(error, options = {}) {
+  return shouldUsePlaywrightFullPageCapture(options) && error?.code === "PLAYWRIGHT_FULL_PAGE_FALLBACK";
 }
 
 function shouldUseStitchedLandingFullPageCapture(options = {}, viewport = {}) {
@@ -19981,8 +20027,12 @@ export const __testOnly = {
   shouldUseDedicatedViewMoreExpansion,
   shouldUseDirectFullPageClipCapture,
   shouldUseFastViewportFullPageCapture,
+  shouldUsePlaywrightFullPageCapture,
   fastFullPageTimeoutMs,
+  playwrightFullPageTimeoutMs,
   fastFullPageAttemptTimeoutMs,
+  capturePageWithPlaywrightFullPage,
+  preparePlaywrightPageForFullPageScreenshot,
   captureFastViewportFullPageScreenshot,
   shouldUseStitchedLandingFullPageCapture,
   browserLaunchProfiles,
@@ -19991,6 +20041,448 @@ export const __testOnly = {
   isRetryableBlankGpuCaptureError,
   stitchedFullPageSegmentHeight
 };
+
+async function capturePageWithPlaywrightFullPage(url, outputPath, options = {}) {
+  const viewport = options.viewport || { width: 1440, height: 1000 };
+  const platform = capturePlatform(options, viewport);
+  const mobile = platform === "mobile";
+  const timeoutMs = playwrightFullPageTimeoutMs(options);
+  const urlCheck = {
+    requestedUrl: url,
+    finalUrl: "",
+    ok: false,
+    checks: []
+  };
+  let browser = null;
+  let context = null;
+
+  try {
+    const chromium = await loadPlaywrightChromium(options);
+    const browserPath = options.playwrightBrowserPath || await findBrowser();
+    browser = await chromium.launch({
+      executablePath: browserPath,
+      headless: true,
+      timeout: timeoutMs,
+      args: [
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-default-apps",
+        "--disable-sync",
+        "--disable-gpu",
+        "--hide-scrollbars",
+        "--ignore-certificate-errors",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--no-sandbox",
+        "--disable-setuid-sandbox"
+      ]
+    });
+    context = await browser.newContext({
+      viewport: {
+        width: Math.max(320, Math.trunc(Number(viewport.width) || 1440)),
+        height: Math.max(320, Math.trunc(Number(viewport.height) || 1000))
+      },
+      deviceScaleFactor: Number(viewport.deviceScaleFactor) || 1,
+      hasTouch: Boolean(viewport.touch || mobile),
+      isMobile: mobile,
+      ignoreHTTPSErrors: true
+    });
+
+    const page = await context.newPage();
+    page.setDefaultTimeout(Math.min(timeoutMs, 5000));
+    page.on("dialog", async (dialog) => {
+      await dialog.dismiss().catch(() => null);
+    });
+
+    await page.goto(url, {
+      waitUntil: "domcontentloaded",
+      timeout: Math.min(timeoutMs, Number(options.playwrightNavigationTimeoutMs) || timeoutMs)
+    });
+    await page.waitForTimeout(Number(options.playwrightWaitAfterLoadMs) || 700);
+    await preparePlaywrightPageForFullPageScreenshot(page, url, viewport, options);
+
+    const pageSize = await readPlaywrightPageSize(page, viewport);
+    const maxHeight = Number(options.maxFullPageHeight || 16000);
+    if (pageSize.height > maxHeight) {
+      throw playwrightFullPageFallbackError(`Playwright full-page height ${pageSize.height}px exceeds max ${maxHeight}px.`);
+    }
+
+    const buffer = await page.screenshot({
+      type: "png",
+      fullPage: true,
+      animations: "allow",
+      scale: "css",
+      timeout: timeoutMs
+    });
+    await fs.writeFile(outputPath, buffer);
+
+    const captureValidation = validateScreenshotBuffer(buffer, {
+      label: "Playwright full-page screenshot",
+      acceptBlankAudit: shouldAcceptShokzLongPageBlankBands(url, options)
+        ? isAcceptableShokzLongPageBlankBandAudit
+        : null
+    });
+    const image = decodePng(buffer);
+    const finalUrl = verifyPlaywrightCurrentUrl(page.url(), url, "after Playwright full-page screenshot", urlCheck);
+    urlCheck.ok = true;
+    const visualHash = visualHashForBuffer(buffer);
+
+    return {
+      requestedUrl: url,
+      finalUrl,
+      urlCheck,
+      title: await page.title().catch(() => ""),
+      seoSnapshot: null,
+      trackingAudit: null,
+      width: image.width || pageSize.width,
+      height: image.height || pageSize.height,
+      fullPageHeight: pageSize.height,
+      truncated: false,
+      scrollInfo: {
+        strategy: "playwright-full-page",
+        reachableHeight: pageSize.height
+      },
+      visualHash,
+      visualAudit: visualHash ? visualAuditForBuffer(buffer, visualHash) : null,
+      captureValidation,
+      captureStrategy: "playwright-full-page",
+      fastFullPage: {
+        attempted: true,
+        requested: true,
+        used: true,
+        engine: "playwright",
+        fallback: null
+      },
+      browserPath
+    };
+  } catch (error) {
+    if (error?.code === "PLAYWRIGHT_FULL_PAGE_FALLBACK") {
+      throw error;
+    }
+    throw playwrightFullPageFallbackError(error.message || "Playwright full-page screenshot failed.", error);
+  } finally {
+    await context?.close?.().catch(() => null);
+    await browser?.close?.().catch(() => null);
+  }
+}
+
+async function loadPlaywrightChromium(options = {}) {
+  if (options.playwrightChromium) {
+    return options.playwrightChromium;
+  }
+  try {
+    const playwright = await import("playwright-core");
+    return playwright.chromium;
+  } catch (error) {
+    throw playwrightFullPageFallbackError("playwright-core is not available.", error);
+  }
+}
+
+async function preparePlaywrightPageForFullPageScreenshot(page, url, viewport, options = {}) {
+  if (options.dismissPopups !== false) {
+    const rounds = shouldCleanShokzKnownPopups(url, options) ? 3 : 1;
+    for (let round = 0; round < rounds; round += 1) {
+      await cleanupPlaywrightPopups(page, { hideOnly: round > 0 });
+      await page.waitForTimeout(round === 0 ? 180 : 120).catch(() => null);
+    }
+  }
+
+  await primePlaywrightLazyContent(page, viewport, options);
+
+  if (options.dismissPopups !== false) {
+    await cleanupPlaywrightPopups(page, { hideOnly: true });
+  }
+  await page.evaluate(() => {
+    window.scrollTo(0, 0);
+    window.dispatchEvent(new Event("resize"));
+    window.dispatchEvent(new Event("scroll"));
+  }).catch(() => null);
+  await page.waitForTimeout(Number(options.playwrightFinalSettleMs) || 900).catch(() => null);
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event("resize"));
+    window.dispatchEvent(new Event("scroll"));
+  }).catch(() => null);
+  await page.waitForTimeout(160).catch(() => null);
+  await page.addStyleTag({
+    content: [
+      "html, body { scroll-behavior: auto !important; }",
+      "*, *::before, *::after {",
+      "  transition-duration: 0s !important;",
+      "  transition-delay: 0s !important;",
+      "  scroll-behavior: auto !important;",
+      "}"
+    ].join("\n")
+  }).catch(() => null);
+}
+
+async function cleanupPlaywrightPopups(page, options = {}) {
+  return page.evaluate(({ hideOnly }) => {
+    const hidden = [];
+    const clicked = [];
+    const visible = (element) => {
+      if (!element || !(element instanceof Element)) return false;
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 0 &&
+        rect.height > 0 &&
+        rect.bottom > 0 &&
+        rect.right > 0 &&
+        rect.left < window.innerWidth &&
+        rect.top < window.innerHeight &&
+        style.visibility !== "hidden" &&
+        style.display !== "none" &&
+        Number(style.opacity || 1) > 0.01;
+    };
+    const textOf = (element) => element ? [
+      element.innerText,
+      element.textContent,
+      element.getAttribute?.("aria-label"),
+      element.getAttribute?.("title"),
+      element.id,
+      String(element.className || "")
+    ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim() : "";
+    const isProtected = (element) => Boolean(
+      element === document.body ||
+      element === document.documentElement ||
+      element.matches?.("header, nav, footer, main") ||
+      element.closest?.("header, nav, footer")
+    );
+    const classifyKnownPopup = (text) => {
+      const value = String(text || "");
+      if (/\bcookies?\b/i.test(value) && /(privacy|accept all|necessary cookies|preferences|consent)/i.test(value)) {
+        return "cookie";
+      }
+      if (/(subscribe|newsletter|email address|don.?t miss out|sign up|get\s*\d+%\s*off|\b\d+%\s*off\b)/i.test(value)) {
+        return "email";
+      }
+      if (/(redirect|wrong site|ip address|detected.{0,80}(region|country|location)|shopping from|stay on|continue to)/i.test(value)) {
+        return "region";
+      }
+      return null;
+    };
+    const hideElement = (element, reason) => {
+      if (!visible(element) || isProtected(element)) return false;
+      element.dataset.pageShotPlaywrightHidden = reason;
+      element.style.setProperty("display", "none", "important");
+      element.style.setProperty("visibility", "hidden", "important");
+      element.style.setProperty("pointer-events", "none", "important");
+      hidden.push({ reason, text: textOf(element).slice(0, 120) });
+      return true;
+    };
+    const candidates = Array.from(document.querySelectorAll("body *"))
+      .filter(visible)
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        const meta = textOf(element);
+        const kind = classifyKnownPopup(meta);
+        const zIndex = Number.parseInt(style.zIndex, 10);
+        const popupMeta = /(modal|dialog|popup|overlay|lightbox|klaviyo|newsletter|interstitial|cookie|consent)/i.test(meta);
+        const highZ = Number.isFinite(zIndex) && zIndex >= 20;
+        const fixedLayer = ["fixed", "sticky"].includes(style.position) || highZ;
+        const centeredOverlay = highZ &&
+          rect.width >= window.innerWidth * 0.45 &&
+          rect.height >= Math.min(260, window.innerHeight * 0.4);
+        return {
+          element,
+          text: meta,
+          kind,
+          rect,
+          area: rect.width * rect.height,
+          popupLike: Boolean(kind || popupMeta || fixedLayer || centeredOverlay),
+          zIndex: Number.isFinite(zIndex) ? zIndex : 0
+        };
+      })
+      .filter((item) =>
+        item.popupLike &&
+        !isProtected(item.element) &&
+        item.rect.width >= Math.min(320, window.innerWidth * 0.55) &&
+        item.rect.height >= 40 &&
+        item.area >= Math.min(12000, window.innerWidth * window.innerHeight * 0.1)
+      )
+      .sort((a, b) => b.zIndex - a.zIndex || b.area - a.area);
+
+    for (const item of candidates.slice(0, 6)) {
+      const closeTargets = Array.from(item.element.querySelectorAll("button, [role='button'], a, [aria-label], [title], input[type='button'], input[type='submit']"))
+        .filter(visible)
+        .map((element) => ({ element, text: textOf(element) }))
+        .filter((entry) => /(close|dismiss|no thanks|not now|accept all|accept|agree|got it|stay on|continue)/i.test(entry.text));
+      const target = closeTargets[0]?.element || null;
+      if (target && !hideOnly) {
+        try {
+          target.click();
+          clicked.push({ kind: item.kind || "popup", text: textOf(target).slice(0, 80) });
+          continue;
+        } catch {}
+      }
+      hideElement(item.element, item.kind || "popup");
+    }
+
+    document.documentElement.style.removeProperty("overflow");
+    document.body?.style?.removeProperty("overflow");
+    document.body?.classList?.remove("overflow-hidden", "modal-open", "drawer-open", "js-drawer-open");
+    return { ok: true, clicked, hidden };
+  }, { hideOnly: Boolean(options.hideOnly) }).catch((error) => ({
+    ok: false,
+    reason: error.message || "Could not clean Playwright popups."
+  }));
+}
+
+async function primePlaywrightLazyContent(page, viewport = {}, options = {}) {
+  const maxSteps = Math.max(2, Math.min(14, Number(options.playwrightLazyScrollMaxSteps) || 9));
+  const delayMs = Math.max(30, Math.min(300, Number(options.playwrightLazyScrollDelayMs) || 90));
+  const state = await page.evaluate(() => {
+    const eagerImageAttrs = ["data-src", "data-original", "data-lazy-src"];
+    const eagerSrcSetAttrs = ["data-srcset", "data-lazy-srcset"];
+    for (const img of document.querySelectorAll("img")) {
+      img.loading = "eager";
+      img.setAttribute("loading", "eager");
+      for (const attr of eagerImageAttrs) {
+        const value = img.getAttribute(attr);
+        const current = img.getAttribute("src") || "";
+        if (value && (!current || /[?&]width=10(?:&|$)/.test(current))) {
+          img.setAttribute("src", value);
+        }
+      }
+      for (const attr of eagerSrcSetAttrs) {
+        const value = img.getAttribute(attr);
+        const current = img.getAttribute("srcset") || "";
+        if (value && (!current || /[?&]width=10(?:&|$)/.test(current))) {
+          img.setAttribute("srcset", value);
+        }
+      }
+    }
+    for (const element of document.querySelectorAll("body *")) {
+      if (!(element instanceof HTMLElement)) continue;
+      const style = getComputedStyle(element);
+      if (style.contentVisibility === "auto") {
+        element.style.setProperty("content-visibility", "visible", "important");
+        element.style.setProperty("contain-intrinsic-size", "auto", "important");
+      }
+    }
+    return {
+      height: Math.max(
+        document.body?.scrollHeight || 0,
+        document.documentElement?.scrollHeight || 0,
+        document.documentElement?.clientHeight || 0
+      ),
+      images: document.images.length
+    };
+  }).catch(() => ({ height: Number(viewport.height || 0) || 1000, images: 0 }));
+
+  const viewportHeight = Math.max(320, Number(viewport.height || 0) || 1000);
+  const height = Math.max(viewportHeight, Number(state.height || 0) || viewportHeight);
+  const step = Math.max(viewportHeight, Math.ceil(height / maxSteps));
+  for (let y = 0; y < height; y += step) {
+    await page.evaluate((value) => {
+      window.scrollTo(0, value);
+      window.dispatchEvent(new Event("scroll"));
+    }, y).catch(() => null);
+    await page.waitForTimeout(delayMs).catch(() => null);
+  }
+  await page.evaluate(() => {
+    window.scrollTo(0, Math.max(0, document.documentElement.scrollHeight || document.body?.scrollHeight || 0));
+    window.dispatchEvent(new Event("scroll"));
+  }).catch(() => null);
+  await page.waitForTimeout(delayMs).catch(() => null);
+  await page.evaluate(() => Promise.race([
+    Promise.all(Array.from(document.images || []).slice(0, 80).map((img) => {
+      if (img.complete && img.naturalWidth > 0) return true;
+      if (typeof img.decode === "function") return img.decode().catch(() => true);
+      return true;
+    })),
+    new Promise((resolve) => setTimeout(resolve, 1200))
+  ])).catch(() => null);
+  return state;
+}
+
+async function readPlaywrightPageSize(page, viewport = {}) {
+  const fallbackWidth = Math.max(320, Math.trunc(Number(viewport.width) || 1440));
+  const fallbackHeight = Math.max(320, Math.trunc(Number(viewport.height) || 1000));
+  const size = await page.evaluate(() => ({
+    width: Math.max(
+      document.body?.scrollWidth || 0,
+      document.body?.offsetWidth || 0,
+      document.documentElement?.scrollWidth || 0,
+      document.documentElement?.clientWidth || 0,
+      window.innerWidth || 0
+    ),
+    height: Math.max(
+      document.body?.scrollHeight || 0,
+      document.body?.offsetHeight || 0,
+      document.documentElement?.scrollHeight || 0,
+      document.documentElement?.clientHeight || 0,
+      window.innerHeight || 0
+    )
+  })).catch(() => ({ width: fallbackWidth, height: fallbackHeight }));
+  return {
+    width: Math.max(fallbackWidth, Math.ceil(Number(size.width || 0) || fallbackWidth)),
+    height: Math.max(fallbackHeight, Math.ceil(Number(size.height || 0) || fallbackHeight))
+  };
+}
+
+function verifyPlaywrightCurrentUrl(finalUrl, requestedUrl, stage, urlCheck) {
+  const ok = urlsEquivalent(requestedUrl, finalUrl);
+  urlCheck.finalUrl = finalUrl;
+  urlCheck.checks.push({ stage, url: finalUrl, ok });
+  if (!ok) {
+    const error = playwrightFullPageFallbackError(
+      `URL check failed ${stage}: requested ${requestedUrl} but browser is at ${finalUrl || "an empty URL"}.`
+    );
+    error.requestedUrl = requestedUrl;
+    error.finalUrl = finalUrl;
+    error.urlCheck = urlCheck;
+    throw error;
+  }
+  return finalUrl;
+}
+
+function validateScreenshotBuffer(buffer, options = {}) {
+  const label = String(options.label || "screenshot");
+  const blankAudit = blankImageAuditForBuffer(buffer);
+  const acceptedBlankAudit = blankAudit.status !== "ok" &&
+    typeof options.acceptBlankAudit === "function" &&
+    options.acceptBlankAudit(blankAudit, {
+      attempt: 1,
+      maxAttempts: 1,
+      label,
+      attempts: [],
+      resolvedOptions: { fullPage: true },
+      buffer
+    });
+  const ok = blankAudit.status === "ok" || acceptedBlankAudit;
+  const attemptSummary = {
+    attempt: 1,
+    ok,
+    message: ok ? null : (blankAudit.message || null),
+    target: { viewportRelative: true },
+    blankAudit,
+    acceptedBlankAudit: Boolean(acceptedBlankAudit)
+  };
+  if (ok) {
+    return {
+      ok: true,
+      label,
+      maxAttempts: 1,
+      retries: 0,
+      attempts: [attemptSummary]
+    };
+  }
+
+  const error = playwrightFullPageFallbackError(
+    `${label} failed blank-image validation. ${blankAudit.message || ""}`.trim()
+  );
+  error.code = "PLAYWRIGHT_FULL_PAGE_FALLBACK";
+  error.captureBuffer = buffer;
+  error.captureValidation = {
+    ok: false,
+    label,
+    maxAttempts: 1,
+    retries: 0,
+    attempts: [attemptSummary]
+  };
+  throw error;
+}
 
 async function captureFastViewportFullPageScreenshot(client, outputPath, options) {
   const width = Math.ceil(options.width);
