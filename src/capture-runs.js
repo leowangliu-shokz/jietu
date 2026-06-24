@@ -47,6 +47,7 @@ function normalizeCaptureRun(run = {}) {
     textQualityRefresh: run.textQualityRefresh || null,
     networkPreflight: run.networkPreflight || null,
     persistence: normalizeCaptureRunPersistence(run.persistence),
+    timings: normalizeCaptureRunTimings(run.timings),
     items: items.map(normalizeCaptureRunItem)
   };
 }
@@ -92,10 +93,43 @@ function normalizeCaptureRunItem(item = {}) {
     startedAt: stringOrNull(item.startedAt),
     finishedAt: stringOrNull(item.finishedAt),
     durationMs: numberOrNull(item.durationMs),
+    timings: normalizeCaptureRunTimings(item.timings),
     retryCount: numberOrDefault(item.retryCount, 0),
     snapshotIds: Array.isArray(item.snapshotIds) ? item.snapshotIds.filter(Boolean) : [],
     error: stringOrNull(item.error)
   };
+}
+
+function normalizeCaptureRunTimings(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const normalized = normalizeTimingValue(value);
+  return normalized && typeof normalized === "object" && !Array.isArray(normalized)
+    ? normalized
+    : null;
+}
+
+function normalizeTimingValue(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map(normalizeTimingValue)
+      .filter((item) => item !== null && item !== undefined);
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value)
+      .map(([key, current]) => [key, normalizeTimingValue(current)])
+      .filter(([, current]) => current !== null && current !== undefined);
+    return entries.length ? Object.fromEntries(entries) : null;
+  }
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    return stringOrNull(value);
+  }
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function stringOrDefault(value, fallback) {

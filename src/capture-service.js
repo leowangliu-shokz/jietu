@@ -428,6 +428,7 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
     item.status = result?.ok ? "succeeded" : "failed";
     item.error = result?.ok ? null : result?.error || "Capture failed.";
     item.snapshotIds = captureResultSnapshots(result).map((snapshot) => snapshot.id).filter(Boolean);
+    item.timings = result?.timings || null;
     results[planIndex] = {
       ...result,
       runId: run.id,
@@ -454,7 +455,10 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
   });
   run.browserMaxActiveCount = browserLimiter.stats?.maxActiveCount || run.browserMaxActiveCount || 0;
 
+  const persistenceStartedMs = Date.now();
   const persistence = await persistPreparedCaptureResultsForRun(results, run);
+  const persistenceMs = Date.now() - persistenceStartedMs;
+  const changeRefreshStartedMs = Date.now();
   const changeRefresh = options.deferChangeRefresh
     ? { ok: true, deferred: true }
     : await refreshChangeRecords({
@@ -462,12 +466,17 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
           ? persistence.snapshots
           : null
       });
+  const changeRefreshMs = Date.now() - changeRefreshStartedMs;
+  const seoRefreshStartedMs = Date.now();
   const seoRefresh = options.deferChangeRefresh
     ? { ok: true, deferred: true }
     : await refreshSeoChangeRecords();
+  const seoRefreshMs = Date.now() - seoRefreshStartedMs;
+  const textQualityRefreshStartedMs = Date.now();
   const textQualityRefresh = options.deferChangeRefresh
     ? { ok: true, deferred: true }
     : await refreshTextQualityRecords();
+  const textQualityRefreshMs = Date.now() - textQualityRefreshStartedMs;
   const finishedAt = new Date();
   run.finishedAt = finishedAt.toISOString();
   run.durationMs = finishedAt.getTime() - new Date(run.startedAt).getTime();
@@ -487,6 +496,14 @@ async function runResolvedCapturePlans(plans, config, options = {}) {
   run.textQualityRefresh = textQualityRefresh;
   run.networkPreflight = options.networkPreflight || null;
   run.persistence = persistence.summary;
+  run.timings = {
+    jobQueueMs: queue.durationMs,
+    persistenceMs,
+    changeRefreshMs,
+    seoRefreshMs,
+    textQualityRefreshMs,
+    browserMaxActiveCount: run.browserMaxActiveCount
+  };
   for (const result of results) {
     if (result?.ok) {
       result.changeRefresh = changeRefresh;
@@ -1127,6 +1144,9 @@ async function skipCaptureRunForNetworkPreflight(plans, config, options, preflig
     durationMs: run.durationMs,
     maxActiveCount: 0
   };
+  run.timings = {
+    skippedMs: run.durationMs
+  };
   run.changeRefresh = {
     ok: true,
     skipped: true,
@@ -1269,6 +1289,7 @@ function createCaptureRunRecord(plans, options = {}) {
     failureCount: 0,
     skippedCount: 0,
     concurrency: 1,
+    timings: null,
     changeRefresh: null,
     seoRefresh: null,
     textQualityRefresh: null,
@@ -1291,6 +1312,7 @@ function captureRunItemForPlan(plan, runId, index) {
     startedAt: null,
     finishedAt: null,
     durationMs: null,
+    timings: null,
     snapshotIds: [],
     error: null
   };
@@ -1357,12 +1379,35 @@ function createBrowserSlotLimiter(maxConcurrency) {
   }, { stats });
 }
 
-function capturePageWithBrowserSlot(url, outputPath, captureConfig, options = {}) {
+async function capturePageWithBrowserSlot(url, outputPath, captureConfig, options = {}) {
   const limiter = options.browserLimiter;
   if (typeof limiter !== "function") {
-    return capturePage(url, outputPath, captureConfig);
+    const startedMs = Date.now();
+    return withBrowserTiming(await capturePage(url, outputPath, captureConfig), {
+      browserSlotWaitMs: 0,
+      browserCaptureMs: Date.now() - startedMs
+    });
   }
-  return limiter(() => capturePage(url, outputPath, captureConfig));
+  const queuedMs = Date.now();
+  return limiter(async () => {
+    const browserSlotWaitMs = Date.now() - queuedMs;
+    const startedMs = Date.now();
+    const result = await capturePage(url, outputPath, captureConfig);
+    return withBrowserTiming(result, {
+      browserSlotWaitMs,
+      browserCaptureMs: Date.now() - startedMs
+    });
+  });
+}
+
+function withBrowserTiming(result, timing) {
+  if (!result || typeof result !== "object") {
+    return result;
+  }
+  return {
+    ...result,
+    ...timing
+  };
 }
 
 function captureRetryAttempts(config = {}, options = {}) {
@@ -1424,6 +1469,7 @@ async function retryFailedCapturePlans({
       item.status = result?.ok ? "succeeded" : "failed";
       item.error = result?.ok ? null : result?.error || "Capture failed.";
       item.snapshotIds = captureResultSnapshots(result).map((snapshot) => snapshot.id).filter(Boolean);
+      item.timings = result?.timings || null;
       results[planIndex] = {
         ...result,
         runId: run.id,
@@ -1513,12 +1559,25 @@ async function capturePlanExecution(execution, config, options = {}) {
     deviceProfileId: execution.deviceProfile?.id || null,
     capturePlanId: execution.id || null
   });
+  const timings = {
+    fastCaptureOnly: Boolean(options.fastCaptureOnly),
+    fastMainCapture: Boolean(options.fastMainCapture),
+    fastRelated: Boolean(options.fastRelated)
+  };
+  const planStartedMs = Date.now();
 
   try {
+    const mainStartedMs = Date.now();
     const capture = await capturePageWithBrowserSlot(normalizedUrl, fileInfo.absolutePath, captureConfig, options);
+    timings.mainCaptureMs = Date.now() - mainStartedMs;
+    timings.mainBrowserSlotWaitMs = numberOrNull(capture.browserSlotWaitMs);
+    timings.mainBrowserCaptureMs = numberOrNull(capture.browserCaptureMs);
     recordCaptureDiagnostic(diagnosticRun, {
       type: "main-capture",
       ok: true,
+      durationMs: timings.mainCaptureMs,
+      browserSlotWaitMs: timings.mainBrowserSlotWaitMs,
+      browserCaptureMs: timings.mainBrowserCaptureMs,
       finalUrl: capture.finalUrl || normalizedUrl,
       width: capture.width || null,
       height: capture.height || null,
@@ -1526,6 +1585,7 @@ async function capturePlanExecution(execution, config, options = {}) {
       urlCheck: capture.urlCheck || null,
       captureValidation: capture.captureValidation || null
     });
+    const relatedStartedMs = Date.now();
     const relatedCapture = options.fastCaptureOnly
       ? emptyRelatedCapture()
       : await captureRelatedShotsForTarget(
@@ -1536,6 +1596,12 @@ async function capturePlanExecution(execution, config, options = {}) {
         diagnosticRun,
         options
       );
+    timings.relatedCaptureMs = Date.now() - relatedStartedMs;
+    timings.relatedCaptureSkipped = Boolean(options.fastCaptureOnly);
+    timings.relatedShotCount = relatedCapture.shots.length;
+    timings.relatedQueue = relatedCapture.queueSummary || null;
+    timings.relatedSections = relatedCapture.sectionTimings || null;
+    timings.overviewComposeMs = numberOrNull(relatedCapture.overviewComposeMs);
     const relatedShots = relatedCapture.shots;
     const stamp = capturedAt.toISOString().replace(/[:.]/g, "-");
     const targetLabel = target.label || normalizedUrl;
@@ -1543,6 +1609,7 @@ async function capturePlanExecution(execution, config, options = {}) {
       ? capture.captures
       : [capture];
     const snapshots = [];
+    const archiveStartedMs = Date.now();
 
     for (const item of captureItems) {
       const absolutePath = item.outputPath || fileInfo.absolutePath;
@@ -1584,6 +1651,7 @@ async function capturePlanExecution(execution, config, options = {}) {
         syncStatus: storage.syncStatus,
         syncError: storage.syncError,
         objectImageUrl: storage.objectImageUrl,
+        storageDurationMs: storage.durationMs,
         sha256: storage.sha256,
         bytes: stat.size,
         width: item.width || capture.width,
@@ -1612,8 +1680,11 @@ async function capturePlanExecution(execution, config, options = {}) {
         relatedShots: !item.bannerIndex && relatedShots.length ? relatedShots : null
       });
     }
+    timings.archiveMetadataMs = Date.now() - archiveStartedMs;
+    timings.objectStorage = summarizeObjectStorageTimings(snapshots, relatedShots, relatedCapture.homeOverview);
 
     const skipDerivedAudits = options.fastCaptureOnly || options.screenshotOnly;
+    const derivedStartedMs = Date.now();
     const seoSnapshots = skipDerivedAudits ? [] : createSeoSnapshotsForCapture(capture, snapshots);
     const trackingAuditRecords = skipDerivedAudits
       ? []
@@ -1622,7 +1693,9 @@ async function capturePlanExecution(execution, config, options = {}) {
         capture,
         relatedTrackingAudits: relatedCapture.trackingAudits || []
       });
+    timings.derivedMetadataMs = Date.now() - derivedStartedMs;
 
+    const snapshotWriteStartedMs = Date.now();
     if (!options.deferSnapshotSave) {
       await appendSnapshots(snapshots);
       if (seoSnapshots.length) {
@@ -1632,18 +1705,28 @@ async function capturePlanExecution(execution, config, options = {}) {
         await appendTrackingAuditRecords(trackingAuditRecords);
       }
     }
+    timings.snapshotWriteMs = Date.now() - snapshotWriteStartedMs;
+    const changeRefreshStartedMs = Date.now();
     const changeRefresh = options.deferChangeRefresh
       ? { ok: true, deferred: true }
       : await refreshChangeRecords();
+    timings.changeRefreshMs = Date.now() - changeRefreshStartedMs;
+    const seoRefreshStartedMs = Date.now();
     const seoRefresh = options.deferChangeRefresh
       ? { ok: true, deferred: true }
       : await refreshSeoChangeRecords();
+    timings.seoRefreshMs = Date.now() - seoRefreshStartedMs;
+    const textQualityRefreshStartedMs = Date.now();
     const textQualityRefresh = options.deferChangeRefresh
       ? { ok: true, deferred: true }
       : await refreshTextQualityRecords();
+    timings.textQualityRefreshMs = Date.now() - textQualityRefreshStartedMs;
+    timings.totalMs = Date.now() - planStartedMs;
     recordCaptureDiagnostic(diagnosticRun, {
       type: options.deferSnapshotSave ? "snapshot-prepared" : "snapshot-write",
       ok: true,
+      durationMs: timings.totalMs,
+      timings,
       snapshotCount: snapshots.length,
       seoSnapshotCount: seoSnapshots.length,
       trackingAuditRecordCount: trackingAuditRecords.length,
@@ -1676,6 +1759,7 @@ async function capturePlanExecution(execution, config, options = {}) {
       lowConfidenceSnapshotCount: snapshots.filter((snapshot) => snapshot.captureConfidence?.baselineEligible === false).length,
       lowConfidenceRelatedShotCount: relatedShots.filter((shot) => shot.captureConfidence?.baselineEligible === false).length,
       warningCount: Array.isArray(relatedCapture.validation?.warnings) ? relatedCapture.validation.warnings.length : 0,
+      timings,
       changeRefresh,
       seoRefresh,
       textQualityRefresh
@@ -1689,15 +1773,19 @@ async function capturePlanExecution(execution, config, options = {}) {
       snapshots,
       seoSnapshots,
       trackingAuditRecords,
+      timings,
       changeRefresh,
       seoRefresh,
       textQualityRefresh
     };
   } catch (error) {
+    timings.totalMs = Date.now() - planStartedMs;
     await removeCaptureOutputs(fileInfo.absolutePath);
     recordCaptureDiagnostic(diagnosticRun, {
       type: "capture-error",
       ok: false,
+      durationMs: timings.totalMs,
+      timings,
       error: error.message,
       requestedUrl: error.requestedUrl || normalizedUrl,
       finalUrl: error.finalUrl || null,
@@ -1708,22 +1796,24 @@ async function capturePlanExecution(execution, config, options = {}) {
       ok: false,
       targetId: target.id,
       requestedUrl: normalizedUrl,
-      error: error.message
+      error: error.message,
+      timings
     });
     return {
-        ok: false,
-        url: normalizedUrl,
-        targetId: target.id,
-        targetLabel: target.label || normalizedUrl,
-        displayUrl: target.label || normalizedUrl,
-        captureMode: captureConfig.captureMode || null,
-        platform: execution.platform,
-        deviceProfileId: execution.deviceProfile?.id || null,
-        capturePlanId: execution.id || null,
-        requestedUrl: error.requestedUrl || normalizedUrl,
-        finalUrl: error.finalUrl || null,
-        urlCheck: error.urlCheck || null,
+      ok: false,
+      url: normalizedUrl,
+      targetId: target.id,
+      targetLabel: target.label || normalizedUrl,
+      displayUrl: target.label || normalizedUrl,
+      captureMode: captureConfig.captureMode || null,
+      platform: execution.platform,
+      deviceProfileId: execution.deviceProfile?.id || null,
+      capturePlanId: execution.id || null,
+      requestedUrl: error.requestedUrl || normalizedUrl,
+      finalUrl: error.finalUrl || null,
+      urlCheck: error.urlCheck || null,
       capturedAt: capturedAt.toISOString(),
+      timings,
       error: error.message
     };
   }
@@ -1917,6 +2007,11 @@ function createSeoSnapshotsForCapture(capture, snapshots) {
 function stringOrNull(value) {
   const text = String(value || "").trim();
   return text || null;
+}
+
+function numberOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function booleanOption(value, fallback = false) {
@@ -2286,11 +2381,15 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
       shots: [],
       validation: relatedValidationWithOverviewWarnings(null, overview.warnings),
       trackingAudits: [],
-      homeOverview: overview.homeOverview
+      homeOverview: overview.homeOverview,
+      overviewComposeMs: overview.durationMs,
+      queueSummary: null,
+      sectionTimings: []
     };
   }
 
   let relatedCapture;
+  const relatedModeStartedMs = Date.now();
   try {
     relatedCapture = await capturePageWithBrowserSlot(normalizedUrl, baseOutputPath, {
       ...captureConfig,
@@ -2306,12 +2405,17 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
       sectionKey: relatedMode === "shokz-products-nav-related" ? "navigation" : "related",
       sectionLabel: relatedMode === "shokz-products-nav-related" ? "Navigation" : "More screenshots",
       captureMode: relatedMode,
+      durationMs: Date.now() - relatedModeStartedMs,
       error: error.message,
       captureValidation: error.captureValidation || null
     });
     return {
       shots: [],
       trackingAudits: [],
+      homeOverview: null,
+      overviewComposeMs: null,
+      queueSummary: null,
+      sectionTimings: [],
       validation: {
         status: "warning",
         warnings: [{
@@ -2348,6 +2452,7 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
       syncStatus: storage.syncStatus,
       syncError: storage.syncError,
       objectImageUrl: storage.objectImageUrl,
+      storageDurationMs: storage.durationMs,
       sha256: storage.sha256,
       bytes: stat.size,
       width: item.width,
@@ -2424,6 +2529,9 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
     sectionKey: relatedMode === "shokz-products-nav-related" ? "navigation" : "related",
     sectionLabel: relatedMode === "shokz-products-nav-related" ? "Navigation" : "More screenshots",
     captureMode: relatedMode,
+    durationMs: Date.now() - relatedModeStartedMs,
+    browserSlotWaitMs: numberOrNull(relatedCapture.browserSlotWaitMs),
+    browserCaptureMs: numberOrNull(relatedCapture.browserCaptureMs),
     shotCount: sortedShots.length,
     warningCount: Array.isArray(validationWithOverview?.warnings) ? validationWithOverview.warnings.length : 0,
     lowConfidenceShotCount: sortedShots.filter((shot) => shot.captureConfidence?.baselineEligible === false).length,
@@ -2433,7 +2541,10 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
     shots: sortedShots,
     trackingAudits: [relatedCapture.trackingAudit].filter(Boolean),
     homeOverview: overview.homeOverview,
-    validation: validationWithOverview
+    validation: validationWithOverview,
+    overviewComposeMs: overview.durationMs,
+    queueSummary: null,
+    sectionTimings: []
   };
 }
 
@@ -2442,7 +2553,10 @@ function emptyRelatedCapture() {
     shots: [],
     trackingAudits: [],
     homeOverview: null,
-    validation: null
+    validation: null,
+    overviewComposeMs: null,
+    queueSummary: null,
+    sectionTimings: []
   };
 }
 
@@ -2468,7 +2582,10 @@ async function captureFastRelatedOverview(normalizedUrl, baseOutputPath, capture
     shots: [],
     trackingAudits: [],
     homeOverview: overview.homeOverview,
-    validation: relatedValidationWithOverviewWarnings(null, overview.warnings)
+    validation: relatedValidationWithOverviewWarnings(null, overview.warnings),
+    overviewComposeMs: overview.durationMs,
+    queueSummary: null,
+    sectionTimings: []
   };
 }
 
@@ -2500,7 +2617,7 @@ async function captureShokzHomeRelatedShotsIsolated(normalizedUrl, baseOutputPat
       captureTimeoutMs: homeRelatedSectionTimeoutMs
     }))
   ], captureConfig);
-  const { shots, warnings, sections, trackingAudits } = await captureIsolatedRelatedSections(
+  const { shots, warnings, sections, trackingAudits, queue } = await captureIsolatedRelatedSections(
     normalizedUrl,
     baseOutputPath,
     captureConfig,
@@ -2525,6 +2642,9 @@ async function captureShokzHomeRelatedShotsIsolated(normalizedUrl, baseOutputPat
     shots: sortedShots,
     trackingAudits,
     homeOverview: overview.homeOverview,
+    overviewComposeMs: overview.durationMs,
+    queueSummary: summarizeRelatedQueue(queue),
+    sectionTimings: summarizeRelatedSectionTimings(queue),
     validation: {
       status: warnings.length ? "warning" : "ok",
       warnings,
@@ -2534,6 +2654,11 @@ async function captureShokzHomeRelatedShotsIsolated(normalizedUrl, baseOutputPat
 }
 
 async function composePageOverviewForRelatedShots(baseOutputPath, relatedShots, captureConfig, options = {}) {
+  const startedMs = Date.now();
+  const finish = (result) => ({
+    ...result,
+    durationMs: Date.now() - startedMs
+  });
   const sectionKey = options.sectionKey || "page-overview";
   const sectionLabel = options.sectionLabel || "Page overview";
   const sectionTitle = options.sectionTitle || sectionLabel;
@@ -2547,7 +2672,7 @@ async function composePageOverviewForRelatedShots(baseOutputPath, relatedShots, 
     }));
   if (!preparedShots.length) {
     if (!options.allowGenericOverview) {
-      return { homeOverview: null, warnings: [] };
+      return finish({ homeOverview: null, warnings: [] });
     }
     try {
       const overview = await composeGenericPageOverviewCapture({
@@ -2560,7 +2685,7 @@ async function composePageOverviewForRelatedShots(baseOutputPath, relatedShots, 
         stateLabel,
         label
       });
-      return {
+      return finish({
         homeOverview: await publicPageOverviewForCapture({
           ...overview,
           kind: "home-overview-composite",
@@ -2575,16 +2700,16 @@ async function composePageOverviewForRelatedShots(baseOutputPath, relatedShots, 
             : overview.composite
         }),
         warnings: []
-      };
+      });
     } catch (error) {
-      return {
+      return finish({
         homeOverview: null,
         warnings: [{
           sectionKey,
           sectionLabel,
           message: `Could not compose generic page overview screenshot: ${error.message}`
         }]
-      };
+      });
     }
   }
 
@@ -2608,7 +2733,7 @@ async function composePageOverviewForRelatedShots(baseOutputPath, relatedShots, 
           stateLabel,
           label
         });
-    return {
+    return finish({
       homeOverview: await publicPageOverviewForCapture({
         ...overview,
         kind: "home-overview-composite",
@@ -2623,16 +2748,16 @@ async function composePageOverviewForRelatedShots(baseOutputPath, relatedShots, 
           : overview.composite
       }),
       warnings: []
-    };
+    });
   } catch (error) {
-    return {
+    return finish({
       homeOverview: null,
       warnings: [{
         sectionKey,
         sectionLabel,
         message: `Could not compose page overview screenshot: ${error.message}`
       }]
-    };
+    });
   }
 }
 
@@ -2879,6 +3004,7 @@ async function publicPageOverviewForCapture(overview) {
     syncStatus: storage.syncStatus,
     syncError: storage.syncError,
     objectImageUrl: storage.objectImageUrl,
+    storageDurationMs: storage.durationMs,
     sha256: storage.sha256,
     bytes: stat.size,
     width: overview.width,
@@ -2923,7 +3049,7 @@ function relatedValidationWithOverviewWarnings(validation, overviewWarnings = []
 
 async function captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun, options = {}) {
   const descriptors = collectionRelatedDescriptorsForCaptureConfig(captureConfig);
-  const { shots, warnings, sections, trackingAudits } = await captureIsolatedRelatedSections(
+  const { shots, warnings, sections, trackingAudits, queue } = await captureIsolatedRelatedSections(
     normalizedUrl,
     baseOutputPath,
     captureConfig,
@@ -2944,6 +3070,9 @@ async function captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOut
     shots: sortedShots,
     trackingAudits,
     homeOverview: overview.homeOverview,
+    overviewComposeMs: overview.durationMs,
+    queueSummary: summarizeRelatedQueue(queue),
+    sectionTimings: summarizeRelatedSectionTimings(queue),
     validation: {
       status: warnings.length ? "warning" : "ok",
       warnings,
@@ -2954,7 +3083,7 @@ async function captureShokzCollectionRelatedShotsIsolated(normalizedUrl, baseOut
 
 async function captureShokzComparisonRelatedShotsIsolated(normalizedUrl, baseOutputPath, captureConfig, diagnosticRun, options = {}) {
   const descriptors = comparisonRelatedDescriptorsForCaptureConfig(captureConfig);
-  const { shots, warnings, sections, trackingAudits } = await captureIsolatedRelatedSections(
+  const { shots, warnings, sections, trackingAudits, queue } = await captureIsolatedRelatedSections(
     normalizedUrl,
     baseOutputPath,
     captureConfig,
@@ -2975,6 +3104,9 @@ async function captureShokzComparisonRelatedShotsIsolated(normalizedUrl, baseOut
     shots: sortedShots,
     trackingAudits,
     homeOverview: overview.homeOverview,
+    overviewComposeMs: overview.durationMs,
+    queueSummary: summarizeRelatedQueue(queue),
+    sectionTimings: summarizeRelatedSectionTimings(queue),
     validation: {
       status: warnings.length ? "warning" : "ok",
       warnings,
@@ -3027,6 +3159,64 @@ async function captureIsolatedRelatedSections(normalizedUrl, baseOutputPath, cap
     trackingAudits,
     queue
   };
+}
+
+function summarizeRelatedQueue(queue) {
+  if (!queue || typeof queue !== "object") {
+    return null;
+  }
+  return {
+    totalCount: Number(queue.totalCount || 0),
+    successCount: Number(queue.successCount || 0),
+    failureCount: Number(queue.failureCount || 0),
+    concurrency: Number(queue.concurrency || 0),
+    maxActiveCount: Number(queue.maxActiveCount || 0),
+    durationMs: numberOrNull(queue.durationMs)
+  };
+}
+
+function summarizeRelatedSectionTimings(queue) {
+  if (!queue || !Array.isArray(queue.results)) {
+    return [];
+  }
+  return queue.results.map((entry) => {
+    const descriptor = entry?.job || {};
+    const result = entry?.value || {};
+    return {
+      sectionKey: descriptor.sectionKey || result.validation?.sections?.[0]?.sectionKey || null,
+      sectionLabel: descriptor.sectionLabel || result.validation?.sections?.[0]?.sectionLabel || null,
+      captureMode: descriptor.captureMode || null,
+      ok: Boolean(entry?.ok),
+      durationMs: numberOrNull(entry?.durationMs),
+      shotCount: Array.isArray(result.shots) ? result.shots.length : 0,
+      warningCount: Array.isArray(result.validation?.warnings) ? result.validation.warnings.length : 0,
+      error: entry?.ok ? null : stringOrNull(entry?.errorMessage)
+    };
+  });
+}
+
+function summarizeObjectStorageTimings(snapshots = [], relatedShots = [], homeOverview = null) {
+  const items = [
+    ...arrayOrEmpty(snapshots),
+    ...arrayOrEmpty(relatedShots),
+    homeOverview
+  ].filter(Boolean);
+  const durations = items
+    .map((item) => numberOrNull(item.storageDurationMs))
+    .filter((duration) => duration !== null);
+  return {
+    fileCount: items.length,
+    measuredCount: durations.length,
+    totalMs: durations.reduce((sum, duration) => sum + duration, 0),
+    maxMs: durations.length ? Math.max(...durations) : null,
+    syncedCount: items.filter((item) => item.syncStatus === "synced").length,
+    failedCount: items.filter((item) => item.syncStatus === "failed").length,
+    localOnlyCount: items.filter((item) => item.syncStatus === "local-only").length
+  };
+}
+
+function arrayOrEmpty(value) {
+  return Array.isArray(value) ? value : [];
 }
 
 function collectionRelatedDescriptorsForCaptureConfig(captureConfig = {}) {
@@ -3129,6 +3319,7 @@ function relatedDescriptorsForCaptureConfig(descriptors, captureConfig = {}) {
 }
 
 async function captureIsolatedRelatedSection(normalizedUrl, baseOutputPath, captureConfig, descriptor, diagnosticRun, options = {}) {
+  const startedMs = Date.now();
   let relatedCapture;
   try {
     relatedCapture = await capturePageWithBrowserSlot(normalizedUrl, baseOutputPath, {
@@ -3148,6 +3339,7 @@ async function captureIsolatedRelatedSection(normalizedUrl, baseOutputPath, capt
       sectionKey: descriptor.sectionKey,
       sectionLabel: descriptor.sectionLabel,
       captureMode: descriptor.captureMode,
+      durationMs: Date.now() - startedMs,
       error: error.message,
       captureValidation: error.captureValidation || null
     });
@@ -3184,6 +3376,9 @@ async function captureIsolatedRelatedSection(normalizedUrl, baseOutputPath, capt
     sectionKey: descriptor.sectionKey,
     sectionLabel: descriptor.sectionLabel,
     captureMode: descriptor.captureMode,
+    durationMs: Date.now() - startedMs,
+    browserSlotWaitMs: numberOrNull(relatedCapture.browserSlotWaitMs),
+    browserCaptureMs: numberOrNull(relatedCapture.browserCaptureMs),
     shotCount: shots.length,
     warningCount: Array.isArray(validation?.warnings) ? validation.warnings.length : 0,
     lowConfidenceShotCount: shots.filter((shot) => shot.captureConfidence?.baselineEligible === false).length,
@@ -3213,6 +3408,7 @@ async function relatedShotsFromCaptureResult(relatedCapture, normalizedUrl, vali
       syncStatus: storage.syncStatus,
       syncError: storage.syncError,
       objectImageUrl: storage.objectImageUrl,
+      storageDurationMs: storage.durationMs,
       sha256: storage.sha256,
       bytes: stat.size,
       width: item.width,
@@ -3356,11 +3552,13 @@ function archiveRelativePath(absolutePath) {
 }
 
 async function archiveImageMetadata({ absolutePath, relativePath, snapshotId = null }) {
+  const startedMs = Date.now();
   const storage = await syncArchiveFileToObjectStorage({
     absolutePath,
     relativePath,
     snapshotId
   });
+  const durationMs = Date.now() - startedMs;
   const localImageUrl = publicSnapshotUrl(relativePath);
   return {
     file: relativePath,
@@ -3371,6 +3569,7 @@ async function archiveImageMetadata({ absolutePath, relativePath, snapshotId = n
     syncStatus: storage.syncStatus,
     syncError: storage.syncError || null,
     objectImageUrl: storage.objectImageUrl || null,
+    durationMs,
     sha256: storage.sha256
   };
 }

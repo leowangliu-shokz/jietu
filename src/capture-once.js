@@ -30,6 +30,7 @@ async function runCaptureCommand() {
     const captureOptions = {
       deferChangeRefresh,
       screenshotOnly,
+      fastCaptureOnly: process.env.PAGE_SHOT_FAST_CAPTURE_ONLY === "1",
       fastMainCapture: process.env.PAGE_SHOT_FAST_MAIN_CAPTURE === "1",
       fastRelated: process.env.PAGE_SHOT_FAST_RELATED === "1"
     };

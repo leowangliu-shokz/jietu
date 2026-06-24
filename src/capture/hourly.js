@@ -5,11 +5,12 @@ import { loadConfig } from "../store.js";
 
 export async function runHourlyCapture(options = {}) {
   const config = options.config || await loadConfig();
+  const fastCaptureOnly = options.fastCaptureOnly !== false;
   const results = await captureConfiguredUrls(config, {
     ...options,
     deferChangeRefresh: true,
     screenshotOnly: options.screenshotOnly !== false,
-    fastCaptureOnly: options.fastCaptureOnly === true,
+    fastCaptureOnly,
     fastMainCapture: options.fastMainCapture === true,
     fastRelated: options.fastRelated === true
   });
@@ -35,7 +36,8 @@ export async function runHourlyCapture(options = {}) {
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const result = await runHourlyCapture({
-    platform: readArg("--platform") || undefined
+    platform: readArg("--platform") || undefined,
+    fastCaptureOnly: hasArg("--with-related") ? false : undefined
   });
   const run = result.run;
   const succeeded = run?.successCount ?? result.results.filter((item) => item?.ok).length;
@@ -58,4 +60,8 @@ function readArg(name) {
     return null;
   }
   return process.argv[index + 1] || null;
+}
+
+function hasArg(name) {
+  return process.argv.includes(name);
 }

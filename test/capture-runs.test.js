@@ -36,6 +36,10 @@ test("appendCaptureRun stores newest runs first and preserves item status", asyn
       durationMs: 1200000,
       maxActiveCount: 1
     },
+    timings: {
+      jobQueueMs: 1200000,
+      persistenceMs: 42
+    },
     items: [{
       id: "run-2-item-1",
       ok: false,
@@ -43,6 +47,19 @@ test("appendCaptureRun stores newest runs first and preserves item status", asyn
       targetId: "home",
       platform: "mobile",
       capturePlanId: "home-mobile",
+      timings: {
+        mainCaptureMs: 82000,
+        relatedCaptureMs: 0,
+        objectStorage: {
+          fileCount: 1,
+          totalMs: 1200
+        },
+        relatedSections: [{
+          sectionKey: "banner",
+          durationMs: 0,
+          shotCount: 0
+        }]
+      },
       retryCount: 1,
       error: "Timed out"
     }]
@@ -52,7 +69,11 @@ test("appendCaptureRun stores newest runs first and preserves item status", asyn
   assert.deepEqual(runs.map((run) => run.id), ["run-2", "run-1"]);
   assert.equal(runs[0].failureCount, 1);
   assert.equal(runs[0].jobQueue.durationMs, 1200000);
+  assert.equal(runs[0].timings.jobQueueMs, 1200000);
   assert.equal(runs[0].items[0].retryCount, 1);
+  assert.equal(runs[0].items[0].timings.mainCaptureMs, 82000);
+  assert.equal(runs[0].items[0].timings.objectStorage.totalMs, 1200);
+  assert.equal(runs[0].items[0].timings.relatedSections[0].sectionKey, "banner");
   assert.equal(runs[0].items[0].error, "Timed out");
   assert.deepEqual(runs[1].items[0].snapshotIds, ["snap-1"]);
 });
