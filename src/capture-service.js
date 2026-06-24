@@ -1561,6 +1561,7 @@ async function capturePlanExecution(execution, config, options = {}) {
   });
   const timings = {
     fastCaptureOnly: Boolean(options.fastCaptureOnly),
+    fastFullPage: Boolean(options.fastFullPage),
     fastMainCapture: Boolean(options.fastMainCapture),
     fastRelated: Boolean(options.fastRelated)
   };
@@ -1572,12 +1573,16 @@ async function capturePlanExecution(execution, config, options = {}) {
     timings.mainCaptureMs = Date.now() - mainStartedMs;
     timings.mainBrowserSlotWaitMs = numberOrNull(capture.browserSlotWaitMs);
     timings.mainBrowserCaptureMs = numberOrNull(capture.browserCaptureMs);
+    timings.captureStrategy = capture.captureStrategy || null;
+    timings.fastFullPage = capture.fastFullPage || timings.fastFullPage;
     recordCaptureDiagnostic(diagnosticRun, {
       type: "main-capture",
       ok: true,
       durationMs: timings.mainCaptureMs,
       browserSlotWaitMs: timings.mainBrowserSlotWaitMs,
       browserCaptureMs: timings.mainBrowserCaptureMs,
+      captureStrategy: timings.captureStrategy,
+      fastFullPage: capture.fastFullPage || null,
       finalUrl: capture.finalUrl || normalizedUrl,
       width: capture.width || null,
       height: capture.height || null,
@@ -1962,6 +1967,25 @@ function captureConfigForExecution(config, execution, options = {}) {
     targetConfig.fullPage = false;
     targetConfig.lazyLoadScroll = false;
     targetConfig.maxAttempts = Math.min(2, Math.max(1, Number(targetConfig.maxAttempts) || 2));
+  }
+  if (options.fastCaptureOnly && captureMode !== "shokz-products-nav") {
+    targetConfig.stitchedFullPageSegmentHeight = options.stitchedFullPageSegmentHeight ||
+      targetConfig.stitchedFullPageSegmentHeight ||
+      process.env.PAGE_SHOT_FAST_STITCHED_SEGMENT_HEIGHT ||
+      2200;
+  }
+  if ((options.fastFullPage || targetConfig.fastFullPage) && captureMode !== "shokz-products-nav") {
+    targetConfig.fastFullPage = true;
+    targetConfig.skipSeoSnapshot = true;
+    targetConfig.skipTrackingAudit = true;
+    targetConfig.fastFullPageTimeoutMs = options.fastFullPageTimeoutMs ||
+      targetConfig.fastFullPageTimeoutMs ||
+      process.env.PAGE_SHOT_FAST_FULLPAGE_TIMEOUT_MS ||
+      10000;
+    targetConfig.fastFullPageAttemptTimeoutMs = options.fastFullPageAttemptTimeoutMs ||
+      targetConfig.fastFullPageAttemptTimeoutMs ||
+      process.env.PAGE_SHOT_FAST_FULLPAGE_ATTEMPT_TIMEOUT_MS ||
+      undefined;
   }
   if (relatedCaptureMode) {
     targetConfig.relatedCaptureMode = relatedCaptureMode;

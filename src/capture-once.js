@@ -31,6 +31,10 @@ async function runCaptureCommand() {
       deferChangeRefresh,
       screenshotOnly,
       fastCaptureOnly: process.env.PAGE_SHOT_FAST_CAPTURE_ONLY === "1",
+      fastFullPage: process.env.PAGE_SHOT_FAST_FULLPAGE === "1",
+      fastFullPageTimeoutMs: Number(process.env.PAGE_SHOT_FAST_FULLPAGE_TIMEOUT_MS) || undefined,
+      fastFullPageAttemptTimeoutMs: Number(process.env.PAGE_SHOT_FAST_FULLPAGE_ATTEMPT_TIMEOUT_MS) || undefined,
+      stitchedFullPageSegmentHeight: Number(process.env.PAGE_SHOT_FAST_STITCHED_SEGMENT_HEIGHT) || undefined,
       fastMainCapture: process.env.PAGE_SHOT_FAST_MAIN_CAPTURE === "1",
       fastRelated: process.env.PAGE_SHOT_FAST_RELATED === "1"
     };

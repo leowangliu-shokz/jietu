@@ -74,6 +74,23 @@ export async function capturePage(url, outputPath, options = {}) {
         return await capturePageWithBrowserProfile(browserPath, profile, url, outputPath, options);
       } catch (error) {
         lastLaunchError = error;
+        if (shouldFallbackFromFastFullPage(error, options)) {
+          try {
+            return await capturePageWithBrowserProfile(browserPath, profile, url, outputPath, {
+              ...options,
+              fastFullPage: false,
+              fastFullPageFallback: {
+                reason: error.message
+              }
+            });
+          } catch (fallbackError) {
+            lastLaunchError = fallbackError;
+            if (!isRetryableBrowserLaunchError(fallbackError)) {
+              throw fallbackError;
+            }
+            continue;
+          }
+        }
         if (!isRetryableBrowserLaunchError(error)) {
           throw error;
         }
@@ -89,7 +106,9 @@ async function capturePageWithBrowserProfile(browserPath, profile, url, outputPa
   let client = null;
   const captureTimeoutMs = Number.isFinite(Number(options.captureTimeoutMs))
     ? Number(options.captureTimeoutMs)
-    : defaultCaptureTimeoutMs;
+    : options.fastFullPage
+      ? fastFullPageAttemptTimeoutMs(options)
+      : defaultCaptureTimeoutMs;
   const browser = spawn(browserPath, [
     ...profile.args,
     "--disable-extensions",
@@ -118,7 +137,9 @@ async function capturePageWithBrowserProfile(browserPath, profile, url, outputPa
     const result = await withTimeout(
       driveCapture(client, url, outputPath, options),
       captureTimeoutMs,
-      () => new Error(`Capture timed out after ${Math.round(captureTimeoutMs / 1000)}s.`)
+      () => options.fastFullPage
+        ? fastFullPageFallbackError(`Fast full-page capture timed out after ${Math.round(captureTimeoutMs / 1000)}s.`)
+        : new Error(`Capture timed out after ${Math.round(captureTimeoutMs / 1000)}s.`)
     );
     client.close();
     client = null;
@@ -284,10 +305,12 @@ async function driveCapture(client, url, outputPath, options) {
   }
 
   stage = "navigating";
-  const loadEvent = client.waitFor("Page.loadEventFired", defaultTimeoutMs).catch(() => null);
+  const pageReadyEvent = options.fastFullPage ? "Page.domContentEventFired" : "Page.loadEventFired";
+  const pageReadyTimeoutMs = options.fastFullPage ? 10000 : defaultTimeoutMs;
+  const loadEvent = client.waitFor(pageReadyEvent, pageReadyTimeoutMs).catch(() => null);
   await client.send("Page.navigate", { url });
   await loadEvent;
-  await sleep(options.waitAfterLoadMs ?? 2500);
+  await sleep(options.fastFullPage ? options.fastFullPageWaitAfterLoadMs ?? 1000 : options.waitAfterLoadMs ?? 2500);
   await verifyCurrentUrl(client, url, "after navigation", urlCheck);
   if (options.dismissPopups !== false && !deferShokzMobileNavDismiss) {
     if (cleanShokzKnownPopups) {
@@ -465,7 +488,7 @@ async function driveCapture(client, url, outputPath, options) {
   }
 
   let scrollInfo = null;
-  if (options.fullPage && options.lazyLoadScroll !== false) {
+  if (options.fullPage && options.lazyLoadScroll !== false && !shouldUseFastViewportFullPageCapture(options)) {
     stage = shouldUseDedicatedViewMoreExpansion(options)
       ? "preparing expanded comparison full-page capture"
       : "scrolling to trigger lazy content";
@@ -521,7 +544,7 @@ async function driveCapture(client, url, outputPath, options) {
   stage = "reading page title";
   const titleResult = await readPageTitle(client);
   stage = "reading seo snapshot";
-  const seoSnapshot = await readSeoSnapshot(client);
+  const seoSnapshot = options.skipSeoSnapshot ? null : await readSeoSnapshot(client);
 
   stage = "measuring page";
   const metrics = await client.send("Page.getLayoutMetrics");
@@ -542,9 +565,39 @@ async function driveCapture(client, url, outputPath, options) {
   stage = "capturing screenshot";
   let captureBuffer = null;
   let captureValidation = null;
+  let captureStrategy = null;
   if (options.fullPage) {
     const guardShokzSearchOverlay = shouldGuardShokzSearchOverlay(url, viewport, options);
-    if (shouldUseDirectFullPageClipCapture(options) && !shouldUseStitchedLandingFullPageCapture(options, viewport)) {
+    if (shouldUseFastViewportFullPageCapture(options)) {
+      await freezePageMotion(client);
+      try {
+        stage = "capturing fast full-page screenshot";
+        const fastCapture = await withTimeout(
+          captureFastViewportFullPageScreenshot(client, outputPath, {
+            width: clipWidth,
+            height: clipHeight,
+            viewport,
+            mobile,
+            label: "fast full-page screenshot",
+            guardSearchOverlay: guardShokzSearchOverlay,
+            shokzKnownPopups: cleanShokzKnownPopups,
+            acceptBlankAudit: shouldAcceptShokzLongPageBlankBands(url, options)
+              ? isAcceptableShokzLongPageBlankBandAudit
+              : null
+          }),
+          fastFullPageTimeoutMs(options),
+          () => fastFullPageFallbackError(`Fast full-page screenshot timed out after ${Math.round(fastFullPageTimeoutMs(options) / 1000)}s.`)
+        );
+        captureBuffer = fastCapture.buffer;
+        captureValidation = fastCapture.captureValidation;
+        captureHeight = fastCapture.height || clipHeight;
+        captureStrategy = "fast-full-page";
+      } catch (error) {
+        throw fastFullPageFallbackError(error.message || "Fast full-page screenshot failed.", error);
+      } finally {
+        await restorePageMotion(client);
+      }
+    } else if (shouldUseDirectFullPageClipCapture(options) && !shouldUseStitchedLandingFullPageCapture(options, viewport)) {
       await freezePageMotion(client);
       try {
         const clipCapture = shouldUseDedicatedViewMoreExpansion(options)
@@ -591,6 +644,7 @@ async function driveCapture(client, url, outputPath, options) {
         captureBuffer = clipCapture.buffer;
         captureValidation = clipCapture.captureValidation;
         captureHeight = clipCapture.height || clipHeight;
+        captureStrategy = "full-page-clip";
         pageHeight = Math.max(pageHeight, captureHeight);
         if (clipCapture.pageState) {
           scrollInfo = {
@@ -712,6 +766,7 @@ async function driveCapture(client, url, outputPath, options) {
         captureBuffer = finalizedCapture.buffer;
         captureValidation = finalizedCapture.captureValidation;
         captureHeight = finalizedCapture.height || clipHeight;
+        captureStrategy = usedFullPageClipFallback ? "full-page-clip-fallback" : "stitched-full-page";
       } finally {
         await restorePageMotion(client);
       }
@@ -750,13 +805,14 @@ async function driveCapture(client, url, outputPath, options) {
     });
     captureBuffer = screenshotCapture.buffer;
     captureValidation = screenshotCapture.captureValidation;
+    captureStrategy = "viewport";
     await fs.writeFile(outputPath, captureBuffer);
   }
   const finalUrl = await verifyCurrentUrl(client, url, "after screenshot capture", urlCheck);
   urlCheck.ok = true;
   const visualHash = captureBuffer ? visualHashForBuffer(captureBuffer) : null;
   const visualAudit = captureBuffer && visualHash ? visualAuditForBuffer(captureBuffer, visualHash) : null;
-  const trackingAudit = await readTrackingAudit(client, trackingNetworkRequests);
+  const trackingAudit = options.skipTrackingAudit ? null : await readTrackingAudit(client, trackingNetworkRequests);
 
   return {
     requestedUrl: url,
@@ -772,7 +828,16 @@ async function driveCapture(client, url, outputPath, options) {
     scrollInfo,
     visualHash,
     visualAudit,
-    captureValidation
+    captureValidation,
+    captureStrategy,
+    fastFullPage: options.fastFullPage || options.fastFullPageFallback
+      ? {
+          attempted: Boolean(options.fastFullPage || options.fastFullPageFallback),
+          requested: Boolean(options.fastFullPage || options.fastFullPageFallback),
+          used: captureStrategy === "fast-full-page",
+          fallback: options.fastFullPageFallback || null
+        }
+      : null
   };
   } catch (error) {
     error.message = `${error.message} (stage: ${stage})`;
@@ -1401,6 +1466,41 @@ function shouldUseDirectFullPageClipCapture(options = {}) {
     captureMode === "shokz-landing-page";
 }
 
+function shouldUseFastViewportFullPageCapture(options = {}) {
+  if (!options.fastFullPage || options.fullPage === false) {
+    return false;
+  }
+  const captureMode = String(options.captureMode || "").trim();
+  return !captureMode.includes("related") && captureMode !== "shokz-products-nav";
+}
+
+function fastFullPageTimeoutMs(options = {}) {
+  const value = Number(options.fastFullPageTimeoutMs ?? process.env.PAGE_SHOT_FAST_FULLPAGE_TIMEOUT_MS);
+  return Number.isFinite(value) && value > 0 ? Math.max(1000, Math.trunc(value)) : 10000;
+}
+
+function fastFullPageAttemptTimeoutMs(options = {}) {
+  const value = Number(options.fastFullPageAttemptTimeoutMs ?? process.env.PAGE_SHOT_FAST_FULLPAGE_ATTEMPT_TIMEOUT_MS);
+  if (Number.isFinite(value) && value > 0) {
+    return Math.max(1000, Math.trunc(value));
+  }
+  return Math.max(15000, fastFullPageTimeoutMs(options) + 5000);
+}
+
+function fastFullPageFallbackError(message, cause = null) {
+  const error = new Error(message || "Fast full-page screenshot failed.");
+  error.code = "FAST_FULL_PAGE_FALLBACK";
+  if (cause) {
+    error.cause = cause;
+    error.captureValidation = cause.captureValidation || null;
+  }
+  return error;
+}
+
+function shouldFallbackFromFastFullPage(error, options = {}) {
+  return Boolean(options.fastFullPage) && error?.code === "FAST_FULL_PAGE_FALLBACK";
+}
+
 function shouldUseStitchedLandingFullPageCapture(options = {}, viewport = {}) {
   if (options.fullPage === false) {
     return false;
@@ -1411,6 +1511,13 @@ function shouldUseStitchedLandingFullPageCapture(options = {}, viewport = {}) {
 
 function stitchedFullPageSegmentHeight(options = {}, viewport = {}, clipHeight = 0) {
   const baseHeight = Math.max(320, Number(viewport.height || 0) || 0);
+  const configuredHeight = Number(options.stitchedFullPageSegmentHeight ?? options.fastStitchedSegmentHeight);
+  if (Number.isFinite(configuredHeight) && configuredHeight > 0) {
+    return Math.min(
+      Math.max(baseHeight, Math.trunc(configuredHeight)),
+      Math.max(baseHeight, Number(clipHeight || baseHeight))
+    );
+  }
   if (shouldUseStitchedLandingFullPageCapture(options, viewport)) {
     return Math.min(Math.max(baseHeight, 1800), Math.max(baseHeight, Number(clipHeight || baseHeight)));
   }
@@ -19873,6 +19980,10 @@ export const __testOnly = {
   shouldPreserveMeasuredFullPageHeight,
   shouldUseDedicatedViewMoreExpansion,
   shouldUseDirectFullPageClipCapture,
+  shouldUseFastViewportFullPageCapture,
+  fastFullPageTimeoutMs,
+  fastFullPageAttemptTimeoutMs,
+  captureFastViewportFullPageScreenshot,
   shouldUseStitchedLandingFullPageCapture,
   browserLaunchProfiles,
   isRetryableBrowserLaunchError,
@@ -19880,6 +19991,59 @@ export const __testOnly = {
   isRetryableBlankGpuCaptureError,
   stitchedFullPageSegmentHeight
 };
+
+async function captureFastViewportFullPageScreenshot(client, outputPath, options) {
+  const width = Math.ceil(options.width);
+  const height = Math.ceil(options.height);
+  const viewport = options.viewport || {};
+  await client.send("Emulation.setDeviceMetricsOverride", {
+    mobile: Boolean(options.mobile || viewport.mobile),
+    width,
+    height,
+    deviceScaleFactor: viewport.deviceScaleFactor || 1,
+    screenWidth: width,
+    screenHeight: height
+  });
+  await scrollTo(client, 0);
+  await settlePositionedViewport(client, {
+    delayMs: 180,
+    frames: 2
+  });
+
+  const screenshotCapture = await captureScreenshotWithValidation(client, {
+    format: "png",
+    fromSurface: true
+  }, {
+    label: options.label || "fast full-page screenshot",
+    maxAttempts: 1,
+    acceptBlankAudit: options.acceptBlankAudit,
+    beforeAttempt: async () => {
+      await prepareForScreenshotCapture(client, {
+        rounds: options.mobile ? 2 : 1,
+        shokzKnownPopups: options.shokzKnownPopups,
+        guardSearchOverlay: options.guardSearchOverlay,
+        stage: options.mobile
+          ? "before mobile fast full-page screenshot capture"
+          : "before fast full-page screenshot capture"
+      });
+      if (options.guardSearchOverlay) {
+        await ensureShokzSearchOverlayClosed(client, "before fast full-page screenshot capture");
+      }
+      await scrollTo(client, 0);
+      await settlePositionedViewport(client, {
+        delayMs: 120,
+        frames: 2
+      });
+    }
+  });
+  await fs.writeFile(outputPath, screenshotCapture.buffer);
+  const image = decodePng(screenshotCapture.buffer);
+  return {
+    ...screenshotCapture,
+    width: image.width,
+    height: image.height
+  };
+}
 
 async function captureFullPageClipScreenshot(client, outputPath, options) {
   const screenshotCapture = await captureScreenshotWithValidation(client, () => ({

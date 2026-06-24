@@ -24,6 +24,9 @@ const {
   shouldPreserveMeasuredFullPageHeight,
   shouldUseDedicatedViewMoreExpansion,
   shouldUseDirectFullPageClipCapture,
+  shouldUseFastViewportFullPageCapture,
+  fastFullPageAttemptTimeoutMs,
+  captureFastViewportFullPageScreenshot,
   shouldUseStitchedLandingFullPageCapture,
   browserLaunchProfiles,
   isRetryableBrowserLaunchError,
@@ -666,6 +669,51 @@ test("collection and comparison page capture modes prefer direct full-page clip 
   assert.equal(shouldUseDirectFullPageClipCapture({}), false);
 });
 
+test("fast full-page mode is limited to non-related full-page captures", () => {
+  assert.equal(shouldUseFastViewportFullPageCapture({ fastFullPage: true }), true);
+  assert.equal(shouldUseFastViewportFullPageCapture({ fastFullPage: true, fullPage: false }), false);
+  assert.equal(shouldUseFastViewportFullPageCapture({ fastFullPage: true, captureMode: "shokz-products-nav" }), false);
+  assert.equal(shouldUseFastViewportFullPageCapture({ fastFullPage: true, captureMode: "shokz-home-related-section" }), false);
+  assert.equal(shouldUseFastViewportFullPageCapture({}), false);
+});
+
+test("fast full-page attempt timeout is short and configurable", () => {
+  assert.equal(fastFullPageAttemptTimeoutMs({ fastFullPageTimeoutMs: 10000 }), 15000);
+  assert.equal(fastFullPageAttemptTimeoutMs({ fastFullPageAttemptTimeoutMs: 12000 }), 12000);
+});
+
+test("fast full-page capture expands the viewport and captures without a clip", async () => {
+  const calls = [];
+  const screenshotBuffer = encodePng(120, 360, checkerImage(120, 360));
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-fast-fullpage-test-"));
+  const outputPath = path.join(tempDir, "fast-fullpage.png");
+  const client = {
+    async send(method, params = {}) {
+      calls.push({ method, params });
+      if (method === "Page.captureScreenshot") {
+        assert.equal(params.clip, undefined);
+        return { data: screenshotBuffer.toString("base64") };
+      }
+      return { result: { value: { ok: true } } };
+    }
+  };
+
+  try {
+    const result = await captureFastViewportFullPageScreenshot(client, outputPath, {
+      width: 120,
+      height: 360,
+      viewport: { width: 120, height: 90, mobile: false, deviceScaleFactor: 1 }
+    });
+    assert.equal(result.height, 360);
+    assert.ok(await fileExists(outputPath));
+    const metricsCall = calls.find((call) => call.method === "Emulation.setDeviceMetricsOverride");
+    assert.equal(metricsCall.params.width, 120);
+    assert.equal(metricsCall.params.height, 360);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("desktop landing full-page capture uses stitched segments", () => {
   assert.equal(shouldUseStitchedLandingFullPageCapture(
     { captureMode: "shokz-landing-page", platform: "pc" },
@@ -686,6 +734,11 @@ test("desktop landing full-page capture uses stitched segments", () => {
 });
 
 test("desktop landing stitched capture uses taller segments", () => {
+  assert.equal(stitchedFullPageSegmentHeight(
+    { stitchedFullPageSegmentHeight: 2200 },
+    { width: 1920, height: 1080, mobile: false },
+    6864
+  ), 2200);
   assert.equal(stitchedFullPageSegmentHeight(
     { captureMode: "shokz-landing-page", platform: "pc" },
     { width: 1920, height: 1080, mobile: false },
@@ -802,6 +855,15 @@ function topbarCapture(buffer, pageIndex, y = 0) {
 function pixelAt(image, x, y) {
   const offset = (y * image.width + x) * 4;
   return image.rgba.slice(offset, offset + 4);
+}
+
+async function fileExists(filePath) {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function solidImage(width, height, color) {

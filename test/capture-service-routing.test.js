@@ -311,6 +311,39 @@ test("fast main capture uses viewport screenshots for non-navigation plans", () 
   assert.equal(navConfig.fullPage, false);
 });
 
+test("fast full-page capture keeps long screenshots and enables the fast path", () => {
+  const config = normalizeConfig({
+    targets: [{ id: "home", url: "https://example.com/", label: "Home" }],
+    deviceProfiles: [{ id: "pc-main", platform: "pc", devicePresetId: "pc-hd", enabled: true }],
+    capturePlans: [{ id: "home-pc", targetId: "home", deviceProfileId: "pc-main", enabled: true }]
+  });
+  const [homeExecution] = resolveConfiguredCapturePlans(config, { planIds: ["home-pc"] });
+  const captureConfig = captureConfigForExecution(config, homeExecution, {
+    fastFullPage: true,
+    fastFullPageTimeoutMs: 12000,
+    fastFullPageAttemptTimeoutMs: 18000
+  });
+
+  assert.notEqual(captureConfig.fullPage, false);
+  assert.equal(captureConfig.fastFullPage, true);
+  assert.equal(captureConfig.skipSeoSnapshot, true);
+  assert.equal(captureConfig.skipTrackingAudit, true);
+  assert.equal(captureConfig.fastFullPageTimeoutMs, 12000);
+  assert.equal(captureConfig.fastFullPageAttemptTimeoutMs, 18000);
+});
+
+test("fast capture only uses taller stitched segments for fallback speed", () => {
+  const config = normalizeConfig({
+    targets: [{ id: "home", url: "https://example.com/", label: "Home" }],
+    deviceProfiles: [{ id: "pc-main", platform: "pc", devicePresetId: "pc-hd", enabled: true }],
+    capturePlans: [{ id: "home-pc", targetId: "home", deviceProfileId: "pc-main", enabled: true }]
+  });
+  const [homeExecution] = resolveConfiguredCapturePlans(config, { planIds: ["home-pc"] });
+  const captureConfig = captureConfigForExecution(config, homeExecution, { fastCaptureOnly: true });
+
+  assert.equal(captureConfig.stitchedFullPageSegmentHeight, 2200);
+});
+
 test("resolveAdHocCaptureExecution can bind a manual URL to the requested mobile profile", () => {
   const config = normalizeConfig({
     targets: [{ id: "home", url: "https://example.com/", label: "Example" }],
