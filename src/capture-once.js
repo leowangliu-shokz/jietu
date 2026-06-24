@@ -26,9 +26,16 @@ process.exit(process.exitCode || 0);
 async function runCaptureCommand() {
   try {
     const deferChangeRefresh = process.env.PAGE_SHOT_SYNC_REFRESH !== "1";
+    const screenshotOnly = process.env.PAGE_SHOT_SCREENSHOT_ONLY !== "0";
+    const captureOptions = {
+      deferChangeRefresh,
+      screenshotOnly,
+      fastMainCapture: process.env.PAGE_SHOT_FAST_MAIN_CAPTURE === "1",
+      fastRelated: process.env.PAGE_SHOT_FAST_RELATED === "1"
+    };
     return argUrl
-      ? [await captureOne(argUrl, config)]
-      : await captureConfiguredUrls(config, { deferChangeRefresh });
+      ? [await captureOne(argUrl, config, captureOptions)]
+      : await captureConfiguredUrls(config, captureOptions);
   } catch (error) {
     if (error.code === "CAPTURE_LOCKED") {
       console.log(error.message);

@@ -222,8 +222,21 @@ function captureSelfCheckIssues(result = {}) {
     if (snapshot.captureConfidence?.baselineEligible === false) {
       issues.push(`Screenshot confidence is low: ${(snapshot.captureConfidence.reasons || []).join(", ") || "unknown"}`);
     }
+    for (const item of snapshotArchiveItems(snapshot)) {
+      if (item.syncStatus === "failed") {
+        issues.push(`Object storage sync failed: ${item.syncError || item.file || "unknown error"}`);
+      }
+    }
   }
   return [...new Set(issues)];
+}
+
+function snapshotArchiveItems(snapshot = {}) {
+  return [
+    snapshot,
+    snapshot.homeOverview,
+    ...(Array.isArray(snapshot.relatedShots) ? snapshot.relatedShots : [])
+  ].filter(Boolean);
 }
 
 function normalizeStatus(value) {

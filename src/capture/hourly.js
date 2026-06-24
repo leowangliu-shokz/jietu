@@ -8,9 +8,10 @@ export async function runHourlyCapture(options = {}) {
   const results = await captureConfiguredUrls(config, {
     ...options,
     deferChangeRefresh: true,
-    fastCaptureOnly: options.fastCaptureOnly !== false,
-    fastMainCapture: options.fastMainCapture !== false,
-    fastRelated: options.fastRelated !== false
+    screenshotOnly: options.screenshotOnly !== false,
+    fastCaptureOnly: options.fastCaptureOnly === true,
+    fastMainCapture: options.fastMainCapture === true,
+    fastRelated: options.fastRelated === true
   });
   const workflow = createWorkflowRun({
     id: results.captureRun?.id || `hourly-capture-${new Date().toISOString().replace(/[:.]/g, "-")}`,

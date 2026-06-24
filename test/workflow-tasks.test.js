@@ -44,6 +44,50 @@ test("workflowTasksFromCaptureResults fails captures that do not pass self check
   assert.match(task.error, /dimensions are invalid/);
 });
 
+test("workflowTasksFromCaptureResults leaves OSS sync failures actionable", () => {
+  const [task] = workflowTasksFromCaptureResults([{
+    ok: true,
+    displayUrl: "Home",
+    snapshots: [{
+      id: "snapshot-1",
+      file: "2026-06-16/site/snapshot.png",
+      imageUrl: "/archive/2026-06-16/site/snapshot.png",
+      width: 1200,
+      height: 4000,
+      syncStatus: "failed",
+      syncError: "network unavailable"
+    }]
+  }]);
+
+  assert.equal(task.status, "failed");
+  assert.equal(task.checked, false);
+  assert.match(task.error, /Object storage sync failed/);
+  assert.match(task.error, /network unavailable/);
+});
+
+test("workflowTasksFromCaptureResults checks related screenshot OSS failures", () => {
+  const [task] = workflowTasksFromCaptureResults([{
+    ok: true,
+    displayUrl: "Home",
+    snapshots: [{
+      id: "snapshot-1",
+      file: "2026-06-16/site/snapshot.png",
+      imageUrl: "/archive/2026-06-16/site/snapshot.png",
+      width: 1200,
+      height: 4000,
+      relatedShots: [{
+        file: "2026-06-16/site/related.png",
+        imageUrl: "/archive/2026-06-16/site/related.png",
+        syncStatus: "failed",
+        syncError: "upload denied"
+      }]
+    }]
+  }]);
+
+  assert.equal(task.status, "failed");
+  assert.match(task.error, /upload denied/);
+});
+
 test("workflowTasksFromCompareResult creates a no-change checklist task", () => {
   const [task] = workflowTasksFromCompareResult({ changes: [] });
   const markdown = renderWorkflowChecklistMarkdown({

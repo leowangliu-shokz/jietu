@@ -5,7 +5,7 @@
 - `npm run capture:hourly`
   - 每小时截图主链路。
   - 只负责截图、保存归档、记录截图 run 和生成本轮截图任务清单。
-  - 默认使用快速截图参数，不在小时级截图尾部同步执行重分析。
+  - 默认保留长截图和轮播/相关截图，但不在小时级截图尾部同步执行重分析。
 
 - `npm run compare:worker`
   - 单独执行截图变化比对。
@@ -21,8 +21,9 @@
 
 - `npm run scheduler:local`
   - 本地调度入口。
-  - 默认常驻运行，按小时执行 `capture:hourly -> compare:worker`。
+  - 默认常驻运行，按小时只执行 `capture:hourly`，不把视觉比对串进截图主链路。
   - `--once` 可以执行一次小时链路。
+  - `--compare` 可以显式附带执行一次异步比对；也可以设置 `PAGE_SHOT_SCHEDULER_COMPARE=1` 恢复旧式串联。
   - `--daily` 可以在 one-shot 模式里附带执行每日巡检。
 
 ## 每日巡检清单
@@ -78,7 +79,7 @@ GET /api/tasks?type=workflow&runId=<runId>
 
 ## OSS 接入边界
 
-当前没有接入真实 OSS 账号，但已经有对象存储适配层：
+当前已有对象存储适配层：
 
 ```text
 src/storage/object-storage.js
@@ -102,6 +103,20 @@ $env:PAGE_SHOT_OBJECT_STORAGE_PUBLIC_BASE_URL = "https://example-cdn.test/"
 ```
 
 迁移期仍应保留本地 `archive/` 和 `data/snapshots.json`，不要让 OSS 替代归档事实源。
+
+如果需要接入阿里云 OSS：
+
+```powershell
+$env:PAGE_SHOT_OBJECT_STORAGE = "aliyun"
+$env:PAGE_SHOT_OSS_REGION = "oss-cn-guangzhou"
+$env:PAGE_SHOT_OSS_BUCKET = "<bucket>"
+$env:PAGE_SHOT_OSS_PREFIX = "jietu"
+$env:PAGE_SHOT_OSS_ACCESS_KEY_ID = "<ram-access-key-id>"
+$env:PAGE_SHOT_OSS_ACCESS_KEY_SECRET = "<ram-access-key-secret>"
+$env:PAGE_SHOT_OBJECT_STORAGE_PUBLIC_BASE_URL = "https://<bucket>.oss-cn-guangzhou.aliyuncs.com/"
+```
+
+OSS 上传失败不会让截图任务失败；snapshot 会保留本地链接，并记录 `syncStatus=failed` 和 `syncError`，后续可补传。
 
 ## 外部视觉 API
 

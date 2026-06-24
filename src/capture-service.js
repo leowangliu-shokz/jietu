@@ -1554,7 +1554,7 @@ async function capturePlanExecution(execution, config, options = {}) {
       const itemTargetLabel = item.bannerIndex ? `\u9996\u9875 Banner ${item.bannerIndex}` : targetLabel;
       const displayUrl = item.bannerIndex ? bannerDisplayLabel(targetLabel, item.bannerIndex) : targetLabel;
       const snapshotId = `${stamp}-${fileInfo.siteSlug}-${itemTargetId}-${execution.id || publicDevice?.id || "device"}`;
-      const storage = await syncArchiveFileToObjectStorage({
+      const storage = await archiveImageMetadata({
         absolutePath,
         relativePath,
         snapshotId
@@ -1576,12 +1576,14 @@ async function capturePlanExecution(execution, config, options = {}) {
         urlCheck: capture.urlCheck || null,
         title: capture.title,
         capturedAt: capturedAt.toISOString(),
-        file: relativePath,
-        imageUrl: storage.objectImageUrl || publicSnapshotUrl(relativePath),
-        localImageUrl: publicSnapshotUrl(relativePath),
+        file: storage.file,
+        imageUrl: storage.imageUrl,
+        localImageUrl: storage.localImageUrl,
         localPath: storage.localPath,
         ossKey: storage.ossKey,
         syncStatus: storage.syncStatus,
+        syncError: storage.syncError,
+        objectImageUrl: storage.objectImageUrl,
         sha256: storage.sha256,
         bytes: stat.size,
         width: item.width || capture.width,
@@ -1611,8 +1613,9 @@ async function capturePlanExecution(execution, config, options = {}) {
       });
     }
 
-    const seoSnapshots = options.fastCaptureOnly ? [] : createSeoSnapshotsForCapture(capture, snapshots);
-    const trackingAuditRecords = options.fastCaptureOnly
+    const skipDerivedAudits = options.fastCaptureOnly || options.screenshotOnly;
+    const seoSnapshots = skipDerivedAudits ? [] : createSeoSnapshotsForCapture(capture, snapshots);
+    const trackingAuditRecords = skipDerivedAudits
       ? []
       : createTrackingAuditRecordsForSnapshots({
         snapshots,
@@ -2331,10 +2334,21 @@ async function captureRelatedShotsForTarget(target, normalizedUrl, baseOutputPat
     const bannerIndex = Number(item.bannerIndex || 0);
     const relativePath = archiveRelativePath(item.outputPath);
     const stat = await fs.stat(item.outputPath);
+    const storage = await archiveImageMetadata({
+      absolutePath: item.outputPath,
+      relativePath
+    });
     const shot = {
       label: relatedShotLabelForCaptureItem(item),
-      file: relativePath,
-      imageUrl: publicSnapshotUrl(relativePath),
+      file: storage.file,
+      imageUrl: storage.imageUrl,
+      localImageUrl: storage.localImageUrl,
+      localPath: storage.localPath,
+      ossKey: storage.ossKey,
+      syncStatus: storage.syncStatus,
+      syncError: storage.syncError,
+      objectImageUrl: storage.objectImageUrl,
+      sha256: storage.sha256,
       bytes: stat.size,
       width: item.width,
       height: item.height,
@@ -2851,10 +2865,21 @@ async function composeRawPageOverviewCompositeCapture({
 async function publicPageOverviewForCapture(overview) {
   const relativePath = archiveRelativePath(overview.outputPath);
   const stat = await fs.stat(overview.outputPath);
+  const storage = await archiveImageMetadata({
+    absolutePath: overview.outputPath,
+    relativePath
+  });
   return {
     label: overview.label,
-    file: relativePath,
-    imageUrl: publicSnapshotUrl(relativePath),
+    file: storage.file,
+    imageUrl: storage.imageUrl,
+    localImageUrl: storage.localImageUrl,
+    localPath: storage.localPath,
+    ossKey: storage.ossKey,
+    syncStatus: storage.syncStatus,
+    syncError: storage.syncError,
+    objectImageUrl: storage.objectImageUrl,
+    sha256: storage.sha256,
     bytes: stat.size,
     width: overview.width,
     height: overview.height,
@@ -3174,10 +3199,21 @@ async function relatedShotsFromCaptureResult(relatedCapture, normalizedUrl, vali
     const bannerIndex = Number(item.bannerIndex || 0);
     const relativePath = archiveRelativePath(item.outputPath);
     const stat = await fs.stat(item.outputPath);
+    const storage = await archiveImageMetadata({
+      absolutePath: item.outputPath,
+      relativePath
+    });
     const shot = {
       label: relatedShotLabelForCaptureItem(item),
-      file: relativePath,
-      imageUrl: publicSnapshotUrl(relativePath),
+      file: storage.file,
+      imageUrl: storage.imageUrl,
+      localImageUrl: storage.localImageUrl,
+      localPath: storage.localPath,
+      ossKey: storage.ossKey,
+      syncStatus: storage.syncStatus,
+      syncError: storage.syncError,
+      objectImageUrl: storage.objectImageUrl,
+      sha256: storage.sha256,
       bytes: stat.size,
       width: item.width,
       height: item.height,
@@ -3317,6 +3353,26 @@ function summarizeCaptureValidationEntries(items = []) {
 
 function archiveRelativePath(absolutePath) {
   return path.relative(archiveDir, absolutePath).replaceAll(path.sep, "/");
+}
+
+async function archiveImageMetadata({ absolutePath, relativePath, snapshotId = null }) {
+  const storage = await syncArchiveFileToObjectStorage({
+    absolutePath,
+    relativePath,
+    snapshotId
+  });
+  const localImageUrl = publicSnapshotUrl(relativePath);
+  return {
+    file: relativePath,
+    imageUrl: storage.objectImageUrl || localImageUrl,
+    localImageUrl,
+    localPath: storage.localPath,
+    ossKey: storage.ossKey,
+    syncStatus: storage.syncStatus,
+    syncError: storage.syncError || null,
+    objectImageUrl: storage.objectImageUrl || null,
+    sha256: storage.sha256
+  };
 }
 
 function archiveAbsolutePath(relativePath) {
