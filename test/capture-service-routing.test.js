@@ -265,6 +265,23 @@ test("landing page capture mode routes to landing related captures", () => {
   );
 });
 
+test("product detail pages route to product gallery related captures", () => {
+  assert.equal(
+    relatedCaptureModeForTarget(
+      { id: "shokz-openrunpro2-product", url: "https://shokz.com/products/openrunpro2" },
+      { platform: "pc" }
+    ),
+    "shokz-product-page-related"
+  );
+  assert.equal(
+    relatedCaptureModeForTarget(
+      { id: "shokz-openswimpro-product", url: "https://shokz.com/products/openswimpro" },
+      { platform: "pc", captureMode: "shokz-product-page" }
+    ),
+    "shokz-product-page-related"
+  );
+});
+
 test("fast automation skips heavy related captures except navigation and targeted states", () => {
   assert.equal(shouldSkipRelatedForFastAutomation(
     { id: "shokz-home" },

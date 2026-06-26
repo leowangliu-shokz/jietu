@@ -2370,6 +2370,9 @@ function relatedCaptureModeForTarget(target, captureConfig) {
   if (relatedSourceMode === "shokz-landing-page") {
     return "shokz-landing-related";
   }
+  if (relatedSourceMode === "shokz-product-page" || /\/products\//i.test(String(target?.url || ""))) {
+    return "shokz-product-page-related";
+  }
 
   return null;
 }

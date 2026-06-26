@@ -390,6 +390,7 @@ async function driveCapture(client, url, outputPath, options) {
     options.captureMode === "shokz-home-banners" ||
     options.captureMode === "shokz-home-related" ||
     options.captureMode === "shokz-products-nav-related" ||
+    options.captureMode === "shokz-product-page-related" ||
     options.captureMode === "shokz-home-related-section" ||
     options.captureMode === "shokz-collection-related-section" ||
     options.captureMode === "shokz-comparison-related-section" ||
@@ -399,6 +400,8 @@ async function driveCapture(client, url, outputPath, options) {
     const titleResult = await readPageTitle(client);
     stage = options.captureMode === "shokz-products-nav-related"
       ? "capturing Shokz products navigation states"
+      : options.captureMode === "shokz-product-page-related"
+        ? "capturing Shokz product page related states"
       : options.captureMode === "shokz-collection-related-section"
         ? `capturing Shokz collection related section ${options.sectionKey || ""}`.trim()
       : options.captureMode === "shokz-comparison-related-section"
@@ -413,6 +416,8 @@ async function driveCapture(client, url, outputPath, options) {
     let relatedCapture;
     if (options.captureMode === "shokz-products-nav-related") {
       relatedCapture = await captureShokzProductsNavigationRelated(client, outputPath, captureContext);
+    } else if (options.captureMode === "shokz-product-page-related") {
+      relatedCapture = await captureShokzProductPageRelated(client, outputPath, captureContext);
     } else if (options.captureMode === "shokz-collection-related-section") {
       const definition = findShokzCollectionRelatedSectionDefinition(options.sectionKey);
       if (!definition) {
@@ -2226,6 +2231,718 @@ async function captureShokzLandingRelated(client, outputPath, captureContext) {
       sections
     }
   };
+}
+
+async function captureShokzProductPageRelated(client, outputPath, captureContext) {
+  const viewport = viewportForCaptureContext(captureContext);
+  await materializeFullPageContent(client);
+  await scrollTo(client, 0);
+  await sleep(700);
+  await primeLazyImages(client);
+  await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 3, hideOnly: true });
+  await ensureShokzSearchOverlayClosed(client, "before Shokz product-page related plan capture");
+
+  const plan = await readShokzProductPageRelatedPlan(client);
+  if (!plan.ok) {
+    return {
+      width: Number(viewport.width || 0) || 393,
+      height: Number(viewport.height || 0) || 852,
+      captures: [],
+      relatedValidation: {
+        status: "warning",
+        warnings: [{
+          sectionKey: "product-gallery",
+          sectionLabel: "Product gallery",
+          message: plan.reason || "Could not read Shokz product-page related screenshot plan."
+        }],
+        sections: []
+      }
+    };
+  }
+
+  const captures = [];
+  const warnings = Array.isArray(plan.warnings) ? [...plan.warnings] : [];
+  const targetFilter = captureContext.relatedStateFilter || null;
+  const targetStates = targetFilter
+    ? plan.states.filter((state) => productRelatedStateMatchesFilter(outputPath, state, targetFilter))
+    : plan.states;
+  if (targetFilter && !targetStates.length) {
+    throw new Error("Could not match the requested product-page screenshot.");
+  }
+
+  for (const [index, state] of targetStates.entries()) {
+    const activation = await activateShokzProductPageRelatedState(client, state);
+    if (!activation.ok) {
+      warnings.push({
+        sectionKey: state.sectionKey,
+        sectionLabel: state.sectionLabel,
+        stateLabel: state.stateLabel,
+        message: activation.reason || `Could not activate ${state.stateLabel}.`
+      });
+      continue;
+    }
+
+    await sleep(650);
+    await primeLazyImages(client);
+    await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2, hideOnly: true });
+    await dismissObstructions(client, { rounds: 1 });
+    await settlePositionedViewport(client, { delayMs: 160, frames: 2 });
+
+    let current = await readShokzProductPageRelatedState(client, state);
+    if (!current.ok) {
+      warnings.push({
+        sectionKey: state.sectionKey,
+        sectionLabel: state.sectionLabel,
+        stateLabel: state.stateLabel,
+        message: current.reason || `Could not read ${state.stateLabel}.`
+      });
+      continue;
+    }
+    let clip = normalizeRelatedClip(current.clip, viewport);
+    if (!clip) {
+      warnings.push({
+        sectionKey: state.sectionKey,
+        sectionLabel: state.sectionLabel,
+        stateLabel: state.stateLabel,
+        message: `Could not compute a valid crop for ${state.stateLabel}.`
+      });
+      continue;
+    }
+
+    const screenshotCapture = await captureScreenshotWithValidation(client, () => ({
+      format: "png",
+      fromSurface: true,
+      captureBeyondViewport: true,
+      clip
+    }), {
+      label: `product gallery ${state.stateLabel}`,
+      acceptBlankAudit: (blankAudit) => isAcceptableShokzProductPageBlankAudit(blankAudit, current),
+      beforeAttempt: async ({ attempt }) => {
+        if (attempt > 1) {
+          const retryActivation = await activateShokzProductPageRelatedState(client, state);
+          if (!retryActivation.ok) {
+            throw new Error(retryActivation.reason || `Could not reactivate ${state.stateLabel}.`);
+          }
+          await sleep(500);
+          await primeLazyImages(client);
+        }
+        await prepareForScreenshotCapture(client, {
+          rounds: 2,
+          shokzKnownPopups: true,
+          stage: "before Shokz product gallery screenshot capture"
+        });
+        await dismissShokzKnownPopupsBeforeScreenshot(client, { rounds: 2, hideOnly: true });
+        await dismissObstructions(client, { rounds: 1 });
+        await ensureShokzSearchOverlayClosed(client, "before Shokz product gallery screenshot capture");
+        await settlePositionedViewport(client, {
+          delayMs: attempt > 1 ? 260 : 160,
+          frames: 2
+        });
+        current = await readShokzProductPageRelatedState(client, state);
+        if (!current.ok) {
+          throw new Error(current.reason || `Could not reread ${state.stateLabel}.`);
+        }
+        clip = normalizeRelatedClip(current.clip, viewport);
+        if (!clip) {
+          throw new Error(`Could not compute a valid crop for ${state.stateLabel}.`);
+        }
+      }
+    });
+
+    const buffer = screenshotCapture.buffer;
+    const visualSignature = hashBuffer(buffer);
+    const visualHash = visualHashForBuffer(buffer);
+    const visualAudit = visualAuditForBuffer(buffer, visualHash);
+    const relatedOutput = captureContext.relatedStateOutputPath && targetStates.length === 1
+      ? captureContext.relatedStateOutputPath
+      : relatedOutputPath(outputPath, state.sectionKey, state.fileId || state.stateIndex || index + 1);
+    await fs.writeFile(relatedOutput, buffer);
+
+    const width = Math.round(clip.width);
+    const height = Math.round(clip.height);
+    captures.push({
+      outputPath: relatedOutput,
+      width,
+      height,
+      kind: "carousel",
+      sectionKey: state.sectionKey,
+      sectionLabel: state.sectionLabel,
+      sectionTitle: current.sectionTitle || state.sectionTitle || state.sectionLabel,
+      stateIndex: state.stateIndex || index + 1,
+      stateCount: state.stateCount || targetStates.length,
+      stateLabel: current.stateLabel || state.stateLabel,
+      label: current.stateLabel || state.stateLabel,
+      pageIndex: state.pageIndex || null,
+      interactionState: "slide",
+      logicalSignature: current.logicalSignature || state.logicalSignature || `${state.sectionKey}:${state.fileId || index + 1}`,
+      visualSignature,
+      visualHash,
+      visualAudit,
+      captureValidation: screenshotCapture.captureValidation,
+      clip: {
+        x: Math.round(clip.x),
+        y: Math.round(clip.y),
+        width,
+        height
+      },
+      isDefaultState: Boolean(state.isDefaultState),
+      coverageKey: state.coverageKey || `${state.sectionKey}:${state.fileId || state.stateIndex || index + 1}`,
+      visibleItemCount: current.visibleItemCount || 0,
+      visibleItems: current.visibleItems || [],
+      itemRects: current.itemRects || [],
+      sectionState: {
+        text: current.text || "",
+        textBlocks: current.textBlocks || [],
+        images: current.images || [],
+        activeIndex: state.pageIndex || state.stateIndex || index + 1,
+        pageIndex: state.pageIndex || null,
+        interactionState: "slide",
+        windowSignature: current.windowSignature || null
+      }
+    });
+  }
+
+  const section = {
+    sectionKey: "product-gallery",
+    sectionLabel: "Product gallery",
+    expectedCount: targetStates.length,
+    capturedCount: captures.length,
+    savedCount: captures.length,
+    status: warnings.length || captures.length < targetStates.length ? "warning" : "ok"
+  };
+
+  return {
+    width: captures.reduce((max, capture) => Math.max(max, capture.width || 0), viewport.width || 393),
+    height: captures.reduce((max, capture) => Math.max(max, capture.height || 0), viewport.height || 852),
+    captures: captures.sort(compareRelatedCaptures),
+    relatedValidation: {
+      status: warnings.length ? "warning" : "ok",
+      warnings,
+      sections: targetStates.length || warnings.length ? [section] : []
+    }
+  };
+}
+
+function productRelatedStateMatchesFilter(outputPath, state, filter) {
+  if (!filter) {
+    return true;
+  }
+  const expectedOutput = relatedOutputPath(outputPath, state.sectionKey, state.fileId || state.stateIndex);
+  const tileKey = String(filter.tileKey || "").trim();
+  const values = [
+    state.sectionKey,
+    state.fileId,
+    state.logicalSignature,
+    state.coverageKey,
+    state.stateLabel,
+    state.label,
+    state.sectionLabel,
+    state.pageIndex
+  ].map((value) => String(value || "").trim()).filter(Boolean);
+  return outputMatchesFilter(expectedOutput, filter.sourceFile) ||
+    outputMatchesFilter(expectedOutput, filter.relatedShotFile) ||
+    values.some((value) => tileKey.includes(value) || String(filter.tileLabel || "").includes(value));
+}
+
+function isAcceptableShokzProductPageBlankAudit(blankAudit, state) {
+  if (!blankAudit || blankAudit.status === "ok") {
+    return false;
+  }
+  const textBlocks = Array.isArray(state?.textBlocks) ? state.textBlocks : [];
+  const images = Array.isArray(state?.images) ? state.images : [];
+  const visibleItems = Array.isArray(state?.visibleItems) ? state.visibleItems : [];
+  return textBlocks.length >= 1 || images.length >= 1 || visibleItems.length >= 1;
+}
+
+async function readShokzProductPageRelatedPlan(client) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const clean = (value, max = 260) => String(value || "")
+        .replace(/[\\u00a0\\s]+/g, " ")
+        .trim()
+        .slice(0, max);
+      const keyPart = (value) => clean(value, 120).toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 64) || "state";
+      const rectInfo = (rect) => ({
+        left: Math.round(rect.left),
+        top: Math.round(rect.top),
+        right: Math.round(rect.right),
+        bottom: Math.round(rect.bottom),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height)
+      });
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 2 &&
+          rect.height > 2 &&
+          rect.bottom > 0 &&
+          rect.right > 0 &&
+          rect.top < (window.innerHeight || document.documentElement.clientHeight || 900) * 1.8 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const area = (rect) => Math.max(0, rect.width) * Math.max(0, rect.height);
+      const overlaps = (a, b) =>
+        Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left)) *
+        Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+      const imageSourcesForNode = (node) => [
+          node.currentSrc,
+          node.src,
+          node.srcset,
+          node.getAttribute?.("data-src"),
+          node.getAttribute?.("data-srcset"),
+          node.getAttribute?.("data-original"),
+          node.getAttribute?.("data-lazy-src"),
+          node.getAttribute?.("data-lazy-srcset")
+        ]
+        .filter(Boolean)
+        .map((value) => String(value).split(",")[0].trim())
+        .filter(Boolean);
+      const mediaItems = Array.from(document.querySelectorAll("main img, main picture, main video, img, picture, video"))
+        .map((element, index) => {
+          const node = element.matches?.("picture") ? element.querySelector("img,source") || element : element;
+          const rect = (element.closest?.("picture") || element).getBoundingClientRect();
+          const srcs = imageSourcesForNode(node);
+          return { element, node, index, rect, srcs, score: area(rect) - Math.max(0, rect.top) * 40 };
+        })
+        .filter((item) =>
+          visible(item.element) &&
+          item.rect.width >= 220 &&
+          item.rect.height >= 180 &&
+          item.rect.left < (window.innerWidth || 1440) * 0.78 &&
+          item.rect.top < Math.max(980, (window.innerHeight || 900) * 0.95) &&
+          area(item.rect) >= 48000
+        )
+        .sort((a, b) => b.score - a.score);
+      const mainMedia = mediaItems[0] || null;
+      if (!mainMedia) {
+        return { ok: true, states: [], warnings: [], reason: "No product gallery media was identified." };
+      }
+
+      const rootSelector = [
+        "[data-product-gallery]",
+        "[data-media-gallery]",
+        "[class*='media-gallery']",
+        "[class*='product-gallery']",
+        "[class*='product__media']",
+        "[class*='product-media']",
+        "[class*='product-media']",
+        "[class*='gallery']",
+        "[class*='swiper']",
+        "[class*='slider']"
+      ].join(",");
+      let nearestRoot = mainMedia.element.closest(rootSelector) ||
+        mainMedia.element.closest("figure,li,div") ||
+        mainMedia.element;
+      if (/swiper-slide/i.test(String(nearestRoot.className?.baseVal || nearestRoot.className || ""))) {
+        nearestRoot = nearestRoot.closest(
+          ".swiper,.swiper-container,[class*='top-gallery-swiper'],[class*='top_gallery_item']"
+        ) || nearestRoot;
+      }
+      const searchRoot = mainMedia.element.closest(
+        "[class*='product__media-wrapper'],[class*='shokz-media-gallery-wrapper'],[class*='media-gallery'],section,main"
+      ) || nearestRoot;
+      nearestRoot.dataset.pageShotProductGalleryRoot = "true";
+      searchRoot.dataset.pageShotProductGallerySearch = "true";
+      const rootRect = nearestRoot.getBoundingClientRect();
+      const searchRect = searchRoot.getBoundingClientRect();
+      const baseClip = {
+        x: Math.max(0, Math.floor(window.scrollX + rootRect.left - 4)),
+        y: Math.max(0, Math.floor(window.scrollY + rootRect.top - 4)),
+        width: Math.max(1, Math.ceil(rootRect.width + 8)),
+        height: Math.max(1, Math.ceil(rootRect.height + 8))
+      };
+      const title = clean(
+        document.querySelector("main h1, h1")?.innerText ||
+        document.querySelector("main [class*='title'], main [class*='name']")?.innerText ||
+        document.title,
+        120
+      );
+
+      const controlSelector = [
+        ".swiper-pagination-bullet",
+        "button[aria-label*='slide' i]",
+        "button[aria-label*='image' i]",
+        "[role='button'][aria-label*='slide' i]",
+        "[role='button'][aria-label*='image' i]",
+        "[class*='thumb']",
+        "[class*='thumbnail']",
+        "[class*='pagination'] button",
+        "[class*='swiper-slide']",
+        "button",
+        "a",
+        "img"
+      ].join(",");
+      const disallowedText = /add to cart|buy now|checkout|shop pay|paypal|klarna|afterpay|quantity|size|warranty|learn more|view details/i;
+      const controlCandidates = Array.from(searchRoot.querySelectorAll(controlSelector))
+        .filter((element) => visible(element))
+        .map((element, index) => {
+          const rect = element.getBoundingClientRect();
+          const text = clean(element.innerText || element.textContent || element.getAttribute("aria-label") || element.getAttribute("title"), 140);
+          const meta = [
+            element.tagName,
+            element.id,
+            String(element.className?.baseVal || element.className || ""),
+            element.getAttribute("role"),
+            element.getAttribute("aria-label"),
+            text
+          ].filter(Boolean).join(" ");
+          const srcs = [
+            ...imageSourcesForNode(element),
+            ...Array.from(element.querySelectorAll("img,source")).flatMap(imageSourcesForNode)
+          ];
+          const likelyGalleryControl = /thumb|thumbnail|gallery|media|slide|swiper|pagination|image/i.test(meta) || srcs.length > 0;
+          const nearGallery = overlaps(rect, searchRect) > 0 &&
+            rect.top >= rootRect.top - 80 &&
+            rect.top <= rootRect.bottom + 220 &&
+            rect.left <= Math.max(rootRect.right + 220, (window.innerWidth || 1440) * 0.8);
+          return {
+            element,
+            index,
+            rect,
+            text,
+            srcs,
+            likelyGalleryControl,
+            nearGallery,
+            signature: srcs[0] || text || [
+              Math.round(rect.left),
+              Math.round(rect.top),
+              Math.round(rect.width),
+              Math.round(rect.height)
+            ].join(":")
+          };
+        })
+        .filter((item) =>
+          item.nearGallery &&
+          item.likelyGalleryControl &&
+          !disallowedText.test(item.text) &&
+          item.rect.width >= 12 &&
+          item.rect.height >= 12 &&
+          item.rect.width <= Math.max(260, rootRect.width * 0.65) &&
+          item.rect.height <= Math.max(260, rootRect.height * 0.65)
+        )
+        .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left || a.index - b.index);
+
+      const controlsBySignature = new Map();
+      for (const item of controlCandidates) {
+        const key = item.signature;
+        if (!controlsBySignature.has(key)) {
+          controlsBySignature.set(key, item);
+        }
+      }
+      const controls = [...controlsBySignature.values()].slice(0, 10);
+      const swiperNode = [nearestRoot, ...nearestRoot.querySelectorAll(".swiper,.swiper-container,[class*='swiper']")]
+        .find((node) => node?.swiper?.slides && Number(node.swiper.slides.length || 0) > 1) || null;
+      const swiperSlides = swiperNode
+        ? Array.from(swiperNode.swiper.slides)
+          .filter((slide) => !/swiper-slide-duplicate/.test(String(slide.className || "")))
+          .map((slide, index) => {
+            const text = clean(slide.innerText || slide.textContent || slide.getAttribute("aria-label"), 90);
+            const srcs = [
+              ...Array.from(slide.querySelectorAll("img,source")).flatMap(imageSourcesForNode),
+              ...imageSourcesForNode(slide)
+            ];
+            const realIndexAttr = slide.getAttribute("data-swiper-slide-index");
+            return {
+              index,
+              realIndex: realIndexAttr !== null && Number.isFinite(Number(realIndexAttr))
+                ? Number(realIndexAttr)
+                : index,
+              text,
+              srcs,
+              signature: srcs[0] || text || "slide-" + (index + 1)
+            };
+          })
+        : [];
+
+      const galleryCountText = clean(nearestRoot.innerText || nearestRoot.textContent, 120);
+      const galleryCountMatch = galleryCountText.match(/\\b\\d+\\s*\\/\\s*(\\d+)\\b/);
+      const thumbCount = Array.from(searchRoot.querySelectorAll(
+        ".bottom-gallery.product.active .media-slide,.bottom-gallery.product.active .item,.media_item.bottom-gallery.product.active .media-slide"
+      )).filter(visible).length;
+      const productSlideCount = Math.max(2, Math.min(
+        6,
+        thumbCount || Number(galleryCountMatch?.[1] || 0) || 5
+      ));
+      const startRealIndex = Math.max(0, Number(swiperNode?.swiper?.realIndex ?? swiperNode?.swiper?.activeIndex ?? 0) || 0);
+      const swiperWindow = swiperSlides.slice(startRealIndex, startRealIndex + productSlideCount);
+      const selectedSwiperSlides = swiperWindow.length >= 2
+        ? swiperWindow
+        : swiperSlides.slice(0, productSlideCount);
+
+      let sources = selectedSwiperSlides.length > 1
+        ? selectedSwiperSlides.map((slide, index) => ({
+          controlIndex: null,
+          swiperIndex: Number.isFinite(Number(slide.realIndex)) ? Number(slide.realIndex) : startRealIndex + index,
+          label: slide.text || "Image " + (index + 1),
+          signature: slide.signature
+        }))
+        : controls.length > 1
+        ? controls.map((control, index) => {
+          control.element.dataset.pageShotProductGalleryControl = String(index);
+          return {
+            controlIndex: index,
+            swiperIndex: swiperSlides[index]?.realIndex ?? index,
+            label: control.text || "Image " + (index + 1),
+            signature: control.signature
+          };
+        })
+        : [];
+      const byStateSignature = new Map();
+      for (const source of sources) {
+        if (!byStateSignature.has(source.signature)) {
+          byStateSignature.set(source.signature, source);
+        }
+      }
+      sources = [...byStateSignature.values()];
+      if (sources.length <= 1) {
+        return {
+          ok: true,
+          states: [],
+          sections: [],
+          warnings: []
+        };
+      }
+
+      const states = sources.map((source, index) => ({
+        sectionKey: "product-gallery",
+        sectionLabel: "Product gallery",
+        sectionTitle: title || "Product gallery",
+        stateIndex: index + 1,
+        stateCount: sources.length,
+        pageIndex: index + 1,
+        pageCount: sources.length,
+        controlIndex: source.controlIndex,
+        swiperIndex: source.swiperIndex,
+        baseClip,
+        isDefaultState: index === 0,
+        stateLabel: [title, source.label || "Image " + (index + 1)].filter(Boolean).join(" - "),
+        label: [title, source.label || "Image " + (index + 1)].filter(Boolean).join(" - "),
+        fileId: keyPart("product-gallery-" + (index + 1) + "-" + (source.label || "image")),
+        logicalSignature: "product-gallery:slide:" + (index + 1) + ":" + source.signature,
+        coverageKey: "product-gallery:slide:" + (index + 1)
+      }));
+      return {
+        ok: true,
+        states,
+        sections: [{
+          sectionKey: "product-gallery",
+          sectionLabel: "Product gallery",
+          expectedCount: states.length,
+          title,
+          mode: "carousel"
+        }],
+        warnings: []
+      };
+    })()`,
+    returnByValue: true
+  }).catch((error) => ({ result: { value: { ok: false, reason: error.message } } }));
+  return result.result?.value || { ok: false, reason: "Could not read product-page related plan." };
+}
+
+async function activateShokzProductPageRelatedState(client, state) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const state = ${JSON.stringify(state)};
+      const root = document.querySelector("[data-page-shot-product-gallery-root='true']");
+      const searchRoot = document.querySelector("[data-page-shot-product-gallery-search='true']") || root;
+      if (!root || !searchRoot) {
+        return { ok: false, reason: "Product gallery root is not available." };
+      }
+      root.scrollIntoView({ block: "start", inline: "nearest" });
+      window.scrollBy(0, -8);
+      let activated = false;
+      const swiperNodes = [root, ...root.querySelectorAll(".swiper,.swiper-container,[class*='swiper']")];
+      for (const node of swiperNodes) {
+        const swiper = node?.swiper;
+        if (!swiper) continue;
+        const targetIndex = Number.isFinite(Number(state.swiperIndex))
+          ? Number(state.swiperIndex)
+          : Number(state.pageIndex || state.stateIndex || 1) - 1;
+        if (typeof swiper.slideToLoop === "function") {
+          swiper.slideToLoop(targetIndex, 0, false);
+          activated = true;
+        } else if (typeof swiper.slideTo === "function") {
+          swiper.slideTo(targetIndex, 0, false);
+          activated = true;
+        }
+      }
+      if (Number.isFinite(Number(state.controlIndex))) {
+        const control = searchRoot.querySelector("[data-page-shot-product-gallery-control='" + Number(state.controlIndex) + "']");
+        if (control) {
+          control.scrollIntoView({ block: "nearest", inline: "center" });
+          control.dispatchEvent(new MouseEvent("pointerover", { bubbles: true, cancelable: true, view: window }));
+          control.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, cancelable: true, view: window }));
+          control.click();
+          activated = true;
+        }
+      }
+      return { ok: activated || state.isDefaultState === true };
+    })()`,
+    returnByValue: true
+  }).catch((error) => ({ result: { value: { ok: false, reason: error.message } } }));
+  return result.result?.value || { ok: false, reason: `Could not activate ${state?.stateLabel || "product gallery state"}.` };
+}
+
+async function readShokzProductPageRelatedState(client, state) {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const state = ${JSON.stringify(state)};
+      const clean = (value, max = 360) => String(value || "")
+        .replace(/[\\u00a0\\s]+/g, " ")
+        .trim()
+        .slice(0, max);
+      const rectInfo = (rect) => ({
+        left: Math.round(rect.left),
+        top: Math.round(rect.top),
+        right: Math.round(rect.right),
+        bottom: Math.round(rect.bottom),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height)
+      });
+      const visible = (element) => {
+        if (!element || !(element instanceof Element)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 2 &&
+          rect.height > 2 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0.01;
+      };
+      const intersects = (rect, rootRect) =>
+        Math.max(0, Math.min(rect.right, rootRect.right) - Math.max(rect.left, rootRect.left)) *
+        Math.max(0, Math.min(rect.bottom, rootRect.bottom) - Math.max(rect.top, rootRect.top));
+      const imageSourcesForNode = (node) => [
+          node.currentSrc,
+          node.src,
+          node.srcset,
+          node.getAttribute?.("data-src"),
+          node.getAttribute?.("data-srcset"),
+          node.getAttribute?.("data-original"),
+          node.getAttribute?.("data-lazy-src"),
+          node.getAttribute?.("data-lazy-srcset")
+        ]
+        .filter(Boolean)
+        .map((value) => String(value).split(",")[0].trim())
+        .filter(Boolean);
+      const root = document.querySelector("[data-page-shot-product-gallery-root='true']");
+      if (!root) {
+        return { ok: false, reason: "Product gallery root is not available." };
+      }
+      const rootRect = root.getBoundingClientRect();
+      const mediaCandidates = Array.from(root.querySelectorAll("img,picture,video,.swiper-slide,[class*='media'],[class*='image']"))
+        .filter(visible)
+        .map((element, index) => {
+          const captureRoot = element.closest?.("picture") || element;
+          const rect = captureRoot.getBoundingClientRect();
+          const visibleArea = intersects(rect, rootRect);
+          return {
+            element: captureRoot,
+            index,
+            rect,
+            area: visibleArea,
+            srcs: [
+              ...imageSourcesForNode(element),
+              ...Array.from(element.querySelectorAll?.("img,source") || []).flatMap(imageSourcesForNode)
+            ]
+          };
+        })
+        .filter((item) =>
+          item.rect.width >= 120 &&
+          item.rect.height >= 120 &&
+          item.area >= 12000
+        )
+        .sort((a, b) =>
+          b.area - a.area ||
+          a.rect.top - b.rect.top ||
+          a.rect.left - b.rect.left
+        );
+      const captureRoot = root;
+      const captureRect = captureRoot.getBoundingClientRect();
+      const baseClip = state.baseClip && typeof state.baseClip === "object" ? state.baseClip : null;
+      const clipX = baseClip
+        ? Math.max(0, Math.floor(Number(baseClip.x) || 0))
+        : Math.max(0, Math.floor(window.scrollX + captureRect.left - 4));
+      const clipY = baseClip
+        ? Math.max(0, Math.floor(Number(baseClip.y) || 0))
+        : Math.max(0, Math.floor(window.scrollY + captureRect.top - 4));
+      const clipWidth = baseClip
+        ? Math.max(1, Math.ceil(Number(baseClip.width) || 0))
+        : Math.max(1, Math.ceil(captureRect.width + 8));
+      const clipHeight = baseClip
+        ? Math.max(1, Math.ceil(Number(baseClip.height) || 0))
+        : Math.max(1, Math.ceil(captureRect.height + 8));
+      const metadataBounds = captureRect;
+      const textBlocks = Array.from(root.querySelectorAll("h1,h2,h3,h4,h5,p,a,button,li,span,strong"))
+        .filter(visible)
+        .map((element, index) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            index,
+            text: clean(element.innerText || element.textContent || element.getAttribute("aria-label") || "", 240),
+            rect: rectInfo(rect),
+            area: intersects(rect, metadataBounds)
+          };
+        })
+        .filter((block) => block.text && block.area > 0)
+        .filter((block, index, list) => list.findIndex((item) => item.text === block.text) === index)
+        .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left)
+        .slice(0, 40);
+      const images = [
+        ...Array.from(root.querySelectorAll("img,source")).flatMap((node) =>
+          imageSourcesForNode(node).map((src) => ({
+            src,
+            alt: clean(node.getAttribute?.("alt"), 120),
+            rect: rectInfo((node.closest("picture") || node).getBoundingClientRect())
+          }))
+        )
+      ]
+        .filter((image, index, list) => image.src && list.findIndex((candidate) => candidate.src === image.src) === index)
+        .slice(0, 24);
+      const visibleItems = mediaCandidates
+        .slice(0, 10)
+        .map((item, index) => ({
+          key: "product-gallery:" + (index + 1),
+          label: clean(item.element.getAttribute?.("alt") || item.element.getAttribute?.("aria-label") || state.stateLabel, 120),
+          text: clean(item.element.innerText || item.element.textContent || "", 240),
+          rect: rectInfo(item.rect),
+          area: item.area
+        }));
+      const text = textBlocks.map((block) => block.text).join(" ").slice(0, 3200);
+      return {
+        ok: true,
+        clip: {
+          x: clipX,
+          y: clipY,
+          width: clipWidth,
+          height: clipHeight
+        },
+        text,
+        textBlocks,
+        images,
+        sectionTitle: state.sectionTitle || "Product gallery",
+        stateLabel: state.stateLabel,
+        logicalSignature: state.logicalSignature || state.coverageKey || state.sectionKey,
+        visibleItemCount: visibleItems.length,
+        visibleItems,
+        itemRects: visibleItems.map((item) => ({ key: item.key, label: item.label, rect: item.rect })),
+        windowSignature: JSON.stringify({
+          sectionKey: state.sectionKey,
+          pageIndex: state.pageIndex,
+          texts: textBlocks.slice(0, 16).map((block) => block.text),
+          images: images.map((image) => image.src).slice(0, 12)
+        }).slice(0, 1800)
+      };
+    })()`,
+    returnByValue: true
+  }).catch((error) => ({ result: { value: { ok: false, reason: error.message } } }));
+  return result.result?.value || { ok: false, reason: `Could not read ${state?.stateLabel || "product gallery state"}.` };
 }
 
 async function hideShokzLandingGlobalChromeForRelatedScreenshot(client) {
@@ -20252,6 +20969,17 @@ async function loadPlaywrightChromium(options = {}) {
 }
 
 async function preparePlaywrightPageForFullPageScreenshot(page, url, viewport, options = {}) {
+  await page.addStyleTag({
+    content: [
+      "html, body { scroll-behavior: auto !important; }",
+      "[data-aos], .aos-init, .aos-animate {",
+      "  opacity: 1 !important;",
+      "  transform: none !important;",
+      "  visibility: visible !important;",
+      "}"
+    ].join("\n")
+  }).catch(() => null);
+
   if (options.dismissPopups !== false) {
     const rounds = shouldCleanShokzKnownPopups(url, options) ? 3 : 1;
     for (let round = 0; round < rounds; round += 1) {
@@ -20414,27 +21142,104 @@ async function cleanupPlaywrightPopups(page, options = {}) {
 }
 
 async function primePlaywrightLazyContent(page, viewport = {}, options = {}) {
-  const maxSteps = Math.max(2, Math.min(14, Number(options.playwrightLazyScrollMaxSteps) || 9));
-  const delayMs = Math.max(30, Math.min(300, Number(options.playwrightLazyScrollDelayMs) || 90));
-  const state = await page.evaluate(() => {
+  const maxSteps = Math.max(2, Math.min(24, Number(options.playwrightLazyScrollMaxSteps) || 16));
+  const delayMs = Math.max(50, Math.min(500, Number(options.playwrightLazyScrollDelayMs) || 140));
+  const viewportHeight = Math.max(320, Number(viewport.height || 0) || 1000);
+  const viewportWidth = Math.max(320, Number(viewport.width || 0) || 1440);
+  const materializeLazyImages = () => page.evaluate(({ viewportWidth, viewportHeight }) => {
     const eagerImageAttrs = ["data-src", "data-original", "data-lazy-src"];
     const eagerSrcSetAttrs = ["data-srcset", "data-lazy-srcset"];
+    const eagerBackgroundAttrs = [
+      "data-bg",
+      "data-background",
+      "data-background-image",
+      "data-lazy-background",
+      "data-bg-image",
+      "data-desktop-bg",
+      "data-mobile-bg"
+    ];
+    const imageWidthPattern = /([?&](?:width|w)=)(\d+)/i;
+    const legacyWidthPattern = /_(\d+)x(?=\.)/i;
+    const parsedWidth = (value) => {
+      const text = String(value || "");
+      const queryMatch = text.match(imageWidthPattern);
+      if (queryMatch) return Number(queryMatch[2]) || 0;
+      const legacyMatch = text.match(legacyWidthPattern);
+      return legacyMatch ? Number(legacyMatch[1]) || 0 : 0;
+    };
+    const upgradeImageUrl = (value, targetWidth) => {
+      const text = String(value || "").trim();
+      if (!text || /^(data|blob):/i.test(text)) return text;
+      const width = Math.max(240, Math.min(2200, Math.ceil(Number(targetWidth) || 0)));
+      if (imageWidthPattern.test(text)) {
+        return text.replace(imageWidthPattern, (_, prefix) => `${prefix}${width}`);
+      }
+      if (legacyWidthPattern.test(text)) {
+        return text.replace(legacyWidthPattern, `_${width}x`);
+      }
+      if (/\/cdn\/shop\//i.test(text)) {
+        return `${text}${text.includes("?") ? "&" : "?"}width=${width}`;
+      }
+      return text;
+    };
+    const srcSetMaxWidth = (value) => String(value || "")
+      .split(",")
+      .reduce((max, part) => {
+        const descriptor = part.trim().match(/\s(\d+)w(?:\s|$)/);
+        return Math.max(max, descriptor ? Number(descriptor[1]) || 0 : parsedWidth(part));
+      }, 0);
+    const targetWidthForElement = (element) => {
+      const rect = element.getBoundingClientRect();
+      const visibleWidth = Math.max(
+        rect.width || 0,
+        element.clientWidth || 0,
+        Number(element.getAttribute?.("width") || 0) || 0
+      );
+      const baseWidth = visibleWidth > 0 ? visibleWidth : Math.min(viewportWidth, 320);
+      return Math.max(320, Math.ceil(baseWidth * Math.max(1, window.devicePixelRatio || 1) * 1.35));
+    };
+    let upgradedImages = 0;
+    let upgradedBackgrounds = 0;
     for (const img of document.querySelectorAll("img")) {
       img.loading = "eager";
       img.setAttribute("loading", "eager");
+      if (!img.getAttribute("decoding")) {
+        img.setAttribute("decoding", "sync");
+      }
+      if (!img.getAttribute("fetchpriority")) {
+        img.setAttribute("fetchpriority", "high");
+      }
+      const targetWidth = targetWidthForElement(img);
       for (const attr of eagerImageAttrs) {
         const value = img.getAttribute(attr);
-        const current = img.getAttribute("src") || "";
-        if (value && (!current || /[?&]width=10(?:&|$)/.test(current))) {
-          img.setAttribute("src", value);
+        if (value) {
+          const upgraded = upgradeImageUrl(value, targetWidth);
+          const currentWidth = parsedWidth(img.getAttribute("src") || img.currentSrc || "");
+          if (!img.getAttribute("src") || currentWidth < targetWidth * 0.75 || upgraded !== value) {
+            img.setAttribute("src", upgraded);
+            upgradedImages += 1;
+          }
+          break;
         }
       }
       for (const attr of eagerSrcSetAttrs) {
         const value = img.getAttribute(attr);
-        const current = img.getAttribute("srcset") || "";
-        if (value && (!current || /[?&]width=10(?:&|$)/.test(current))) {
+        if (value) {
           img.setAttribute("srcset", value);
+          upgradedImages += 1;
+          break;
         }
+      }
+      const src = img.getAttribute("src") || img.currentSrc || "";
+      const srcWidth = parsedWidth(src);
+      if (src && srcWidth > 0 && srcWidth < targetWidth * 0.75) {
+        img.setAttribute("src", upgradeImageUrl(src, targetWidth));
+        upgradedImages += 1;
+      }
+      const srcset = img.getAttribute("srcset") || "";
+      if (srcset && srcSetMaxWidth(srcset) > 0 && srcSetMaxWidth(srcset) < targetWidth * 0.75) {
+        img.removeAttribute("srcset");
+        upgradedImages += 1;
       }
     }
     for (const element of document.querySelectorAll("body *")) {
@@ -20444,6 +21249,33 @@ async function primePlaywrightLazyContent(page, viewport = {}, options = {}) {
         element.style.setProperty("content-visibility", "visible", "important");
         element.style.setProperty("contain-intrinsic-size", "auto", "important");
       }
+      if (element.matches("[data-aos], .aos-init, .aos-animate")) {
+        element.style.setProperty("opacity", "1", "important");
+        element.style.setProperty("transform", "none", "important");
+        element.style.setProperty("visibility", "visible", "important");
+      }
+      const targetWidth = targetWidthForElement(element);
+      let backgroundImage = style.backgroundImage || "";
+      if (!backgroundImage || backgroundImage === "none") {
+        for (const attr of eagerBackgroundAttrs) {
+          const value = element.getAttribute(attr);
+          if (!value) continue;
+          backgroundImage = value.startsWith("url(") ? value : `url("${value}")`;
+          element.style.setProperty("background-image", backgroundImage, "important");
+          upgradedBackgrounds += 1;
+          break;
+        }
+      }
+      if (backgroundImage && backgroundImage !== "none") {
+        const upgradedBackground = backgroundImage.replace(/url\((['"]?)(.*?)\1\)/gi, (_, quote, rawUrl) => {
+          const upgraded = upgradeImageUrl(rawUrl, targetWidth);
+          return `url("${upgraded.replaceAll("\"", "\\\"")}")`;
+        });
+        if (upgradedBackground !== backgroundImage) {
+          element.style.setProperty("background-image", upgradedBackground, "important");
+          upgradedBackgrounds += 1;
+        }
+      }
     }
     return {
       height: Math.max(
@@ -20451,26 +21283,42 @@ async function primePlaywrightLazyContent(page, viewport = {}, options = {}) {
         document.documentElement?.scrollHeight || 0,
         document.documentElement?.clientHeight || 0
       ),
-      images: document.images.length
+      images: document.images.length,
+      upgradedImages,
+      upgradedBackgrounds,
+      incompleteImages: Array.from(document.images || []).filter((img) => !img.complete || !img.naturalWidth).length
     };
-  }).catch(() => ({ height: Number(viewport.height || 0) || 1000, images: 0 }));
+  }, { viewportWidth, viewportHeight }).catch(() => ({
+    height: viewportHeight,
+    images: 0,
+    upgradedImages: 0,
+    upgradedBackgrounds: 0,
+    incompleteImages: 0
+  }));
 
-  const viewportHeight = Math.max(320, Number(viewport.height || 0) || 1000);
+  let state = await materializeLazyImages();
   let height = Math.max(viewportHeight, Number(state.height || 0) || viewportHeight);
-  const step = Math.max(viewportHeight, Math.ceil(height / maxSteps));
-  for (let y = 0; y < height; y += step) {
-    await page.evaluate((value) => {
-      window.scrollTo(0, value);
-      window.dispatchEvent(new Event("scroll"));
-    }, y).catch(() => null);
-    await page.waitForTimeout(delayMs).catch(() => null);
+  for (let pass = 0; pass < 2; pass += 1) {
+    const step = Math.max(Math.floor(viewportHeight * 0.75), Math.ceil(height / maxSteps));
+    for (let y = 0; y < height; y += step) {
+      await page.evaluate((value) => {
+        window.scrollTo(0, value);
+        window.dispatchEvent(new Event("scroll"));
+        window.dispatchEvent(new Event("resize"));
+      }, y).catch(() => null);
+      await page.waitForTimeout(delayMs).catch(() => null);
+      state = await materializeLazyImages();
+      height = Math.max(height, Number(state.height || 0) || viewportHeight);
+    }
   }
-  await page.evaluate(() => {
-    window.scrollTo(0, Math.max(0, document.documentElement.scrollHeight || document.body?.scrollHeight || 0));
+  await page.evaluate((value) => {
+    window.scrollTo(0, value);
     window.dispatchEvent(new Event("scroll"));
-  }).catch(() => null);
+    window.dispatchEvent(new Event("resize"));
+  }, Math.max(0, height - viewportHeight)).catch(() => null);
   await page.waitForTimeout(delayMs).catch(() => null);
-  for (let pass = 0; pass < 4; pass += 1) {
+  state = await materializeLazyImages();
+  for (let pass = 0; pass < 5; pass += 1) {
     const nextState = await page.evaluate(() => ({
       height: Math.max(
         document.body?.scrollHeight || 0,
@@ -20483,20 +21331,33 @@ async function primePlaywrightLazyContent(page, viewport = {}, options = {}) {
       break;
     }
     height = nextHeight;
-    await page.evaluate(() => {
-      window.scrollTo(0, Math.max(0, document.documentElement.scrollHeight || document.body?.scrollHeight || 0));
+    await page.evaluate((value) => {
+      window.scrollTo(0, value);
       window.dispatchEvent(new Event("scroll"));
-    }).catch(() => null);
+      window.dispatchEvent(new Event("resize"));
+    }, Math.max(0, height - viewportHeight)).catch(() => null);
     await page.waitForTimeout(delayMs).catch(() => null);
+    state = await materializeLazyImages();
   }
-  await page.evaluate(() => Promise.race([
-    Promise.all(Array.from(document.images || []).slice(0, 80).map((img) => {
-      if (img.complete && img.naturalWidth > 0) return true;
-      if (typeof img.decode === "function") return img.decode().catch(() => true);
-      return true;
-    })),
-    new Promise((resolve) => setTimeout(resolve, 1200))
-  ])).catch(() => null);
+  await page.evaluate((timeoutMs) => {
+    const decodeImage = (img) => {
+      if (!(img instanceof HTMLImageElement)) return Promise.resolve(true);
+      if (img.complete && img.naturalWidth > 0) return Promise.resolve(true);
+      if (typeof img.decode === "function") {
+        return img.decode().catch(() => true);
+      }
+      return new Promise((resolve) => {
+        const done = () => resolve(true);
+        img.addEventListener("load", done, { once: true });
+        img.addEventListener("error", done, { once: true });
+      });
+    };
+    const images = Array.from(document.images || []).slice(0, 260);
+    return Promise.race([
+      Promise.all(images.map((img) => decodeImage(img))),
+      new Promise((resolve) => setTimeout(resolve, timeoutMs))
+    ]);
+  }, Math.max(1200, Math.min(3500, Number(options.playwrightImageDecodeTimeoutMs) || 2600))).catch(() => null);
   return state;
 }
 

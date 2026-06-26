@@ -716,6 +716,12 @@ test("Playwright full-page capture writes and validates a full-page screenshot",
     const screenshotCall = calls.find((call) => call.method === "screenshot");
     assert.equal(screenshotCall.options.fullPage, true);
     assert.equal(screenshotCall.options.scale, "css");
+    const lazyMaterializeCalls = calls.filter((call) =>
+      call.method === "evaluate" &&
+      call.arg?.viewportWidth >= 320 &&
+      call.arg?.viewportHeight >= 320
+    );
+    assert.ok(lazyMaterializeCalls.length >= 2);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
