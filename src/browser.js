@@ -65,6 +65,19 @@ const browserLaunchProfiles = [
 ];
 
 export async function capturePage(url, outputPath, options = {}) {
+  if (shouldUsePlaywrightRelatedCapture(options)) {
+    try {
+      return await capturePageWithPlaywrightRelated(url, outputPath, options);
+    } catch (error) {
+      options = {
+        ...options,
+        playwrightRelatedFallback: {
+          reason: error.message || "Playwright related capture failed."
+        }
+      };
+    }
+  }
+
   if (shouldUsePlaywrightFullPageCapture(options)) {
     try {
       return await capturePageWithPlaywrightFullPage(url, outputPath, options);
@@ -413,87 +426,7 @@ async function driveCapture(client, url, outputPath, options) {
       : options.captureMode === "shokz-landing-related"
         ? "capturing Shokz landing related sections"
         : "capturing Shokz home banners";
-    let relatedCapture;
-    if (options.captureMode === "shokz-products-nav-related") {
-      relatedCapture = await captureShokzProductsNavigationRelated(client, outputPath, captureContext);
-    } else if (options.captureMode === "shokz-product-page-related") {
-      relatedCapture = await captureShokzProductPageRelated(client, outputPath, captureContext);
-    } else if (options.captureMode === "shokz-collection-related-section") {
-      const definition = findShokzCollectionRelatedSectionDefinition(options.sectionKey);
-      if (!definition) {
-        throw new Error(`Unknown Shokz collection related section: ${options.sectionKey || "(missing)"}.`);
-      }
-      const sectionCapture = await captureShokzCollectionRelatedSection(client, outputPath, captureContext, definition);
-      relatedCapture = {
-        width: sectionCapture.width,
-        height: sectionCapture.height,
-        captures: sectionCapture.captures,
-        relatedValidation: {
-          status: sectionCapture.warnings.length ? "warning" : "ok",
-          warnings: sectionCapture.warnings,
-          sections: [{
-            sectionKey: definition.key,
-            sectionLabel: definition.sectionLabel,
-            expectedCount: sectionCapture.expectedCount,
-            capturedCount: sectionCapture.capturedCount,
-            savedCount: sectionCapture.captures.length,
-            status: sectionCapture.warnings.length ? "warning" : "ok"
-          }]
-        }
-      };
-    } else if (options.captureMode === "shokz-comparison-related-section") {
-      const definition = findShokzComparisonRelatedSectionDefinition(options.sectionKey);
-      if (!definition) {
-        throw new Error(`Unknown Shokz comparison related section: ${options.sectionKey || "(missing)"}.`);
-      }
-      const sectionCapture = await captureShokzComparisonRelatedSection(client, outputPath, captureContext, definition);
-      relatedCapture = {
-        width: sectionCapture.width,
-        height: sectionCapture.height,
-        captures: sectionCapture.captures,
-        relatedValidation: {
-          status: sectionCapture.warnings.length ? "warning" : "ok",
-          warnings: sectionCapture.warnings,
-          sections: [{
-            sectionKey: definition.key,
-            sectionLabel: definition.sectionLabel,
-            expectedCount: sectionCapture.expectedCount,
-            capturedCount: sectionCapture.capturedCount,
-            savedCount: sectionCapture.captures.length,
-            status: sectionCapture.warnings.length ? "warning" : "ok"
-          }]
-        }
-      };
-    } else if (options.captureMode === "shokz-home-related-section") {
-      const definition = findShokzHomeRelatedSectionDefinition(options.sectionKey);
-      if (!definition) {
-        throw new Error(`Unknown Shokz home related section: ${options.sectionKey || "(missing)"}.`);
-      }
-      const sectionCapture = await captureShokzHomeRelatedSection(client, outputPath, captureContext, definition);
-      relatedCapture = {
-        width: sectionCapture.width,
-        height: sectionCapture.height,
-        captures: sectionCapture.captures,
-        relatedValidation: {
-          status: sectionCapture.warnings.length ? "warning" : "ok",
-          warnings: sectionCapture.warnings,
-          sections: [{
-            sectionKey: definition.key,
-            sectionLabel: definition.sectionLabel,
-            expectedCount: sectionCapture.expectedCount,
-            capturedCount: sectionCapture.capturedCount,
-            savedCount: sectionCapture.captures.length,
-            status: sectionCapture.warnings.length ? "warning" : "ok"
-          }]
-        }
-      };
-    } else if (options.captureMode === "shokz-home-related") {
-      relatedCapture = await captureShokzHomeRelated(client, outputPath, captureContext);
-    } else if (options.captureMode === "shokz-landing-related") {
-      relatedCapture = await captureShokzLandingRelated(client, outputPath, captureContext);
-    } else {
-      relatedCapture = await captureShokzHomeBanners(client, outputPath, viewport, captureContext);
-    }
+    const relatedCapture = await captureShokzRelatedMode(client, outputPath, options, captureContext, viewport);
     const finalUrl = await verifyCurrentUrl(client, url, "after related capture", urlCheck);
     urlCheck.ok = true;
     const trackingAudit = await readTrackingAudit(client, trackingNetworkRequests);
@@ -868,6 +801,66 @@ async function driveCapture(client, url, outputPath, options) {
     error.message = `${error.message} (stage: ${stage})`;
     throw error;
   }
+}
+
+async function captureShokzRelatedMode(client, outputPath, options, captureContext, viewport) {
+  if (options.captureMode === "shokz-products-nav-related") {
+    return captureShokzProductsNavigationRelated(client, outputPath, captureContext);
+  }
+  if (options.captureMode === "shokz-product-page-related") {
+    return captureShokzProductPageRelated(client, outputPath, captureContext);
+  }
+  if (options.captureMode === "shokz-collection-related-section") {
+    const definition = findShokzCollectionRelatedSectionDefinition(options.sectionKey);
+    if (!definition) {
+      throw new Error(`Unknown Shokz collection related section: ${options.sectionKey || "(missing)"}.`);
+    }
+    const sectionCapture = await captureShokzCollectionRelatedSection(client, outputPath, captureContext, definition);
+    return relatedSectionCaptureResult(sectionCapture, definition);
+  }
+  if (options.captureMode === "shokz-comparison-related-section") {
+    const definition = findShokzComparisonRelatedSectionDefinition(options.sectionKey);
+    if (!definition) {
+      throw new Error(`Unknown Shokz comparison related section: ${options.sectionKey || "(missing)"}.`);
+    }
+    const sectionCapture = await captureShokzComparisonRelatedSection(client, outputPath, captureContext, definition);
+    return relatedSectionCaptureResult(sectionCapture, definition);
+  }
+  if (options.captureMode === "shokz-home-related-section") {
+    const definition = findShokzHomeRelatedSectionDefinition(options.sectionKey);
+    if (!definition) {
+      throw new Error(`Unknown Shokz home related section: ${options.sectionKey || "(missing)"}.`);
+    }
+    const sectionCapture = await captureShokzHomeRelatedSection(client, outputPath, captureContext, definition);
+    return relatedSectionCaptureResult(sectionCapture, definition);
+  }
+  if (options.captureMode === "shokz-home-related") {
+    return captureShokzHomeRelated(client, outputPath, captureContext);
+  }
+  if (options.captureMode === "shokz-landing-related") {
+    return captureShokzLandingRelated(client, outputPath, captureContext);
+  }
+  return captureShokzHomeBanners(client, outputPath, viewport, captureContext);
+}
+
+function relatedSectionCaptureResult(sectionCapture, definition) {
+  return {
+    width: sectionCapture.width,
+    height: sectionCapture.height,
+    captures: sectionCapture.captures,
+    relatedValidation: {
+      status: sectionCapture.warnings.length ? "warning" : "ok",
+      warnings: sectionCapture.warnings,
+      sections: [{
+        sectionKey: definition.key,
+        sectionLabel: definition.sectionLabel,
+        expectedCount: sectionCapture.expectedCount,
+        capturedCount: sectionCapture.capturedCount,
+        savedCount: sectionCapture.captures.length,
+        status: sectionCapture.warnings.length ? "warning" : "ok"
+      }]
+    }
+  };
 }
 
 async function readPageTitle(client) {
@@ -1507,9 +1500,27 @@ function shouldUsePlaywrightFullPageCapture(options = {}) {
   const captureMode = String(options.captureMode || "").trim();
   return !captureMode.includes("related") &&
     captureMode !== "shokz-products-nav" &&
-    !shouldUseDirectFullPageClipCapture(options) &&
     !options.fastFullPageFallback &&
     !options.playwrightFullPageFallback;
+}
+
+function shouldUsePlaywrightRelatedCapture(options = {}) {
+  return isPlaywrightRelatedCaptureMode(options.captureMode) &&
+    options.playwrightRelated !== false &&
+    !options.playwrightRelatedFallback;
+}
+
+function isPlaywrightRelatedCaptureMode(captureMode) {
+  return [
+    "shokz-home-banners",
+    "shokz-home-related",
+    "shokz-products-nav-related",
+    "shokz-product-page-related",
+    "shokz-home-related-section",
+    "shokz-collection-related-section",
+    "shokz-comparison-related-section",
+    "shokz-landing-related"
+  ].includes(String(captureMode || "").trim());
 }
 
 function fastFullPageTimeoutMs(options = {}) {
@@ -2241,7 +2252,12 @@ async function captureShokzLandingRelated(client, outputPath, captureContext) {
 
 async function captureShokzProductPageRelated(client, outputPath, captureContext) {
   const viewport = viewportForCaptureContext(captureContext);
-  await materializeFullPageContent(client);
+  if (captureContext.playwrightRelated) {
+    await scrollTo(client, 0);
+    await sleep(350);
+  } else {
+    await materializeFullPageContent(client);
+  }
   await scrollTo(client, 0);
   await sleep(700);
   await primeLazyImages(client);
@@ -20751,6 +20767,7 @@ export const __testOnly = {
   shouldUseDirectFullPageClipCapture,
   shouldUseFastViewportFullPageCapture,
   shouldUsePlaywrightFullPageCapture,
+  shouldUsePlaywrightRelatedCapture,
   fastFullPageTimeoutMs,
   playwrightFullPageTimeoutMs,
   fastFullPageAttemptTimeoutMs,
@@ -20885,6 +20902,229 @@ async function capturePageWithPlaywrightFullPage(url, outputPath, options = {}) 
     await context?.close?.().catch(() => null);
     await browser?.close?.().catch(() => null);
   }
+}
+
+async function capturePageWithPlaywrightRelated(url, outputPath, options = {}) {
+  const viewport = options.viewport || { width: 1440, height: 1000 };
+  const platform = capturePlatform(options, viewport);
+  const mobile = platform === "mobile";
+  const timeoutMs = Math.max(
+    1000,
+    Math.trunc(Number(options.playwrightRelatedTimeoutMs || options.playwrightFullPageTimeoutMs || 60000))
+  );
+  const navigationTimeoutMs = Math.min(timeoutMs, playwrightFullPageTimeoutMs(options));
+  const urlCheck = {
+    requestedUrl: url,
+    finalUrl: "",
+    ok: false,
+    checks: []
+  };
+  let browser = null;
+  let context = null;
+
+  try {
+    const chromium = await loadPlaywrightChromium(options);
+    const browserPath = options.playwrightBrowserPath || await findBrowser();
+    browser = await chromium.launch({
+      executablePath: browserPath,
+      headless: true,
+      timeout: navigationTimeoutMs,
+      args: [
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-default-apps",
+        "--disable-sync",
+        "--disable-gpu",
+        "--hide-scrollbars",
+        "--ignore-certificate-errors",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--no-sandbox",
+        "--disable-setuid-sandbox"
+      ]
+    });
+    context = await browser.newContext({
+      viewport: {
+        width: Math.max(320, Math.trunc(Number(viewport.width) || 1440)),
+        height: Math.max(320, Math.trunc(Number(viewport.height) || 1000))
+      },
+      deviceScaleFactor: Number(viewport.deviceScaleFactor) || 1,
+      hasTouch: Boolean(viewport.touch || mobile),
+      isMobile: mobile,
+      ignoreHTTPSErrors: true
+    });
+
+    const page = await context.newPage();
+    page.setDefaultTimeout(Math.min(timeoutMs, 5000));
+    page.on("dialog", async (dialog) => {
+      await dialog.dismiss().catch(() => null);
+    });
+
+    const navigation = await navigatePlaywrightPageForFastScreenshot(page, url, {
+      ...options,
+      playwrightNavigationTimeoutMs: navigationTimeoutMs
+    }, navigationTimeoutMs, urlCheck);
+    await page.waitForTimeout(Number(options.playwrightWaitAfterLoadMs) || 700);
+    await page.addStyleTag({
+      content: [
+        "html, body { scroll-behavior: auto !important; }",
+        "[data-aos], .aos-init, .aos-animate {",
+        "  opacity: 1 !important;",
+        "  transform: none !important;",
+        "  visibility: visible !important;",
+        "}"
+      ].join("\n")
+    }).catch(() => null);
+    if (options.dismissPopups !== false) {
+      await cleanupPlaywrightPopups(page, { hideOnly: false });
+      await page.waitForTimeout(180).catch(() => null);
+      await cleanupPlaywrightPopups(page, { hideOnly: true });
+    }
+
+    const playwrightClient = createPlaywrightCdpAdapter(page, { timeoutMs });
+    const relatedCapture = await captureShokzRelatedMode(playwrightClient, outputPath, options, {
+      viewport,
+      platform,
+      relatedStateFilter: options.relatedStateFilter || null,
+      relatedStateOutputPath: options.relatedStateOutputPath || null,
+      skipRelatedComposite: Boolean(options.skipRelatedComposite),
+      playwrightRelated: true
+    }, viewport);
+    if (
+      Array.isArray(relatedCapture?.relatedValidation?.warnings) &&
+      relatedCapture.relatedValidation.warnings.length &&
+      !relatedCapture.captures?.length
+    ) {
+      throw new Error(relatedCapture.relatedValidation.warnings[0]?.message || "Playwright related capture produced no screenshots.");
+    }
+
+    const finalUrl = verifyPlaywrightCurrentUrl(page.url(), url, "after Playwright related capture", urlCheck);
+    urlCheck.ok = true;
+    return {
+      requestedUrl: url,
+      finalUrl,
+      urlCheck,
+      title: await page.title().catch(() => ""),
+      trackingAudit: null,
+      width: relatedCapture.width,
+      height: relatedCapture.height,
+      fullPageHeight: relatedCapture.height,
+      truncated: false,
+      scrollInfo: null,
+      captureStrategy: "playwright-related",
+      playwrightRelated: {
+        attempted: true,
+        requested: true,
+        used: true,
+        engine: "playwright",
+        captureMode: options.captureMode || null,
+        navigation,
+        fallback: null
+      },
+      ...relatedCapture
+    };
+  } finally {
+    await context?.close?.().catch(() => null);
+    await browser?.close?.().catch(() => null);
+  }
+}
+
+function createPlaywrightCdpAdapter(page, options = {}) {
+  const timeoutMs = Math.max(1000, Math.trunc(Number(options.timeoutMs) || 60000));
+  return {
+    async send(method, params = {}) {
+      if (method === "Runtime.evaluate") {
+        const value = await page.evaluate(async (expression) => {
+          return await Function(`"use strict"; return (${expression});`)();
+        }, String(params.expression || ""));
+        return { result: { value } };
+      }
+      if (method === "Page.captureScreenshot") {
+        const screenshotOptions = {
+          type: "png",
+          animations: "allow",
+          scale: "css",
+          timeout: timeoutMs
+        };
+        if (params.clip) {
+          screenshotOptions.clip = {
+            x: Math.max(0, Math.floor(Number(params.clip.x) || 0)),
+            y: Math.max(0, Math.floor(Number(params.clip.y) || 0)),
+            width: Math.max(1, Math.ceil(Number(params.clip.width) || 0)),
+            height: Math.max(1, Math.ceil(Number(params.clip.height) || 0))
+          };
+        }
+        const buffer = await page.screenshot(screenshotOptions);
+        return { data: buffer.toString("base64") };
+      }
+      if (method === "Page.getLayoutMetrics") {
+        const size = await readPlaywrightPageSize(page, {});
+        return {
+          cssContentSize: {
+            x: 0,
+            y: 0,
+            width: size.width,
+            height: size.height
+          },
+          contentSize: {
+            x: 0,
+            y: 0,
+            width: size.width,
+            height: size.height
+          }
+        };
+      }
+      if (method === "Input.dispatchMouseEvent") {
+        const x = Math.max(0, Number(params.x) || 0);
+        const y = Math.max(0, Number(params.y) || 0);
+        const button = normalizePlaywrightMouseButton(params.button);
+        if (params.type === "mouseMoved") {
+          await page.mouse.move(x, y);
+        } else if (params.type === "mousePressed") {
+          await page.mouse.move(x, y);
+          await page.mouse.down({ button });
+        } else if (params.type === "mouseReleased") {
+          await page.mouse.move(x, y);
+          await page.mouse.up({ button });
+        } else if (params.type === "mouseWheel") {
+          await page.mouse.wheel(Number(params.deltaX) || 0, Number(params.deltaY) || 0);
+        }
+        return {};
+      }
+      if (method === "Input.dispatchTouchEvent") {
+        const point = Array.isArray(params.touchPoints) ? params.touchPoints[0] : null;
+        if (params.type === "touchStart" && point) {
+          await page.touchscreen.tap(Math.max(0, Number(point.x) || 0), Math.max(0, Number(point.y) || 0));
+        }
+        return {};
+      }
+      if (method === "Input.dispatchKeyEvent") {
+        const key = String(params.key || params.code || "");
+        if (key) {
+          if (params.type === "keyDown") {
+            await page.keyboard.down(key);
+          } else if (params.type === "keyUp") {
+            await page.keyboard.up(key);
+          } else if (params.type === "char") {
+            await page.keyboard.insertText(key);
+          }
+        }
+        return {};
+      }
+      return {};
+    },
+    on() {
+      return () => {};
+    }
+  };
+}
+
+function normalizePlaywrightMouseButton(button) {
+  const normalized = String(button || "left").toLowerCase();
+  if (normalized === "right" || normalized === "middle") {
+    return normalized;
+  }
+  return "left";
 }
 
 async function navigatePlaywrightPageForFastScreenshot(page, url, options = {}, timeoutMs, urlCheck) {

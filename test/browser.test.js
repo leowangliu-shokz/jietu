@@ -26,6 +26,7 @@ const {
   shouldUseDirectFullPageClipCapture,
   shouldUseFastViewportFullPageCapture,
   shouldUsePlaywrightFullPageCapture,
+  shouldUsePlaywrightRelatedCapture,
   fastFullPageAttemptTimeoutMs,
   playwrightFullPageTimeoutMs,
   capturePageWithPlaywrightFullPage,
@@ -691,14 +692,32 @@ test("Playwright full-page mode is the primary full-page path", () => {
   assert.equal(shouldUsePlaywrightFullPageCapture({}), false);
   assert.equal(shouldUsePlaywrightFullPageCapture({ fullPage: false, fastFullPage: true }), false);
   assert.equal(shouldUsePlaywrightFullPageCapture({ fullPage: true, captureMode: "shokz-home-related-section" }), false);
-  assert.equal(shouldUsePlaywrightFullPageCapture({ fullPage: true, captureMode: "shokz-collection-page" }), false);
-  assert.equal(shouldUsePlaywrightFullPageCapture({ fullPage: true, captureMode: "shokz-comparison-page" }), false);
-  assert.equal(shouldUsePlaywrightFullPageCapture({ fullPage: true, captureMode: "shokz-landing-page" }), false);
+  assert.equal(shouldUsePlaywrightFullPageCapture({ fullPage: true, captureMode: "shokz-collection-page" }), true);
+  assert.equal(shouldUsePlaywrightFullPageCapture({ fullPage: true, captureMode: "shokz-comparison-page" }), true);
+  assert.equal(shouldUsePlaywrightFullPageCapture({ fullPage: true, captureMode: "shokz-landing-page" }), true);
   assert.equal(shouldUsePlaywrightFullPageCapture({ fastFullPage: true, playwrightFullPage: false }), false);
   assert.equal(shouldUsePlaywrightFullPageCapture({ fastFullPage: true, fastFullPageFallback: { reason: "retry" } }), false);
   assert.equal(shouldUsePlaywrightFullPageCapture({ fastFullPage: true, captureMode: "shokz-products-nav" }), false);
   assert.equal(playwrightFullPageTimeoutMs({}), 20000);
   assert.equal(playwrightFullPageTimeoutMs({ playwrightFullPageTimeoutMs: 9000 }), 9000);
+});
+
+test("Playwright related mode is the primary carousel and state-capture path", () => {
+  for (const captureMode of [
+    "shokz-home-banners",
+    "shokz-home-related",
+    "shokz-products-nav-related",
+    "shokz-product-page-related",
+    "shokz-home-related-section",
+    "shokz-collection-related-section",
+    "shokz-comparison-related-section",
+    "shokz-landing-related"
+  ]) {
+    assert.equal(shouldUsePlaywrightRelatedCapture({ captureMode }), true, captureMode);
+  }
+  assert.equal(shouldUsePlaywrightRelatedCapture({ captureMode: "shokz-product-page-related", playwrightRelated: false }), false);
+  assert.equal(shouldUsePlaywrightRelatedCapture({ captureMode: "shokz-product-page-related", playwrightRelatedFallback: { reason: "retry" } }), false);
+  assert.equal(shouldUsePlaywrightRelatedCapture({ captureMode: "shokz-product-page" }), false);
 });
 
 test("Playwright full-page capture writes and validates a full-page screenshot", async () => {
