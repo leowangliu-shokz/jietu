@@ -1468,7 +1468,7 @@ function imagePreviewTileIssuePayload(snapshot, tile) {
 
 function refreshOpenImagePreviewAfterReplacement(snapshot, replacementPreview = null) {
   const previewSnapshot = snapshotForReplacementPreview(snapshot, replacementPreview);
-  const previewUrl = previewSnapshot?.imageUrl || "";
+  const previewUrl = displayImageUrlForItem(previewSnapshot);
   if (!previewSnapshot || !previewUrl) {
     return;
   }
@@ -1505,6 +1505,8 @@ function snapshotForReplacementPreview(snapshot, replacementPreview = null) {
     id: snapshot.id,
     file: replacementPreview.file || snapshot.file || "",
     imageUrl: replacementPreview.imageUrl || snapshot.imageUrl || "",
+    localImageUrl: replacementPreview.localImageUrl || archiveImageUrlForFile(replacementPreview.file) || snapshot.localImageUrl || "",
+    objectImageUrl: replacementPreview.objectImageUrl || snapshot.objectImageUrl || null,
     width: replacementPreview.width || snapshot.width || 0,
     height: replacementPreview.height || snapshot.height || 0,
     kind: replacementPreview.kind || snapshot.kind || "",
@@ -1525,6 +1527,8 @@ function snapshotForHomeOverviewPreview(snapshot) {
     ...snapshot,
     file: preview.file || snapshot.file || "",
     imageUrl: preview.imageUrl || snapshot.imageUrl || "",
+    localImageUrl: preview.localImageUrl || archiveImageUrlForFile(preview.file) || snapshot.localImageUrl || "",
+    objectImageUrl: preview.objectImageUrl || snapshot.objectImageUrl || null,
     width: preview.width || snapshot.width || 0,
     height: preview.height || snapshot.height || 0,
     kind: preview.kind || snapshot.kind || "",
@@ -1542,6 +1546,34 @@ function cacheBustedImageUrl(url) {
   }
   const separator = url.includes("?") ? "&" : "?";
   return `${url}${separator}t=${Date.now()}`;
+}
+
+function archiveImageUrlForFile(file) {
+  const value = String(file || "").trim().replaceAll("\\", "/").replace(/^archive\//, "");
+  if (!value || value.startsWith("/") || /^[a-z]+:/i.test(value)) {
+    return "";
+  }
+  return `/archive/${value.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+function displayImageUrlForItem(item) {
+  if (!item) {
+    return "";
+  }
+  return item.localImageUrl || archiveImageUrlForFile(item.file) || item.imageUrl || item.objectImageUrl || "";
+}
+
+function previewImageUrlForSnapshot(snapshot, preview = null) {
+  return displayImageUrlForItem(preview) || displayImageUrlForItem(snapshot);
+}
+
+function imageUrlMatchesPath(item, hrefPath) {
+  return [
+    item?.localImageUrl,
+    archiveImageUrlForFile(item?.file),
+    item?.imageUrl,
+    item?.objectImageUrl
+  ].some((value) => value && safePathname(value) === hrefPath);
 }
 
 function imagePreviewMarkerModeForSnapshot(snapshot) {
@@ -1709,7 +1741,7 @@ function snapshotForPreviewLink(link) {
   }
 
   const hrefPath = safePathname(link.href);
-  const byHref = state.snapshots.find((snapshot) => safePathname(snapshot.imageUrl) === hrefPath) || null;
+  const byHref = state.snapshots.find((snapshot) => imageUrlMatchesPath(snapshot, hrefPath)) || null;
   return byHref ? snapshotPreviewOverrideForLink(byHref, link) : null;
 }
 
@@ -1818,7 +1850,7 @@ function findRelatedShotForPreviewLink(parentSnapshot, link) {
   }
 
   const hrefPath = safePathname(link.href);
-  return relatedShots.find((shot) => safePathname(shot.imageUrl) === hrefPath) || null;
+  return relatedShots.find((shot) => imageUrlMatchesPath(shot, hrefPath)) || null;
 }
 
 function safePathname(value) {
@@ -4278,7 +4310,7 @@ function renderShotCard(card) {
   const item = document.createElement("article");
   const hasRelatedWarning = relatedWarnings(card.relatedValidation).length > 0;
   const preview = snapshot.homeOverview || null;
-  const mainPreviewUrl = preview?.imageUrl || snapshot.imageUrl;
+  const mainPreviewUrl = previewImageUrlForSnapshot(snapshot, preview);
   const mainPreviewCaption = `${displayUrl} ${formatDate(snapshot.capturedAt)}`;
   const mainPreviewAttrs = preview
     ? [
@@ -4558,10 +4590,11 @@ function renderRelatedThumbGrid(shots) {
     <div class="related-grid">
       ${shots.map((shot) => {
         const caption = relatedShotTitle(shot);
+        const thumbUrl = displayImageUrlForItem(shot);
         return `
         <a
           class="related-thumb ${isLowConfidenceCapture(shot.captureConfidence) ? "related-thumb-low-confidence" : ""}"
-          href="${escapeHtml(shot.imageUrl)}"
+          href="${escapeHtml(thumbUrl)}"
           target="_blank"
           rel="noreferrer"
           title="${escapeHtml(caption)}"
@@ -4724,6 +4757,8 @@ function relatedShotFromSnapshot(snapshot) {
     label: `轮播 ${snapshot.bannerIndex || ""}`.trim(),
     file: snapshot.file,
     imageUrl: snapshot.imageUrl,
+    localImageUrl: snapshot.localImageUrl,
+    objectImageUrl: snapshot.objectImageUrl,
     bytes: snapshot.bytes,
     width: snapshot.width,
     height: snapshot.height,
@@ -4743,7 +4778,7 @@ function relatedShotFromSnapshot(snapshot) {
 }
 
 function normalizeRelatedShot(shot) {
-  if (!shot || !shot.imageUrl) {
+  if (!shot || !displayImageUrlForItem(shot)) {
     return null;
   }
   const bannerIndex = Number(shot.bannerIndex || 0) || null;
@@ -4756,7 +4791,9 @@ function normalizeRelatedShot(shot) {
     sectionTitle: shot.sectionTitle || relatedSectionTitles[sectionKey] || "",
     label: displayLabel,
     file: shot.file || "",
-    imageUrl: shot.imageUrl,
+    imageUrl: shot.imageUrl || "",
+    localImageUrl: shot.localImageUrl || archiveImageUrlForFile(shot.file) || "",
+    objectImageUrl: shot.objectImageUrl || null,
     bytes: shot.bytes || null,
     width: shot.width || null,
     height: shot.height || null,
