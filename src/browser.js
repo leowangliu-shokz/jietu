@@ -1500,8 +1500,14 @@ function shouldUseFastViewportFullPageCapture(options = {}) {
 }
 
 function shouldUsePlaywrightFullPageCapture(options = {}) {
-  return shouldUseFastViewportFullPageCapture(options) &&
-    options.playwrightFullPage !== false &&
+  const fullPageRequested = options.fastFullPage || options.fullPage === true;
+  if (!fullPageRequested || options.fullPage === false || options.playwrightFullPage === false) {
+    return false;
+  }
+  const captureMode = String(options.captureMode || "").trim();
+  return !captureMode.includes("related") &&
+    captureMode !== "shokz-products-nav" &&
+    !shouldUseDirectFullPageClipCapture(options) &&
     !options.fastFullPageFallback &&
     !options.playwrightFullPageFallback;
 }

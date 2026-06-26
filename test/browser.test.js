@@ -685,8 +685,15 @@ test("fast full-page attempt timeout is short and configurable", () => {
   assert.equal(fastFullPageAttemptTimeoutMs({ fastFullPageAttemptTimeoutMs: 12000 }), 12000);
 });
 
-test("Playwright full-page mode is the primary fast full-page path", () => {
+test("Playwright full-page mode is the primary full-page path", () => {
+  assert.equal(shouldUsePlaywrightFullPageCapture({ fullPage: true }), true);
   assert.equal(shouldUsePlaywrightFullPageCapture({ fastFullPage: true }), true);
+  assert.equal(shouldUsePlaywrightFullPageCapture({}), false);
+  assert.equal(shouldUsePlaywrightFullPageCapture({ fullPage: false, fastFullPage: true }), false);
+  assert.equal(shouldUsePlaywrightFullPageCapture({ fullPage: true, captureMode: "shokz-home-related-section" }), false);
+  assert.equal(shouldUsePlaywrightFullPageCapture({ fullPage: true, captureMode: "shokz-collection-page" }), false);
+  assert.equal(shouldUsePlaywrightFullPageCapture({ fullPage: true, captureMode: "shokz-comparison-page" }), false);
+  assert.equal(shouldUsePlaywrightFullPageCapture({ fullPage: true, captureMode: "shokz-landing-page" }), false);
   assert.equal(shouldUsePlaywrightFullPageCapture({ fastFullPage: true, playwrightFullPage: false }), false);
   assert.equal(shouldUsePlaywrightFullPageCapture({ fastFullPage: true, fastFullPageFallback: { reason: "retry" } }), false);
   assert.equal(shouldUsePlaywrightFullPageCapture({ fastFullPage: true, captureMode: "shokz-products-nav" }), false);
