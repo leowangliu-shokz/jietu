@@ -27,6 +27,7 @@ const {
   shouldUseFastViewportFullPageCapture,
   shouldUsePlaywrightFullPageCapture,
   shouldUsePlaywrightRelatedCapture,
+  createPlaywrightCdpAdapter,
   fastFullPageAttemptTimeoutMs,
   playwrightFullPageTimeoutMs,
   capturePageWithPlaywrightFullPage,
@@ -72,6 +73,27 @@ test("suppresses structured media carousel low-detail quality warnings", () => {
       { key: "voices" },
       { stateLabel: "Shokz | Open-Ear Audio Pioneer 1" },
       { textBlocks: [{ text: "Open-Ear Audio Pioneer" }], images: [{ src: "media.jpg" }] },
+      { qualityStatus: "warning" }
+    ),
+    false
+  );
+});
+
+test("suppresses topbar low-detail warnings when text identifies the announcement strip", () => {
+  assert.equal(
+    shouldSuppressRelatedQualityWarning(
+      { key: "topbar" },
+      { stateLabel: "Topbar 1" },
+      { text: "Fast & Free Shipping" },
+      { qualityStatus: "warning" }
+    ),
+    true
+  );
+  assert.equal(
+    shouldSuppressRelatedQualityWarning(
+      { key: "topbar" },
+      { stateLabel: "" },
+      { text: "" },
       { qualityStatus: "warning" }
     ),
     false
@@ -758,6 +780,41 @@ test("Playwright related mode is the primary carousel and state-capture path", (
   assert.equal(shouldUsePlaywrightRelatedCapture({ captureMode: "shokz-product-page-related", playwrightRelated: false }), false);
   assert.equal(shouldUsePlaywrightRelatedCapture({ captureMode: "shokz-product-page-related", playwrightRelatedFallback: { reason: "retry" } }), false);
   assert.equal(shouldUsePlaywrightRelatedCapture({ captureMode: "shokz-product-page" }), false);
+});
+
+test("Playwright related screenshots preserve CDP clip semantics", async () => {
+  const clip = { x: 0, y: 566, width: 393, height: 769, scale: 1 };
+  const cdpCalls = [];
+  const client = createPlaywrightCdpAdapter({
+    async screenshot() {
+      throw new Error("page.screenshot should not be used when a CDP session is available.");
+    }
+  }, {
+    cdpSession: {
+      async send(method, params) {
+        cdpCalls.push({ method, params });
+        return { data: "cdp-image" };
+      }
+    }
+  });
+
+  const result = await client.send("Page.captureScreenshot", {
+    format: "png",
+    fromSurface: true,
+    captureBeyondViewport: true,
+    clip
+  });
+
+  assert.deepEqual(result, { data: "cdp-image" });
+  assert.deepEqual(cdpCalls, [{
+    method: "Page.captureScreenshot",
+    params: {
+      format: "png",
+      fromSurface: true,
+      captureBeyondViewport: true,
+      clip
+    }
+  }]);
 });
 
 test("Playwright full-page capture writes and validates a full-page screenshot", async () => {

@@ -20753,6 +20753,13 @@ function shouldSuppressRelatedQualityWarning(definition, state, current, visualA
   if (visualAudit?.qualityStatus !== "warning") {
     return false;
   }
+  if (definition?.key === "topbar") {
+    const topbarText = [
+      state?.stateLabel,
+      current?.text
+    ].filter(Boolean).join(" ");
+    return /topbar|shipping|returns|warranty|price match/i.test(topbarText);
+  }
   if (definition?.key !== "media") {
     return false;
   }
@@ -20817,6 +20824,7 @@ export const __testOnly = {
   shouldUseFastViewportFullPageCapture,
   shouldUsePlaywrightFullPageCapture,
   shouldUsePlaywrightRelatedCapture,
+  createPlaywrightCdpAdapter,
   fastFullPageTimeoutMs,
   playwrightFullPageTimeoutMs,
   fastFullPageAttemptTimeoutMs,
@@ -21030,7 +21038,8 @@ async function capturePageWithPlaywrightRelated(url, outputPath, options = {}) {
       await cleanupPlaywrightPopups(page, { hideOnly: true });
     }
 
-    const playwrightClient = createPlaywrightCdpAdapter(page, { timeoutMs });
+    const cdpSession = await page.context().newCDPSession(page).catch(() => null);
+    const playwrightClient = createPlaywrightCdpAdapter(page, { timeoutMs, cdpSession });
     const relatedCapture = await captureShokzRelatedMode(playwrightClient, outputPath, options, {
       viewport,
       platform,
@@ -21080,6 +21089,7 @@ async function capturePageWithPlaywrightRelated(url, outputPath, options = {}) {
 
 function createPlaywrightCdpAdapter(page, options = {}) {
   const timeoutMs = Math.max(1000, Math.trunc(Number(options.timeoutMs) || 60000));
+  const cdpSession = options.cdpSession || null;
   return {
     async send(method, params = {}) {
       if (method === "Runtime.evaluate") {
@@ -21089,6 +21099,9 @@ function createPlaywrightCdpAdapter(page, options = {}) {
         return { result: { value } };
       }
       if (method === "Page.captureScreenshot") {
+        if (cdpSession?.send) {
+          return cdpSession.send("Page.captureScreenshot", params);
+        }
         const screenshotOptions = {
           type: "png",
           animations: "allow",
