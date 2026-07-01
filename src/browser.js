@@ -6789,11 +6789,7 @@ function composeShokzHomeModuleComposite({ mainCapture, stateCaptures = [], view
     throw new Error("No module captures to compose.");
   }
 
-  const rows = homeModuleCompositeRows(items, itemGap, homeModuleCompositeMaxRightWidth({
-    mainImage,
-    viewport,
-    itemGap
-  }));
+  const rows = homeModuleCompositeRows(items, itemGap);
   const rightWidth = rows.reduce((max, row) => Math.max(max, row.width), 0);
   const width = Math.max(1, mainImage.width + gutter + rightWidth + outerPad);
   const height = Math.max(
@@ -6874,17 +6870,7 @@ function homeModuleCompositeSourceY(capture, image) {
   return Math.max(0, y);
 }
 
-function homeModuleCompositeMaxRightWidth({ mainImage, viewport = {}, itemGap = 18 } = {}) {
-  const referenceWidth = Math.max(
-    1,
-    Number(mainImage?.width || 0) || 0,
-    Number(viewport?.width || 0) || 0
-  );
-  const columnCount = 4;
-  return referenceWidth * columnCount + Math.max(0, columnCount - 1) * itemGap;
-}
-
-function homeModuleCompositeRows(items, itemGap = 18, maxRightWidth = Infinity) {
+function homeModuleCompositeRows(items, itemGap = 18) {
   const tolerance = 8;
   const sourceRows = [];
   for (const item of [...items].sort((a, b) =>
@@ -6908,41 +6894,18 @@ function homeModuleCompositeRows(items, itemGap = 18, maxRightWidth = Infinity) 
     }
   }
 
-  const rows = [];
   let cursorY = 0;
-  for (const sourceRow of sourceRows.sort((a, b) => Number(a.y || 0) - Number(b.y || 0))) {
-    const physicalRows = [];
-    for (const item of sourceRow.items.sort((a, b) => Number(a.index || 0) - Number(b.index || 0))) {
-      const row = physicalRows[physicalRows.length - 1];
-      const nextWidth = row
-        ? row.width + itemGap + item.width
-        : item.width;
-      if (!row || (row.items.length && nextWidth > maxRightWidth)) {
-        physicalRows.push({
-          y: 0,
-          height: item.height,
-          width: item.width,
-          items: [item]
-        });
-      } else {
-        row.items.push(item);
-        row.height = Math.max(row.height, item.height);
-        row.width = nextWidth;
-      }
-    }
-
-    let y = Math.max(Number(sourceRow.y || 0), cursorY);
-    for (const [rowIndex, row] of physicalRows.entries()) {
-      row.y = y;
-      rows.push(row);
-      y += row.height;
-      if (rowIndex < physicalRows.length - 1) {
-        y += itemGap;
-      }
-    }
-    cursorY = Math.max(cursorY, y);
-  }
-  return rows;
+  return sourceRows
+    .sort((a, b) => Number(a.y || 0) - Number(b.y || 0))
+    .map((row) => {
+      row.items.sort((a, b) => Number(a.index || 0) - Number(b.index || 0));
+      row.y = Math.max(Number(row.y || 0), cursorY);
+      row.height = row.items.reduce((max, item) => Math.max(max, item.height), 0);
+      row.width = row.items.reduce((sum, item) => sum + item.width, 0) +
+        Math.max(0, row.items.length - 1) * itemGap;
+      cursorY = row.y + row.height;
+      return row;
+    });
 }
 
 export async function composeShokzHomeOverviewCompositeCapture({

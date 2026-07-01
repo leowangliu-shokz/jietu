@@ -56,10 +56,12 @@ const networkPreflightDiagnosticsPath = path.join(logsDir, "network-preflight-di
 export async function captureConfiguredUrls(config = null, options = {}) {
   const activeConfig = normalizeConfig(config || await loadConfig());
   const plans = resolveConfiguredCapturePlans(activeConfig, options);
+  const deepRelatedMode = process.env.PAGE_SHOT_DEEP_RELATED === "1";
+  const fastRelated = options.fastRelated ?? !deepRelatedMode;
   const runOptions = {
     ...options,
-    fastRelated: options.fastRelated ?? process.env.PAGE_SHOT_DEEP_RELATED !== "1",
-    fastMainCapture: options.fastMainCapture ?? process.env.PAGE_SHOT_DEEP_RELATED !== "1"
+    fastRelated,
+    fastMainCapture: options.fastMainCapture ?? (fastRelated ? !deepRelatedMode : false)
   };
   return withCaptureLock(async () => {
     const preflight = await runCaptureNetworkPreflight(plans, activeConfig, runOptions);
@@ -2639,7 +2641,7 @@ async function captureShokzHomeRelatedShotsIsolated(normalizedUrl, baseOutputPat
       sectionKey: "banner",
       sectionLabel: "Banner",
       captureMode: "shokz-home-banners",
-      skipRelatedComposite: true,
+      skipRelatedComposite: false,
       captureTimeoutMs: homeRelatedSectionTimeoutMs
     },
     ...shokzHomeRelatedSectionDefinitions.map((definition) => ({
@@ -2647,7 +2649,7 @@ async function captureShokzHomeRelatedShotsIsolated(normalizedUrl, baseOutputPat
       sectionLabel: definition.sectionLabel,
       captureMode: "shokz-home-related-section",
       sectionCaptureKey: definition.key,
-      skipRelatedComposite: true,
+      skipRelatedComposite: false,
       captureTimeoutMs: homeRelatedSectionTimeoutMs
     }))
   ], captureConfig);

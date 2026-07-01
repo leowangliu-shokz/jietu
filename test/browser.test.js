@@ -637,7 +637,7 @@ test("home module composite reuses the Topbar layout for other carousel sections
   assert.equal(pixelAt(decoded, 144, 122)[1], 220);
 });
 
-test("home module composite wraps crowded same-position states", () => {
+test("home module composite keeps same-position states in one horizontal row", () => {
   const main = encodePng(100, 260, solidImage(100, 260, [40, 50, 60, 255]));
   const states = [
     [220, 30, 30, 255],
@@ -666,15 +666,15 @@ test("home module composite wraps crowded same-position states", () => {
   const decoded = decodePng(result.buffer);
   const variantRects = result.layout.variants.map((variant) => variant.rect);
 
-  assert.equal(result.layout.rowCount, 2);
-  assert.equal(decoded.width, 544);
+  assert.equal(result.layout.rowCount, 1);
+  assert.equal(decoded.width, 820);
   assert.equal(variantRects[0].y, 64);
   assert.equal(variantRects[2].y, 64);
-  assert.equal(variantRects[3].y, 132);
-  assert.equal(variantRects[4].y, 132);
+  assert.equal(variantRects[3].y, 64);
+  assert.equal(variantRects[4].y, 64);
   assert.equal(pixelAt(decoded, 124, 74)[0], 220);
   assert.equal(pixelAt(decoded, 400, 74)[2], 220);
-  assert.equal(pixelAt(decoded, 124, 142)[0], 220);
+  assert.equal(pixelAt(decoded, 676, 74)[0], 220);
 });
 
 test("home overview composite merges module maps into one right-side timeline", () => {
