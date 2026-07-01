@@ -3817,7 +3817,7 @@ function renderChangeDeleteCell(changeId, pending) {
 }
 
 function renderChangeStyleLink(label, style, change) {
-  const imageUrl = style?.imageUrl || "";
+  const imageUrl = displayImageUrlForItem(style);
   const capturedAt = style?.capturedAt || style?.timestamp || "";
   if (!imageUrl) {
     return `<span class="change-style-empty">暂无图片</span>`;
@@ -3904,14 +3904,18 @@ function changeLocationForDisplay(change) {
 function renderChangeComparisonImages(change) {
   return `
     <div class="change-compare-grid">
-      ${renderChangeImage("变化前", change.from?.imageUrl, change.from?.capturedAt)}
-      ${renderChangeImage("变化后", change.to?.imageUrl, change.to?.capturedAt)}
+      ${renderChangeImage("变化前", change.from)}
+      ${renderChangeImage("变化后", change.to)}
       ${renderChangeImage("标注图", change.visualChange?.diffImageUrl, change.to?.capturedAt, "change-diff-image")}
     </div>
   `;
 }
 
-function renderChangeImage(label, imageUrl, capturedAt, extraClass = "") {
+function renderChangeImage(label, source, capturedAt, extraClass = "") {
+  const imageUrl = typeof source === "string"
+    ? source
+    : displayImageUrlForItem(source);
+  const timestamp = capturedAt || (typeof source === "object" ? source?.capturedAt || source?.timestamp : "");
   if (!imageUrl) {
     return `
       <div class="change-image ${extraClass}">
@@ -3920,13 +3924,13 @@ function renderChangeImage(label, imageUrl, capturedAt, extraClass = "") {
       </div>
     `;
   }
-  const caption = `${label}${capturedAt ? ` ${formatDate(capturedAt)}` : ""}`;
+  const caption = `${label}${timestamp ? ` ${formatDate(timestamp)}` : ""}`;
   return `
     <a class="change-image ${extraClass}" href="${escapeHtml(imageUrl)}" target="_blank" rel="noreferrer" title="${escapeHtml(caption)}" data-preview-caption="${escapeHtml(caption)}">
       <span>${escapeHtml(label)}</span>
       <div class="change-image-placeholder" aria-hidden="true">
         <strong>点击查看截图</strong>
-        ${capturedAt ? `<small>${formatDate(capturedAt)}</small>` : ""}
+        ${timestamp ? `<small>${formatDate(timestamp)}</small>` : ""}
       </div>
     </a>
   `;
