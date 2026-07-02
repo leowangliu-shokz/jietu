@@ -739,6 +739,50 @@ test("ignores media pixel overlap when code metadata is stable below visual thre
   assert.equal(changes.length, 0);
 });
 
+test("ignores media carousel text block offset when the media window is stable", async () => {
+  const archiveRoot = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-media-layout-drift-"));
+  const beforeFile = "2026-05-03/example-com/media-before.png";
+  const afterFile = "2026-05-03/example-com/media-after.png";
+  const image = solidImage(320, 120, [245, 247, 248, 255]);
+  const item = mediaItem({
+    rect: { x: 80, y: 40, width: 120, height: 48 },
+    text: "The Shokz OpenRun Pro 2 win the award for its unique combination of safety"
+  });
+  const textBlock = {
+    text: "The Shokz OpenRun Pro 2 win the award for its unique combination of safety",
+    y: 34,
+    width: 260,
+    height: 24
+  };
+  await writeArchiveImage(archiveRoot, beforeFile, 320, 120, image);
+  await writeArchiveImage(archiveRoot, afterFile, 320, 120, image);
+
+  const changes = await compareSnapshots([
+    snapshot("snap-1", "2026-05-03T08:00:00.000Z", [
+      mediaShot(beforeFile, [item], {
+        width: 320,
+        height: 120,
+        sectionState: {
+          text: "Media Reviews The Shokz OpenRun Pro 2 win the award for its unique combination of safety",
+          textBlocks: [{ ...textBlock, x: 928 }]
+        }
+      })
+    ]),
+    snapshot("snap-2", "2026-05-03T09:00:00.000Z", [
+      mediaShot(afterFile, [item], {
+        width: 320,
+        height: 120,
+        sectionState: {
+          text: "Media Reviews The Shokz OpenRun Pro 2 win the award for its unique combination of safety",
+          textBlocks: [{ ...textBlock, x: -864 }]
+        }
+      })
+    ])
+  ], { archiveRoot, writeDiffImages: false });
+
+  assert.equal(changes.length, 0);
+});
+
 test("keeps media image asset changes from code metadata", async () => {
   const archiveRoot = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-media-image-"));
   const beforeFile = "2026-05-03/example-com/media-before.png";

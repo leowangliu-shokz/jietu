@@ -771,13 +771,14 @@ export function judgeHumanVisibleChange(fromItem, toItem, diff, options = {}) {
     signals.push({ type: "dimension", label: "image dimensions changed" });
   }
 
-  const semanticSignals = signals.filter((signal) => signal.type !== "dimension");
+  const effectiveSignals = suppressStableMediaLayoutDrift(fromItem, toItem, diff, signals, settings);
+  const semanticSignals = effectiveSignals.filter((signal) => signal.type !== "dimension");
   if (semanticSignals.length > 0 || diff.dimensionChanged) {
     return {
       changed: true,
       kind: semanticSignals.length > 0 ? "semantic" : "dimension",
-      signals,
-      summary: summarizeSignals(signals)
+      signals: effectiveSignals,
+      summary: summarizeSignals(effectiveSignals)
     };
   }
 
@@ -1463,6 +1464,58 @@ function mediaItemRectChanged(beforeRect, afterRect, settings) {
     return true;
   }
   return rectResizeRatio(before, after) >= Number(settings.mediaRectResizeRatio || 0.08);
+}
+
+function suppressStableMediaLayoutDrift(fromItem, toItem, diff, signals, settings) {
+  if (fromItem.sectionKey !== "media" || toItem.sectionKey !== "media") {
+    return signals;
+  }
+  const semanticSignals = signals.filter((signal) => signal.type !== "dimension");
+  const layoutSignals = semanticSignals.filter((signal) => signal.type === "layout");
+  if (!layoutSignals.length || layoutSignals.length !== semanticSignals.length) {
+    return signals;
+  }
+  const beforeText = normalizeComparableText(extractText(fromItem));
+  const afterText = normalizeComparableText(extractText(toItem));
+  if (beforeText !== afterText) {
+    return signals;
+  }
+  if (!stableMediaWindow(fromItem, toItem, settings)) {
+    return signals;
+  }
+  const minRatio = minVisualRatioForItem(toItem, settings);
+  if (Number(diff.ratio || 0) >= minRatio) {
+    return signals;
+  }
+  if (!layoutSignals.every((signal) => isHorizontalTextBlockDrift(signal, settings))) {
+    return signals;
+  }
+  return signals.filter((signal) => signal.type !== "layout");
+}
+
+function stableMediaWindow(fromItem, toItem, settings) {
+  const beforeItems = mediaComparableItems(fromItem);
+  const afterItems = mediaComparableItems(toItem);
+  if (!beforeItems.length || beforeItems.length !== afterItems.length) {
+    return false;
+  }
+  return mediaItemChangeSignals(fromItem, toItem, settings).length === 0;
+}
+
+function isHorizontalTextBlockDrift(signal, settings) {
+  const beforeRect = normalizeRect(signal.beforeRect);
+  const afterRect = normalizeRect(signal.afterRect);
+  if (!beforeRect || !afterRect) {
+    return false;
+  }
+  const deltaX = Math.abs(Number(signal.deltaX || 0));
+  const deltaY = Math.abs(Number(signal.deltaY || 0));
+  const height = Math.max(beforeRect.height, afterRect.height, 1);
+  const yTolerance = Math.max(4, height * 0.2);
+  if (deltaY > yTolerance || deltaX < Math.max(settings.layoutMoveMinPixels, 1)) {
+    return false;
+  }
+  return rectResizeRatio(beforeRect, afterRect) < 0.03;
 }
 
 function layoutChangeForTextBlocks(fromItem, toItem, settings) {
