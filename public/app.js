@@ -3817,7 +3817,8 @@ function renderChangeDeleteCell(changeId, pending) {
 }
 
 function renderChangeStyleLink(label, style, change) {
-  const imageUrl = displayImageUrlForItem(style);
+  const previewStyle = changeStylePreviewSource(style);
+  const imageUrl = displayImageUrlForItem(previewStyle);
   const capturedAt = style?.capturedAt || style?.timestamp || "";
   if (!imageUrl) {
     return `<span class="change-style-empty">暂无图片</span>`;
@@ -3827,7 +3828,7 @@ function renderChangeStyleLink(label, style, change) {
     label,
     changeLocationForDisplay(change),
     `截图时间：${formatOptionalDate(capturedAt)}`,
-    style?.text ? `文案：${truncateDisplayText(style.text, 120)}` : ""
+    previewStyle?.text ? `文案：${truncateDisplayText(previewStyle.text, 120)}` : ""
   ].filter(Boolean).join(" · ");
 
   return `
@@ -3845,11 +3846,47 @@ function renderChangeStyleLink(label, style, change) {
   `;
 }
 
+function changeStylePreviewSource(style) {
+  if (!style || typeof style !== "object") {
+    return style;
+  }
+  const source = Array.isArray(style.visibleItems)
+    ? style.visibleItems.find((item) => item?.sourceFile || item?.sourceImageUrl)
+    : null;
+  if (!source) {
+    return style;
+  }
+  return {
+    ...style,
+    file: source.sourceFile || style.file || "",
+    imageUrl: source.sourceImageUrl || source.imageUrl || style.imageUrl || "",
+    localImageUrl: source.sourceImageUrl || source.localImageUrl || "",
+    objectImageUrl: source.objectImageUrl || style.objectImageUrl || "",
+    width: source.sourceClip?.width || source.rect?.width || style.width || 0,
+    height: source.sourceClip?.height || source.rect?.height || style.height || 0,
+    text: source.text || style.text || ""
+  };
+}
+
 function styleRefForChange(change, kind) {
   if (kind === "old") {
-    return change.oldStyle || change.from || {};
+    return mergeChangeStyleRef(change.oldStyle, change.from);
   }
-  return change.newStyle || change.to || {};
+  return mergeChangeStyleRef(change.newStyle, change.to);
+}
+
+function mergeChangeStyleRef(style, source) {
+  if (!style) {
+    return source || {};
+  }
+  if (!source) {
+    return style;
+  }
+  return {
+    ...source,
+    ...style,
+    visibleItems: Array.isArray(style.visibleItems) ? style.visibleItems : source.visibleItems
+  };
 }
 
 function changeLevelForDisplay(change) {
@@ -3912,10 +3949,11 @@ function renderChangeComparisonImages(change) {
 }
 
 function renderChangeImage(label, source, capturedAt, extraClass = "") {
-  const imageUrl = typeof source === "string"
-    ? source
-    : displayImageUrlForItem(source);
-  const timestamp = capturedAt || (typeof source === "object" ? source?.capturedAt || source?.timestamp : "");
+  const previewSource = typeof source === "string" ? source : changeStylePreviewSource(source);
+  const imageUrl = typeof previewSource === "string"
+    ? previewSource
+    : displayImageUrlForItem(previewSource);
+  const timestamp = capturedAt || (typeof previewSource === "object" ? previewSource?.capturedAt || previewSource?.timestamp : "");
   if (!imageUrl) {
     return `
       <div class="change-image ${extraClass}">
