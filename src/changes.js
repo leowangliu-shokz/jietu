@@ -226,10 +226,11 @@ export function flattenComparableItems(snapshots) {
       if (!shot?.file) {
         continue;
       }
-      if (!(shot.isDefaultState && (shot.sectionKey === "banner" || shot.kind === "banner"))) {
+      const bannerVariants = comparableHomeBannerCompositeVariants(shot);
+      if (!bannerVariants.length && !(shot.isDefaultState && (shot.sectionKey === "banner" || shot.kind === "banner"))) {
         items.push(createComparableItem(snapshot, shot, index));
       }
-      for (const [variantIndex, variant] of comparableHomeBannerCompositeVariants(shot).entries()) {
+      for (const [variantIndex, variant] of bannerVariants.entries()) {
         items.push(createComparableItem(snapshot, variant, `${index}:variant:${variantIndex}`));
       }
     }

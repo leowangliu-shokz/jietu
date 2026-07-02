@@ -3856,12 +3856,12 @@ function renderChangeCompareButton(changeId, change) {
   `;
 }
 
-function changeStylePreviewSource(style) {
+function changeStylePreviewSource(style, change = null, kind = "") {
   if (!style || typeof style !== "object") {
     return style;
   }
-  const source = Array.isArray(style.visibleItems)
-    ? style.visibleItems.find((item) => item?.sourceFile || item?.sourceImageUrl)
+  const source = shouldUseVisibleItemPreview(style)
+    ? changeVisibleItemPreviewSource(style, change, kind)
     : null;
   if (!source) {
     return style;
@@ -3876,6 +3876,64 @@ function changeStylePreviewSource(style) {
     height: source.sourceClip?.height || source.rect?.height || style.height || 0,
     text: source.text || style.text || ""
   };
+}
+
+function shouldUseVisibleItemPreview(style) {
+  if (!Array.isArray(style.visibleItems) || !style.visibleItems.length) {
+    return false;
+  }
+  const file = String(style.file || "");
+  return !file || /(?:carousel-map|composite|overview)/i.test(file);
+}
+
+function changeVisibleItemPreviewSource(style, change, kind) {
+  const items = style.visibleItems.filter((item) => item?.sourceFile || item?.sourceImageUrl);
+  if (!items.length) {
+    return null;
+  }
+  const bannerIndex = Number(change?.location?.bannerIndex || 0);
+  if (bannerIndex > 0) {
+    const byBanner = items.find((item) =>
+      Number(item.bannerIndex || item.pageIndex || 0) === bannerIndex ||
+      new RegExp(`(?:^|\\D)${bannerIndex}(?:\\D|$)`).test(String(item.label || ""))
+    );
+    if (byBanner) {
+      return byBanner;
+    }
+  }
+  const fragment = kind === "old"
+    ? change?.textChange?.beforeFragment || change?.textChange?.before
+    : change?.textChange?.afterFragment || change?.textChange?.after;
+  const byText = items.find((item) => previewTextsOverlap(item.text, fragment));
+  return byText || items[0] || null;
+}
+
+function previewTextsOverlap(itemText, fragment) {
+  const item = normalizePreviewText(itemText);
+  const target = normalizePreviewText(fragment);
+  if (!item || !target) {
+    return false;
+  }
+  return item.includes(target) || target.includes(item) || previewTokenOverlapRatio(item, target) >= 0.62;
+}
+
+function normalizePreviewText(value) {
+  return String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function previewTokenOverlapRatio(left, right) {
+  const leftTokens = new Set(left.split(" ").filter((token) => token.length > 2));
+  const rightTokens = new Set(right.split(" ").filter((token) => token.length > 2));
+  if (!leftTokens.size || !rightTokens.size) {
+    return 0;
+  }
+  let overlap = 0;
+  for (const token of leftTokens) {
+    if (rightTokens.has(token)) {
+      overlap += 1;
+    }
+  }
+  return overlap / Math.min(leftTokens.size, rightTokens.size);
 }
 
 function styleRefForChange(change, kind) {
@@ -3975,7 +4033,7 @@ function changeRatioSuffix(value) {
 function changeComparisonImageFor(change, kind) {
   const label = kind === "old" ? "旧样式" : "新样式";
   const source = styleRefForChange(change, kind);
-  const previewSource = changeStylePreviewSource(source);
+  const previewSource = changeStylePreviewSource(source, change, kind);
   const imageUrl = typeof previewSource === "string"
     ? previewSource
     : displayImageUrlForItem(previewSource);

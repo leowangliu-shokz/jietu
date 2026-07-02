@@ -513,6 +513,42 @@ test("home banner monitor compares banner variants from homepage composites", as
   assert.ok(changes[0].visualChange.signals.some((signal) => signal.type === "image"));
 });
 
+test("home banner composites report only the changed banner variant", async () => {
+  const beforeShot = multiHomeBannerCompositeShot("before", [
+    { text: "New Arrival OpenDots 2 Light clip. Incredible sound.", image: "https://cdn.example.com/opendots-2.webp" },
+    { text: "New Arrival OpenDots Air Clip on your style.", image: "https://cdn.example.com/opendots-air.webp" }
+  ]);
+  const afterShot = multiHomeBannerCompositeShot("after", [
+    { text: "New Arrival OpenDots 2 Light clip. Incredible sound.", image: "https://cdn.example.com/opendots-2.webp" },
+    { text: "Flagship OpenRun Pro 2 Our Greatest Bone Conduction Headphones.", image: "https://cdn.example.com/openrun-pro-2.webp" }
+  ]);
+
+  const changes = await compareSnapshots([
+    {
+      ...snapshot("snap-1", "2026-05-03T08:00:00.000Z", [beforeShot]),
+      url: "https://shokz.com/",
+      targetId: "shokz-home",
+      targetLabel: "Shokz Home",
+      displayUrl: "Shokz Home"
+    },
+    {
+      ...snapshot("snap-2", "2026-05-03T09:00:00.000Z", [afterShot]),
+      url: "https://shokz.com/",
+      targetId: "shokz-home",
+      targetLabel: "Shokz Home",
+      displayUrl: "Shokz Home"
+    }
+  ], { writeDiffImages: false });
+
+  assert.equal(changes.length, 1);
+  assert.match(changes[0].changeLocation, /banner2$/);
+  assert.equal(changes[0].location.bannerIndex, 2);
+  assert.equal(changes[0].from.file, "before-banner-2.png");
+  assert.equal(changes[0].to.file, "after-banner-2.png");
+  assert.match(changes[0].textChange.beforeFragment, /OpenDots Air/);
+  assert.match(changes[0].textChange.afterFragment, /OpenRun Pro 2/);
+});
+
 test("default change summary covers all sections using fixed pc and mobile device presets", async () => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "page-shot-change-devices-"));
   const changesFilePath = path.join(dataDir, "changes.json");
@@ -1035,6 +1071,49 @@ function homeBannerCompositeShot(sourceFile, text, image) {
     composite,
     sectionState: {
       text,
+      composite
+    }
+  };
+}
+
+function multiHomeBannerCompositeShot(prefix, variants) {
+  const composite = {
+    sourceKind: "home-banner",
+    variantCount: variants.length,
+    variants: variants.map((variant, index) => {
+      const sourceFile = `${prefix}-banner-${index + 1}.png`;
+      return {
+        key: JSON.stringify({
+          ordinal: index,
+          realIndex: String(index),
+          text: variant.text,
+          images: [variant.image],
+          backgrounds: []
+        }),
+        label: `Slide ${index + 1}`,
+        sourceFile,
+        sourceImageUrl: `/archive/${sourceFile}`,
+        sourceClip: { x: 0, y: 0, width: 100, height: 50 },
+        rect: { x: index * 110, y: 0, width: 100, height: 50 }
+      };
+    })
+  };
+  return {
+    kind: "collection-tab-composite",
+    sectionKey: "banner",
+    sectionLabel: "Banner",
+    sectionTitle: "Banner",
+    label: "Banner Composite",
+    stateLabel: "Banner Composite",
+    file: `${prefix}-banner-carousel-map.png`,
+    imageUrl: `/archive/${prefix}-banner-carousel-map.png`,
+    width: 220,
+    height: 50,
+    stateIndex: 1,
+    stateCount: variants.length,
+    composite,
+    sectionState: {
+      text: variants.map((variant) => variant.text).join(" "),
       composite
     }
   };
