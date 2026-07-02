@@ -1017,40 +1017,38 @@ select:focus {
   font-weight: 750;
 }
 
-.change-style-link.change-image {
-  display: inline-flex;
-  min-width: 128px;
-  min-height: 38px;
-  aspect-ratio: auto;
-  place-items: initial;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  border-radius: 6px;
-  padding: 8px 10px;
+.change-detail-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.change-detail-list li {
+  overflow-wrap: anywhere;
+}
+
+.change-detail-more {
+  color: var(--muted);
+}
+
+.change-compare-button {
+  min-height: 32px;
+  padding: 0 12px;
+  border-color: rgba(25, 122, 104, 0.28);
   background: #f8fbfa;
   color: var(--accent-dark);
-  font-weight: 750;
-}
-
-.change-style-link.change-image span {
-  position: static;
-  padding: 0;
-  border-radius: 0;
-  background: transparent;
-  color: inherit;
-  font-size: 13px;
-  line-height: 1.2;
-}
-
-.change-style-link small {
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 650;
+  font-size: 12px;
+  font-weight: 800;
   white-space: nowrap;
 }
 
-.change-style-link:hover {
+.change-compare-button:hover:not(:disabled),
+.change-compare-button:focus-visible:not(:disabled) {
   border-color: rgba(25, 122, 104, 0.55);
   background: #eef8f5;
 }
@@ -1681,6 +1679,154 @@ select:focus {
   display: block;
 }
 
+.change-compare-preview {
+  position: fixed;
+  inset: 0;
+  z-index: 1001;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgba(8, 10, 12, 0.72);
+}
+
+.change-compare-preview[hidden] {
+  display: none;
+}
+
+.change-compare-preview-panel {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 14px;
+  width: min(96vw, 1500px);
+  height: min(92vh, 980px);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
+  padding: 16px;
+  overflow: hidden;
+}
+
+.change-compare-preview-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+}
+
+.change-compare-preview-kicker {
+  margin: 0 0 4px;
+  color: var(--accent-dark);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.change-compare-preview h2 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.change-compare-preview-head p:last-child {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.change-compare-preview-close {
+  flex: 0 0 auto;
+}
+
+.change-compare-preview-details {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbfa;
+  padding: 10px 12px;
+  max-height: 118px;
+  overflow: auto;
+}
+
+.change-compare-preview-details ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.change-compare-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  min-height: 0;
+}
+
+.change-compare-preview-image {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+}
+
+.change-compare-preview-image figcaption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.change-compare-preview-image figcaption strong {
+  font-size: 14px;
+}
+
+.change-compare-preview-image figcaption small {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.change-compare-preview-frame,
+.change-compare-preview-empty {
+  min-height: 180px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f4f6f5;
+}
+
+.change-compare-preview-frame {
+  overflow: auto;
+}
+
+.change-compare-preview-frame img {
+  display: block;
+  width: auto;
+  max-width: none;
+  height: auto;
+  max-height: none;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.change-compare-preview-empty {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.change-compare-preview-image p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
 .image-preview {
   position: fixed;
   inset: 0;
@@ -2197,6 +2343,31 @@ select:focus {
 
   .change-compare-grid {
     grid-template-columns: 1fr;
+  }
+
+  .change-compare-preview {
+    padding: 12px;
+  }
+
+  .change-compare-preview-panel {
+    width: 100%;
+    height: 94vh;
+    padding: 12px;
+  }
+
+  .change-compare-preview-head {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .change-compare-preview-close {
+    width: max-content;
+  }
+
+  .change-compare-preview-grid {
+    grid-template-columns: 1fr;
+    overflow: auto;
   }
 
   .image-preview {

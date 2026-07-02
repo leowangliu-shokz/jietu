@@ -132,6 +132,8 @@ let imagePreviewZoomState = createImagePreviewZoomState();
 let imagePreviewNavigationState = createImagePreviewNavigationState();
 let warningPreviewReturnFocus = null;
 let warningPreviewPreviousOverflow = "";
+let changeComparePreviewReturnFocus = null;
+let changeComparePreviewPreviousOverflow = "";
 const changesPageSize = 10;
 const changeCompareDevicePresetIds = {
   pc: "pc-hd",
@@ -259,6 +261,7 @@ document.addEventListener("keydown", closeDeviceFilterOnEscape);
 document.addEventListener("keydown", handleImagePreviewNavigationKeydown);
 document.addEventListener("keydown", closeImagePreviewOnEscape);
 document.addEventListener("keydown", closeWarningPreviewOnEscape);
+document.addEventListener("keydown", closeChangeComparePreviewOnEscape);
 window.addEventListener("resize", handleImagePreviewResize);
 
 function createPlatformFilterMap() {
@@ -2250,6 +2253,13 @@ function handleGalleryChange(event) {
 }
 
 function handleChangesListClick(event) {
+  const compareButton = event.target.closest("[data-action='open-change-compare']");
+  if (compareButton && elements.changesList.contains(compareButton)) {
+    event.preventDefault();
+    openChangeComparePreview(compareButton.dataset.changeId, compareButton);
+    return;
+  }
+
   const deleteButton = event.target.closest("[data-action='delete-change']");
   if (deleteButton && elements.changesList.contains(deleteButton)) {
     event.preventDefault();
@@ -2731,8 +2741,8 @@ function renderChangesSummary(options = {}) {
             <th scope="col">变更级别</th>
             <th scope="col">变更类型</th>
             <th scope="col">变更位置</th>
-            <th scope="col">旧样式</th>
-            <th scope="col">新样式</th>
+            <th scope="col">变了哪些地方</th>
+            <th scope="col">新旧对比</th>
             <th class="change-action-column" scope="col">操作</th>
           </tr>
         </thead>
@@ -3760,8 +3770,8 @@ function renderChangeTableRow(change) {
         </div>
       </td>
       <td>${escapeHtml(changeLocationForDisplay(change))}</td>
-      <td>${renderChangeStyleLink("旧样式", styleRefForChange(change, "old"), change)}</td>
-      <td>${renderChangeStyleLink("新样式", styleRefForChange(change, "new"), change)}</td>
+      <td>${renderChangeDetailsCell(change)}</td>
+      <td>${renderChangeCompareButton(changeId, change)}</td>
       <td>${renderChangeDeleteCell(changeId, pending)}</td>
     </tr>
   `;
@@ -3816,33 +3826,33 @@ function renderChangeDeleteCell(changeId, pending) {
   `;
 }
 
-function renderChangeStyleLink(label, style, change) {
-  const previewStyle = changeStylePreviewSource(style);
-  const imageUrl = displayImageUrlForItem(previewStyle);
-  const capturedAt = style?.capturedAt || style?.timestamp || "";
-  if (!imageUrl) {
-    return `<span class="change-style-empty">暂无图片</span>`;
-  }
-
-  const caption = [
-    label,
-    changeLocationForDisplay(change),
-    `截图时间：${formatOptionalDate(capturedAt)}`,
-    previewStyle?.text ? `文案：${truncateDisplayText(previewStyle.text, 120)}` : ""
-  ].filter(Boolean).join(" · ");
-
+function renderChangeDetailsCell(change) {
+  const details = changeDetailsForDisplay(change);
+  const visibleDetails = details.slice(0, 4);
+  const extraCount = Math.max(0, details.length - visibleDetails.length);
   return `
-    <a
-      class="change-style-link change-image"
-      href="${escapeHtml(imageUrl)}"
-      target="_blank"
-      rel="noreferrer"
-      title="${escapeHtml(caption)}"
-      data-preview-caption="${escapeHtml(caption)}"
+    <ul class="change-detail-list">
+      ${visibleDetails.map((detail) => `<li>${escapeHtml(detail)}</li>`).join("")}
+      ${extraCount ? `<li class="change-detail-more">还有 ${extraCount} 项</li>` : ""}
+    </ul>
+  `;
+}
+
+function renderChangeCompareButton(changeId, change) {
+  const oldImage = changeComparisonImageFor(change, "old");
+  const newImage = changeComparisonImageFor(change, "new");
+  const disabled = !changeId || (!oldImage.imageUrl && !newImage.imageUrl);
+  return `
+    <button
+      class="change-compare-button"
+      type="button"
+      data-action="open-change-compare"
+      data-change-id="${escapeHtml(changeId)}"
+      title="${escapeHtml(disabled ? "暂无可对比图片" : `查看 ${changeLocationForDisplay(change)} 的旧样式和新样式`)}"
+      ${disabled ? "disabled" : ""}
     >
-      <span>${escapeHtml(label)}</span>
-      <small>${escapeHtml(formatOptionalDate(capturedAt))}</small>
-    </a>
+      ${disabled ? "暂无图片" : "新旧对比"}
+    </button>
   `;
 }
 
@@ -3887,6 +3897,231 @@ function mergeChangeStyleRef(style, source) {
     ...style,
     visibleItems: Array.isArray(style.visibleItems) ? style.visibleItems : source.visibleItems
   };
+}
+
+function changeDetailsForDisplay(change) {
+  const details = [];
+  const textDetail = textChangeDetail(change.textChange);
+  if (textDetail) {
+    details.push(textDetail);
+  }
+  for (const signal of change.visualChange?.signals || []) {
+    const detail = visualSignalDetail(signal, change);
+    if (detail) {
+      details.push(detail);
+    }
+  }
+  if (change.visualChange?.regionCount) {
+    details.push(`视觉区域 ${change.visualChange.regionCount} 个，像素占比 ${changeRatioLabel(change.visualChange.ratio)}`);
+  }
+  if (!details.length && change.visualChange?.summary) {
+    details.push(change.visualChange.summary);
+  }
+  if (!details.length) {
+    details.push(...changeTypesForDisplay(change));
+  }
+  return [...new Set(details.filter(Boolean))];
+}
+
+function textChangeDetail(textChange) {
+  if (!textChange) {
+    return "";
+  }
+  const before = truncateDisplayText(textChange.beforeFragment || textChange.before || "", 54);
+  const after = truncateDisplayText(textChange.afterFragment || textChange.after || "", 54);
+  if (!before && !after) {
+    return "文案内容变化";
+  }
+  return `文案：${before || "（空）"} → ${after || "（空）"}`;
+}
+
+function visualSignalDetail(signal, change) {
+  if (!signal?.type) {
+    return "";
+  }
+  if (signal.type === "copy" && change.textChange) {
+    return "";
+  }
+  if (signal.type === "large-visual") {
+    return `大面积视觉变化${changeRatioSuffix(signal.ratio)}`;
+  }
+  if (signal.type === "layout") {
+    return signal.text
+      ? `布局位置变化：${truncateDisplayText(signal.text, 54)}`
+      : "布局位置变化";
+  }
+  if (signal.type === "dimension") {
+    return "截图尺寸变化";
+  }
+  if (signal.type === "image") {
+    return "图片素材变化";
+  }
+  if (signal.type === "media-item") {
+    return signal.mediaItemLabel ? `媒体项变化：${signal.mediaItemLabel}` : "媒体项变化";
+  }
+  return visualSignalLabel(signal) || signal.label || "";
+}
+
+function changeRatioLabel(value) {
+  const ratio = Number(value || 0);
+  return Number.isFinite(ratio) ? `${(ratio * 100).toFixed(2)}%` : "未知";
+}
+
+function changeRatioSuffix(value) {
+  const ratio = Number(value || 0);
+  return Number.isFinite(ratio) && ratio > 0 ? `（${(ratio * 100).toFixed(2)}%）` : "";
+}
+
+function changeComparisonImageFor(change, kind) {
+  const label = kind === "old" ? "旧样式" : "新样式";
+  const source = styleRefForChange(change, kind);
+  const previewSource = changeStylePreviewSource(source);
+  const imageUrl = typeof previewSource === "string"
+    ? previewSource
+    : displayImageUrlForItem(previewSource);
+  const capturedAt = typeof previewSource === "object"
+    ? previewSource?.capturedAt || previewSource?.timestamp || ""
+    : "";
+  const text = typeof previewSource === "object" ? previewSource?.text || "" : "";
+  return {
+    label,
+    imageUrl,
+    capturedAt,
+    text
+  };
+}
+
+function findChangeById(changeId) {
+  const normalizedId = String(changeId || "").trim();
+  return changes.find((change) => String(change?.id || "").trim() === normalizedId) || null;
+}
+
+function openChangeComparePreview(changeId, trigger) {
+  const change = findChangeById(changeId);
+  if (!change) {
+    setChangesStatus("找不到这条变更记录。", "error");
+    return;
+  }
+
+  const preview = ensureChangeComparePreview();
+  const oldImage = changeComparisonImageFor(change, "old");
+  const newImage = changeComparisonImageFor(change, "new");
+  preview.querySelector("[data-change-compare-title]").textContent = `新旧对比：${changeLocationForDisplay(change)}`;
+  preview.querySelector("[data-change-compare-meta]").textContent = changeTypesForDisplay(change).join(" / ");
+  preview.querySelector("[data-change-compare-details]").innerHTML = renderChangeCompareDetails(change);
+  preview.querySelector("[data-change-compare-grid]").innerHTML = `
+    ${renderChangeComparePreviewImage(oldImage)}
+    ${renderChangeComparePreviewImage(newImage)}
+  `;
+  changeComparePreviewReturnFocus = trigger instanceof HTMLElement ? trigger : null;
+  changeComparePreviewPreviousOverflow = document.body.style.overflow || "";
+  preview.hidden = false;
+  preview.setAttribute("aria-hidden", "false");
+  document.body.style.overflow = "hidden";
+  preview.querySelector("[data-action='close-change-compare']")?.focus();
+}
+
+function ensureChangeComparePreview() {
+  let preview = document.querySelector("#changeComparePreview");
+  if (preview) {
+    return preview;
+  }
+
+  preview = document.createElement("div");
+  preview.id = "changeComparePreview";
+  preview.className = "change-compare-preview";
+  preview.hidden = true;
+  preview.setAttribute("aria-hidden", "true");
+  preview.innerHTML = `
+    <section class="change-compare-preview-panel" role="dialog" aria-modal="true" aria-labelledby="changeComparePreviewTitle">
+      <div class="change-compare-preview-head">
+        <div>
+          <p class="change-compare-preview-kicker">新旧对比</p>
+          <h2 id="changeComparePreviewTitle" data-change-compare-title>新旧对比</h2>
+          <p data-change-compare-meta></p>
+        </div>
+        <button class="change-compare-preview-close" type="button" data-action="close-change-compare">关闭</button>
+      </div>
+      <div class="change-compare-preview-details" data-change-compare-details></div>
+      <div class="change-compare-preview-grid" data-change-compare-grid></div>
+    </section>
+  `;
+  preview.addEventListener("click", handleChangeComparePreviewClick);
+  document.body.append(preview);
+  return preview;
+}
+
+function renderChangeCompareDetails(change) {
+  const details = changeDetailsForDisplay(change);
+  if (!details.length) {
+    return `<p class="change-style-empty">暂无变更明细</p>`;
+  }
+  return `
+    <ul>
+      ${details.map((detail) => `<li>${escapeHtml(detail)}</li>`).join("")}
+    </ul>
+  `;
+}
+
+function renderChangeComparePreviewImage(image) {
+  const timestamp = image.capturedAt ? formatDate(image.capturedAt) : "未知时间";
+  if (!image.imageUrl) {
+    return `
+      <figure class="change-compare-preview-image">
+        <figcaption>
+          <strong>${escapeHtml(image.label)}</strong>
+          <small>${escapeHtml(timestamp)}</small>
+        </figcaption>
+        <div class="change-compare-preview-empty">暂无图片</div>
+      </figure>
+    `;
+  }
+  return `
+    <figure class="change-compare-preview-image">
+      <figcaption>
+        <strong>${escapeHtml(image.label)}</strong>
+        <small>${escapeHtml(timestamp)}</small>
+      </figcaption>
+      <div class="change-compare-preview-frame">
+        <img src="${escapeHtml(image.imageUrl)}" alt="${escapeHtml(image.label)}">
+      </div>
+      ${image.text ? `<p>${escapeHtml(truncateDisplayText(image.text, 160))}</p>` : ""}
+    </figure>
+  `;
+}
+
+function handleChangeComparePreviewClick(event) {
+  const preview = document.querySelector("#changeComparePreview");
+  if (!preview) {
+    return;
+  }
+  if (event.target === preview || event.target.closest("[data-action='close-change-compare']")) {
+    closeChangeComparePreview();
+  }
+}
+
+function closeChangeComparePreview() {
+  const preview = document.querySelector("#changeComparePreview");
+  if (!preview || preview.hidden) {
+    return;
+  }
+
+  preview.hidden = true;
+  preview.setAttribute("aria-hidden", "true");
+  preview.querySelector("[data-change-compare-details]").innerHTML = "";
+  preview.querySelector("[data-change-compare-grid]").innerHTML = "";
+  document.body.style.overflow = changeComparePreviewPreviousOverflow;
+  const returnFocus = changeComparePreviewReturnFocus;
+  changeComparePreviewReturnFocus = null;
+  if (returnFocus?.isConnected) {
+    returnFocus.focus();
+  }
+}
+
+function closeChangeComparePreviewOnEscape(event) {
+  if (event.key === "Escape") {
+    closeChangeComparePreview();
+  }
 }
 
 function changeLevelForDisplay(change) {
